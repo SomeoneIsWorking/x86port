@@ -1,6 +1,8 @@
 /* exec.c -- see exec.h for why every outcome is named. */
 #include "exec.h"
 
+#include "x87_exec.h"
+
 #include <string.h>
 
 static const char *kStatusNames[] = {
@@ -152,6 +154,39 @@ static void execute(Ctx *c) {
   switch ((X86pInsnOp)in->op) {
   case kX86pInsnNop:
     return;
+
+  case kX86pInsnX87: {
+    /*
+     * The FPU is a separate state machine and lives in its own module. What
+     * stays here is the ADDRESSING: effective-address computation is this
+     * file's job, so the address is resolved once and handed over rather than
+     * computed a second time next to the floating-point semantics.
+     */
+    int has_mem = 0;
+    uint32_t addr = 0;
+    uint32_t fault_addr = 0;
+    X86pX87ExecStatus s;
+    int i;
+    for (i = 0; i < in->operands; i++) {
+      if (in->operand[i].kind == kX86pOperandMem) {
+        has_mem = 1;
+        addr = effective_address(c, &in->operand[i]);
+        break;
+      }
+    }
+    s = x86p_x87_execute(cpu, c->mem, in, has_mem, addr, &fault_addr);
+    if (s == kX86pX87ExecMemoryFault) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = fault_addr;
+    } else if (s == kX86pX87ExecUnsupported) {
+      /* An x87 instruction this build decodes but does not run. Reported as
+         Unsupported, which is the same outcome an unmodelled integer
+         instruction gets -- and the mnemonic in the report is what keeps the
+         remaining work a ranked list rather than a guess. */
+      c->fault = kX86pStepUnsupported;
+    }
+    return;
+  }
 
   case kX86pInsnAlu: {
     uint32_t a = read_operand(c, o0);

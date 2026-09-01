@@ -10,9 +10,57 @@ void x86p_cpu_reset(X86pCpu *cpu) {
     return;
   }
   memset(cpu, 0, sizeof *cpu);
+  /* An all-zero FPU is a stack whose registers are all tagged VALID and whose
+     control word selects single precision -- neither of which is the state a
+     process starts in. The FPU owns its own reset. */
+  x86p_x87_reset(&cpu->x87);
 }
 
 /* ---- memory ------------------------------------------------------------- */
+
+/* The bounds question alone, for any span. Separated from x86p_mem_ok so that
+   the width restriction there -- 1, 2 or 4, which is what an integer operand
+   can be -- stays a statement about operands and not about the mapping. */
+static int span_ok(const X86pMem *m, uint32_t addr, uint32_t n) {
+  uint32_t off;
+  if (!m || !m->host || n == 0) {
+    return 0;
+  }
+  if (addr < m->lo) {
+    return 0;
+  }
+  off = addr - m->lo;
+  if (off >= m->size) {
+    return 0;
+  }
+  /* Computed as a subtraction, never as `off + n <= size`, which overflows for
+     an offset near 2^32 and reports a wildly out-of-range access as fine. */
+  if (n > m->size - off) {
+    return 0;
+  }
+  /* And the access must not wrap the guest address space, which is a separate
+     question from fitting in the mapping. */
+  if (addr > UINT32_MAX - (n - 1)) {
+    return 0;
+  }
+  return 1;
+}
+
+int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n) {
+  if (!dst || !span_ok(m, addr, n)) {
+    return 0;
+  }
+  memcpy(dst, m->host + (addr - m->lo), n);
+  return 1;
+}
+
+int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n) {
+  if (!src || !span_ok(m, addr, n)) {
+    return 0;
+  }
+  memcpy(m->host + (addr - m->lo), src, n);
+  return 1;
+}
 
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w) {
   uint32_t off;

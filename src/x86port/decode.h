@@ -27,6 +27,7 @@
 
 #include "alu.h"
 #include "cond.h"
+#include "x87.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -54,12 +55,21 @@ typedef enum X86pOperandKind {
   kX86pOperandReg,
   kX86pOperandMem,
   kX86pOperandImm,
+  /* An x87 stack POSITION, ST(i). Deliberately not folded into Reg: `reg`
+     there is an encoded GPR number, and ST(3) is not register 3 -- it is
+     whatever physical register TOP+3 currently names. Sharing the kind is how
+     an engine ends up indexing the FPU array with a value that means something
+     else. `reg` holds i, 0-7. */
+  kX86pOperandSt,
   kX86pOperandKindCount /* MUST stay last */
 } X86pOperandKind;
 
 typedef struct X86pOperand {
   uint8_t kind; /* X86pOperandKind */
-  uint8_t size; /* operand width in BYTES: 1, 2 or 4 */
+  /* Operand width in BYTES. 1, 2 or 4 for the integer engine; an x87 memory
+     operand is additionally 8 (double) or 10 (the extended format), and those
+     two widths are accepted ONLY for an x87 instruction -- see decode.c. */
+  uint8_t size;
   /* kind == Reg: the ENCODED register number, and at size 1 that is a byte
      register, where 4-7 are AH..BH rather than ESP..EDI (see cpu.h). */
   int8_t reg;
@@ -116,6 +126,16 @@ typedef enum X86pInsnOp {
   kX86pInsnIdiv,
   kX86pInsnPushfd,
   kX86pInsnPopfd,
+  /*
+   * x87. `x87` holds an X86pX87Insn saying which, for the same reason `alu`
+   * does: one list of floating-point operations, not two.
+   *
+   * The POP SUFFIX IS PART OF THE OPERATION, not a detail of it. FADD and
+   * FADDP compute the same sum and leave the stack at different depths, and a
+   * model that treats the P as cosmetic drifts by one register and then reads
+   * every subsequent value from the wrong place.
+   */
+  kX86pInsnX87,
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
 
@@ -128,6 +148,18 @@ typedef struct X86pInsn {
   uint8_t op;           /* X86pInsnOp -- Unsupported is a REPORTABLE outcome */
   uint8_t alu;          /* X86pAluOp or X86pAluUnOp, per `op` */
   uint8_t cond;         /* X86pCond, per `op` */
+  uint8_t x87;          /* X86pX87Insn, when op == kX86pInsnX87 */
+  uint8_t x87_op;       /* X86pX87Op, when x87 == kX86pX87InsnArith */
+  /* The pop suffix. Set for FSTP, FADDP, FCOMP and friends; FCOMPP pops TWICE,
+     so this counts rather than flags -- a single bit would make FCOMPP either
+     FCOMP or a second instruction, and both are wrong. */
+  uint8_t x87_pops;
+  uint8_t x87_reverse; /* FSUBR/FDIVR: the operands, and only the operands */
+  /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
+     two's-complement INTEGER, not as a float of the same width. Recorded here
+     rather than recovered from the mnemonic spelling, because a check on the
+     letter 'I' is a decision made from a display string. */
+  uint8_t x87_mem_int;
   X86pOperand operand[X86P_MAX_OPERANDS];
 } X86pInsn;
 

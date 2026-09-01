@@ -25,6 +25,7 @@
 #define X86PORT_CPU_H
 
 #include "flags.h"
+#include "x87.h"
 
 #include <stdint.h>
 
@@ -50,6 +51,11 @@ typedef struct X86pCpu {
   uint32_t reg[kX86pRegCount];
   uint32_t eip;
   X86pFlags flags;
+  /* The FPU is part of the guest's architectural state, not a separate
+     machine: FNSTSW writes AX, and a guest that saves context saves both. It
+     lives here so there is one thing to snapshot when two engines are compared
+     against each other. */
+  X86pX87 x87;
 } X86pCpu;
 
 /*
@@ -84,6 +90,16 @@ typedef struct X86pMem {
  */
 int x86p_mem_read(const X86pMem *m, uint32_t addr, int w, uint32_t *out);
 int x86p_mem_write(const X86pMem *m, uint32_t addr, int w, uint32_t value);
+
+/*
+ * Whole-span access, for operands that are not integers: an x87 double is 8
+ * bytes and the extended format is 10, and neither is a value that fits the
+ * uint32_t interface above. The bytes are copied as they lie -- these formats
+ * are already little-endian in guest memory and interpreting them is x87.c's
+ * job, not this module's.
+ */
+int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n);
+int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n);
 
 /* Whether an access of `w` bytes at `addr` is wholly mapped. Exposed so a
    caller can check before doing work it would have to undo. */
