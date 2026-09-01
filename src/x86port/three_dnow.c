@@ -18,6 +18,25 @@ const char *x86p_3dnow_name(X86pPfOp op) {
   return kNames[op];
 }
 
+/*
+ * Spellings that are not the canonical mnemonic but name the same operation.
+ *
+ * MEASURED, not anticipated. Running x86port's decoder over pc/xmen2's
+ * 2,168,629-instruction corpus surfaced Zydis 4.1 reporting PFRSQRT as
+ * "PFSQRT" (60 sites) and PFRCPIT1 as "PFCPIT1" (66) -- each a letter short of
+ * the real 3DNow! mnemonic. Accepting them costs nothing and closes a hazard
+ * that would otherwise appear as two opcodes the engine mysteriously cannot
+ * name. x86p_3dnow_name still returns only the canonical spelling: this is an
+ * input convenience, not a second source of truth.
+ */
+static const struct {
+  const char *alias;
+  X86pPfOp op;
+} kAliases[] = {
+    {"PFSQRT", kX86pPfRsqrt},   /* zydis 4.1's spelling of PFRSQRT  */
+    {"PFCPIT1", kX86pPfRcpIt1}, /* zydis 4.1's spelling of PFRCPIT1 */
+};
+
 int x86p_3dnow_parse(const char *mnemonic, X86pPfOp *out) {
   int i;
   if (!mnemonic || !*mnemonic || !out) {
@@ -26,6 +45,12 @@ int x86p_3dnow_parse(const char *mnemonic, X86pPfOp *out) {
   for (i = 0; i < (int)kX86pPfCount; i++) {
     if (strcasecmp(mnemonic, kNames[i]) == 0) {
       *out = (X86pPfOp)i;
+      return 1;
+    }
+  }
+  for (i = 0; i < (int)(sizeof kAliases / sizeof kAliases[0]); i++) {
+    if (strcasecmp(mnemonic, kAliases[i].alias) == 0) {
+      *out = kAliases[i].op;
       return 1;
     }
   }

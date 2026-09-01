@@ -7,13 +7,33 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # The guest is x86-32 and this is a HOST library: nothing here is compiled for
 # the guest architecture, so no -m32 anywhere. That is the whole point of a
 # runtime engine.
+# Zydis: decode only. Pinned at v4.1.1 in vendor/zydis, with pre-generated
+# tables -- no build-time code generation, which is the whole point (G001).
+set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
+add_subdirectory(vendor/zydis EXCLUDE_FROM_ALL)
+
 add_library(x86port STATIC
-  src/x86port/three_dnow.c)
+  src/x86port/three_dnow.c
+  src/x86port/decode.c)
 target_include_directories(x86port PUBLIC src/x86port)
+target_link_libraries(x86port PRIVATE Zydis)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
+
+# The differential instrument. Not a test: it needs a title's Ghidra export,
+# which is not in this repo and never will be.
+add_executable(x86p_decode_diff tools/decode_diff.c)
+target_link_libraries(x86p_decode_diff PRIVATE x86port)
+target_compile_options(x86p_decode_diff PRIVATE -Wall -Wextra -Werror)
 
 enable_testing()
 add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)
 target_compile_options(test_three_dnow PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_three_dnow COMMAND test_three_dnow)
+
+add_executable(test_decode tests/test_decode.c)
+target_link_libraries(test_decode PRIVATE x86port)
+target_compile_options(test_decode PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_decode COMMAND test_decode)
