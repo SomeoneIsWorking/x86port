@@ -18,7 +18,8 @@ add_library(x86port STATIC
   src/x86port/three_dnow.c
   src/x86port/decode.c
   src/x86port/engine.c
-  src/x86port/flags.c)
+  src/x86port/flags.c
+  src/x86port/alu.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PRIVATE Zydis)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
@@ -49,3 +50,8 @@ add_executable(test_flags tests/test_flags.c)
 target_link_libraries(test_flags PRIVATE x86port)
 target_compile_options(test_flags PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_flags COMMAND test_flags)
+
+add_executable(test_alu tests/test_alu.c)
+target_link_libraries(test_alu PRIVATE x86port)
+target_compile_options(test_alu PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_alu COMMAND test_alu)
