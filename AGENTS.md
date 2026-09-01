@@ -61,6 +61,34 @@ Result, 2026-09-01, over **2,168,629 instructions from 20 modules**:
   Zydis 4.1 renders `PFRSQRT` as `PFSQRT` and `PFRCPIT1` as `PFCPIT1`, each a
   letter short. `x86p_3dnow_parse` accepts both spellings because of this run.
 
+## Flags are verified against silicon, not against the manual
+
+`src/x86port/flags.{h,c}` is the authority on what an operation does to EFLAGS,
+and it is the module with the strongest verification here on purpose: almost
+every instruction writes flags, almost none are read, and a wrong one surfaces
+as a branch taken differently a thousand instructions later.
+
+`tests/test_flags.c` EXECUTES each instruction on the host CPU with a controlled
+incoming EFLAGS and compares the real word — exhaustively at byte width, and
+over deterministic boundary-crossed sweeps at 16 and 32 bits. **2,187,776
+comparisons, 0 mismatches**, all six flags. On a non-x86 host it says loudly
+that no oracle ran rather than passing on the hermetic cases alone.
+
+That oracle found four defects no amount of reading found, and the lesson
+generalises to anything else added here:
+
+- **Compare the ISA-UNDEFINED flags too.** "Undefined" describes the
+  specification, not the silicon. This CPU *clears* AF on AND/OR/XOR/TEST and
+  *sets* it on every shift; the model preserved it in both cases, and guest code
+  that saves and restores EFLAGS can see the difference.
+- **Vary every input the model reads, or the sweep has no power.** The first
+  version varied only the incoming CF and reported "0 differ" for the logic
+  ops' AF — a clean bill of health it was in no position to give.
+- **A rule that belongs to the instruction does not become a case in the
+  derivation.** A shift by zero writes no flags, so the caller records nothing
+  and `x86p_flags_set` refuses one; there is no preserving branch for four
+  flags that have no correct value.
+
 ## Boundaries
 
 - **Semantics are ours; decode may be borrowed.** The whole point of S043 is
