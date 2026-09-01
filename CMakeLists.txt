@@ -22,9 +22,10 @@ add_library(x86port STATIC
   src/x86port/alu.c
   src/x86port/cpu.c
   src/x86port/cond.c
-  src/x86port/exec.c)
+  src/x86port/exec.c
+  src/x86port/x87.c)
 target_include_directories(x86port PUBLIC src/x86port)
-target_link_libraries(x86port PRIVATE Zydis)
+target_link_libraries(x86port PRIVATE Zydis m)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
 
 # The differential instrument. Not a test: it needs a title's Ghidra export,
@@ -73,3 +74,8 @@ add_executable(test_exec tests/test_exec.c)
 target_link_libraries(test_exec PRIVATE x86port)
 target_compile_options(test_exec PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_exec COMMAND test_exec)
+
+add_executable(test_x87 tests/test_x87.c)
+target_link_libraries(test_x87 PRIVATE x86port m)
+target_compile_options(test_x87 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_x87 COMMAND test_x87)
