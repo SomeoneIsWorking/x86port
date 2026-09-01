@@ -16,7 +16,8 @@ add_subdirectory(vendor/zydis EXCLUDE_FROM_ALL)
 
 add_library(x86port STATIC
   src/x86port/three_dnow.c
-  src/x86port/decode.c)
+  src/x86port/decode.c
+  src/x86port/engine.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PRIVATE Zydis)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
@@ -37,3 +38,8 @@ add_executable(test_decode tests/test_decode.c)
 target_link_libraries(test_decode PRIVATE x86port)
 target_compile_options(test_decode PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_decode COMMAND test_decode)
+
+add_executable(test_engine tests/test_engine.c)
+target_link_libraries(test_engine PRIVATE x86port)
+target_compile_options(test_engine PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_engine COMMAND test_engine)
