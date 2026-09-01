@@ -24,7 +24,8 @@ add_library(x86port STATIC
   src/x86port/cond.c
   src/x86port/exec.c
   src/x86port/x87.c
-  src/x86port/x87_exec.c)
+  src/x86port/x87_exec.c
+  src/x86port/emit_x64.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PRIVATE Zydis m)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
@@ -85,3 +86,10 @@ add_executable(test_x87_exec tests/test_x87_exec.c)
 target_link_libraries(test_x87_exec PRIVATE x86port m)
 target_compile_options(test_x87_exec PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_x87_exec COMMAND test_x87_exec)
+
+# The encoder's oracle is Zydis itself, so this test links it directly rather
+# than through x86port's PRIVATE dependency.
+add_executable(test_emit_x64 tests/test_emit_x64.c)
+target_link_libraries(test_emit_x64 PRIVATE x86port Zydis)
+target_compile_options(test_emit_x64 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_emit_x64 COMMAND test_emit_x64)

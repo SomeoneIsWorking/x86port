@@ -1,0 +1,152 @@
+/*
+ * emit_x64.h -- writing x86-64 machine code, byte by byte.
+ *
+ * The bottom half of the first JIT backend. This file knows nothing about the
+ * guest: it encodes host instructions and that is all. Guest meaning lives in
+ * jit_x64.c, so the encoder can be tested against a disassembler without a
+ * guest program existing.
+ *
+ * WHY AN ENCODER AT ALL, WHEN THE GUEST IS ALSO x86. Because x86-32 guest code
+ * cannot simply be run on an x86-64 host: the guest's registers live in an
+ * X86pCpu struct rather than in host registers, its memory is an offset into a
+ * host mapping rather than a flat address space, and its flags are the lazy
+ * (kind, a, b, r) form this framework's interpreter defines rather than host
+ * EFLAGS. Every guest instruction therefore becomes several host ones. The
+ * family similarity buys correctness of ARITHMETIC -- a host ADD computes what
+ * a guest ADD computes -- and nothing else.
+ *
+ * OVERFLOW IS RECORDED, NEVER TRUNCATED. An encoder that quietly stops writing
+ * when the buffer fills produces a block that ends mid-instruction, and the CPU
+ * will happily execute whatever follows. That is unbounded, silent, and lands
+ * far from the cause. So every emit checks capacity first, and a failed emit
+ * sets a sticky flag that the caller must ask about before publishing anything.
+ * The caller checks ONCE, at the end, rather than after each byte -- checking
+ * per-emit is what makes people stop checking.
+ *
+ * THE THREE ENCODING TRAPS, all of which produce valid-looking wrong code:
+ *
+ *   - RSP and R12 have rm == 100, which the ModRM byte spells "a SIB follows".
+ *     `[rsp+8]` written without a SIB decodes as something else entirely.
+ *   - RBP and R13 have rm == 101, which at mod == 00 spells "RIP-relative".
+ *     `[rbp]` with no displacement is not encodable; it needs an explicit
+ *     zero disp8.
+ *   - REX.B extends the base register, REX.R the reg field. Swapping them is
+ *     an off-by-eight in which register is touched: still executes, still
+ *     plausible, corrupts a different register than intended.
+ *
+ * None of these are caught by reading the bytes back and agreeing with
+ * yourself, which is why the test decodes this module's output with Zydis --
+ * the same decoder the guest side uses -- and compares against the intent.
+ */
+#ifndef X86PORT_EMIT_X64_H
+#define X86PORT_EMIT_X64_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * Host registers, numbered as the encoding numbers them. The low three bits go
+ * in ModRM; the fourth bit goes in REX. Do not reorder.
+ */
+typedef enum X86pHostReg {
+  kX64Rax = 0,
+  kX64Rcx = 1,
+  kX64Rdx = 2,
+  kX64Rbx = 3,
+  kX64Rsp = 4,
+  kX64Rbp = 5,
+  kX64Rsi = 6,
+  kX64Rdi = 7,
+  kX64R8 = 8,
+  kX64R9 = 9,
+  kX64R10 = 10,
+  kX64R11 = 11,
+  kX64R12 = 12,
+  kX64R13 = 13,
+  kX64R14 = 14,
+  kX64R15 = 15,
+  kX64RegCount /* MUST stay last */
+} X86pHostReg;
+
+/*
+ * The host ALU operations, by their /r opcode-extension number, which is also
+ * the order the one-byte opcodes run in. The number IS the encoding, so this
+ * cannot drift from the manual.
+ */
+typedef enum X86pHostAlu {
+  kX64Add = 0,
+  kX64Or = 1,
+  kX64Adc = 2,
+  kX64Sbb = 3,
+  kX64And = 4,
+  kX64Sub = 5,
+  kX64Xor = 6,
+  kX64Cmp = 7,
+  kX64AluCount /* MUST stay last */
+} X86pHostAlu;
+
+/*
+ * The output buffer.
+ *
+ * `overflow` is sticky: once set it stays set, so a caller that emits fifty
+ * instructions and checks once at the end cannot miss a failure in the middle.
+ */
+typedef struct X86pEmit {
+  uint8_t *buf;
+  size_t cap;
+  size_t len;
+  int overflow;
+} X86pEmit;
+
+void x86p_emit_init(X86pEmit *e, void *buf, size_t cap);
+
+/* Did every emit fit? Ask this before publishing code. A block that overflowed
+   must be DISCARDED, not truncated and run. */
+int x86p_emit_ok(const X86pEmit *e);
+
+/* ---- moves ------------------------------------------------------------- */
+
+/* mov r32, imm32 */
+void x86p_emit_mov_r32_imm32(X86pEmit *e, X86pHostReg dst, uint32_t imm);
+
+/* mov r64, r64 */
+void x86p_emit_mov_r64_r64(X86pEmit *e, X86pHostReg dst, X86pHostReg src);
+
+/* mov r32, r32 */
+void x86p_emit_mov_r32_r32(X86pEmit *e, X86pHostReg dst, X86pHostReg src);
+
+/* mov r32, [base + disp] */
+void x86p_emit_load32(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
+/* mov [base + disp], r32 */
+void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
+
+/* mov byte [base + disp], imm8 -- for the one-byte fields of X86pFlags. */
+void x86p_emit_store8_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint8_t imm);
+
+/* ---- arithmetic -------------------------------------------------------- */
+
+/* <alu> r32, r32 */
+void x86p_emit_alu_r32_r32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src);
+
+/* <alu> r32, imm32 */
+void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint32_t imm);
+
+/* ---- structure --------------------------------------------------------- */
+
+void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r);
+void x86p_emit_pop_r64(X86pEmit *e, X86pHostReg r);
+void x86p_emit_ret(X86pEmit *e);
+
+/* A single-byte raw opcode, for the handful of forms with no operands. */
+void x86p_emit_byte(X86pEmit *e, uint8_t b);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* X86PORT_EMIT_X64_H */
