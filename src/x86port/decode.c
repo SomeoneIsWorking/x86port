@@ -52,7 +52,7 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
 static const char *kOpNames[] = {"unsupported", "alu", "alu-unary", "mov",    "movzx", "movsx", "lea",
                                  "push",        "pop", "xchg",      "jmp",    "jcc",   "setcc", "cmovcc",
                                  "call",        "ret", "leave",     "nop",    "cdq",   "cwde",  "mul",
-                                 "imul",        "div", "idiv",      "pushfd", "popfd"};
+                                 "imul",        "div", "idiv",      "pushfd", "popfd", "x87"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
 const char *x86p_insn_op_name(int op) {
@@ -103,7 +103,8 @@ static int map_register(ZydisRegister r, int8_t *index, uint8_t *size) {
    model, which makes the whole instruction unsupported rather than partly
    decoded -- a half-filled operand is how an engine executes against a base
    register that was never there. */
-static int map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out) {
+static int
+map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out, int is_x87) {
   memset(out, 0, sizeof *out);
   out->reg = -1;
   out->base = -1;
@@ -113,6 +114,18 @@ static int map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOp
   switch (o->type) {
   case ZYDIS_OPERAND_TYPE_REGISTER: {
     uint8_t size = 0;
+    if (ZydisRegisterGetClass(o->reg.value) == ZYDIS_REGCLASS_X87) {
+      ZyanI8 id = ZydisRegisterGetId(o->reg.value);
+      if (id < 0 || id > 7) {
+        return 0;
+      }
+      /* A POSITION, not a register -- kept in its own operand kind so that
+         nothing downstream can index the GPR file with it. */
+      out->kind = kX86pOperandSt;
+      out->reg = (int8_t)id;
+      out->size = 10;
+      return 1;
+    }
     if (!map_register(o->reg.value, &out->reg, &size)) {
       return 0;
     }
@@ -145,10 +158,18 @@ static int map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOp
     out->disp = o->mem.disp.has_displacement ? (int32_t)o->mem.disp.value : 0;
     out->kind = kX86pOperandMem;
     out->size = (uint8_t)(o->size / 8);
-    if (out->size != 1 && out->size != 2 && out->size != 4) {
-      return 0; /* 8- and 10-byte operands are x87/MMX/SSE, not this module */
+    if (out->size == 1 || out->size == 2 || out->size == 4) {
+      return 1;
     }
-    return 1;
+    /* 8 and 10 bytes are a double and the extended format. They are accepted
+       only for an x87 instruction: the same widths also appear on MMX and SSE,
+       which this framework does not model, and letting them through
+       unconditionally would turn an unmodelled MOVQ into an instruction the
+       engine believes it can run. */
+    if (is_x87 && (out->size == 8 || out->size == 10)) {
+      return 1;
+    }
+    return 0;
   }
   case ZYDIS_OPERAND_TYPE_IMMEDIATE:
     out->kind = kX86pOperandImm;
@@ -228,6 +249,85 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_PUSHFD, kX86pInsnPushfd);
     SIMPLE(ZYDIS_MNEMONIC_POPFD, kX86pInsnPopfd);
 #undef SIMPLE
+/*
+ * x87. The tables are keyed on the SUFFIX as much as the operation: the P is a
+ * pop and the R is an operand swap, and both are part of what the instruction
+ * does, not decoration on its name.
+ */
+#define FP(m, k)                                                                                                       \
+  case m:                                                                                                              \
+    out->op = kX86pInsnX87;                                                                                            \
+    out->x87 = (uint8_t)(k);                                                                                           \
+    return
+#define FPP(m, k, pops)                                                                                                \
+  case m:                                                                                                              \
+    out->op = kX86pInsnX87;                                                                                            \
+    out->x87 = (uint8_t)(k);                                                                                           \
+    out->x87_pops = (uint8_t)(pops);                                                                                   \
+    return
+#define FPA(m, o, rev, pops, mem_int)                                                                                  \
+  case m:                                                                                                              \
+    out->op = kX86pInsnX87;                                                                                            \
+    out->x87 = (uint8_t)kX86pX87InsnArith;                                                                             \
+    out->x87_op = (uint8_t)(o);                                                                                        \
+    out->x87_reverse = (uint8_t)(rev);                                                                                 \
+    out->x87_pops = (uint8_t)(pops);                                                                                   \
+    out->x87_mem_int = (uint8_t)(mem_int);                                                                             \
+    return
+    FP(ZYDIS_MNEMONIC_FLD, kX86pX87InsnLoad);
+    FP(ZYDIS_MNEMONIC_FILD, kX86pX87InsnLoadInt);
+    FPP(ZYDIS_MNEMONIC_FST, kX86pX87InsnStore, 0);
+    FPP(ZYDIS_MNEMONIC_FSTP, kX86pX87InsnStore, 1);
+    FPP(ZYDIS_MNEMONIC_FIST, kX86pX87InsnStoreInt, 0);
+    FPP(ZYDIS_MNEMONIC_FISTP, kX86pX87InsnStoreInt, 1);
+    FPA(ZYDIS_MNEMONIC_FADD, kX86pX87Add, 0, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FADDP, kX86pX87Add, 0, 1, 0);
+    FPA(ZYDIS_MNEMONIC_FIADD, kX86pX87Add, 0, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FSUB, kX86pX87Sub, 0, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FSUBP, kX86pX87Sub, 0, 1, 0);
+    FPA(ZYDIS_MNEMONIC_FSUBR, kX86pX87Sub, 1, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FSUBRP, kX86pX87Sub, 1, 1, 0);
+    FPA(ZYDIS_MNEMONIC_FMUL, kX86pX87Mul, 0, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FMULP, kX86pX87Mul, 0, 1, 0);
+    FPA(ZYDIS_MNEMONIC_FIMUL, kX86pX87Mul, 0, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FISUB, kX86pX87Sub, 0, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FISUBR, kX86pX87Sub, 1, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FIDIV, kX86pX87Div, 0, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FIDIVR, kX86pX87Div, 1, 0, 1);
+    FPA(ZYDIS_MNEMONIC_FDIV, kX86pX87Div, 0, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FDIVP, kX86pX87Div, 0, 1, 0);
+    FPA(ZYDIS_MNEMONIC_FDIVR, kX86pX87Div, 1, 0, 0);
+    FPA(ZYDIS_MNEMONIC_FDIVRP, kX86pX87Div, 1, 1, 0);
+    FPP(ZYDIS_MNEMONIC_FCOM, kX86pX87InsnCompare, 0);
+#define FPI(m, pops)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = kX86pInsnX87;                                                                                            \
+    out->x87 = (uint8_t)kX86pX87InsnCompare;                                                                           \
+    out->x87_pops = (uint8_t)(pops);                                                                                   \
+    out->x87_mem_int = 1;                                                                                              \
+    return
+    FPI(ZYDIS_MNEMONIC_FICOM, 0);
+    FPI(ZYDIS_MNEMONIC_FICOMP, 1);
+#undef FPI
+    FPP(ZYDIS_MNEMONIC_FCOMP, kX86pX87InsnCompare, 1);
+    FPP(ZYDIS_MNEMONIC_FCOMPP, kX86pX87InsnCompare, 2); /* pops TWICE */
+    FPP(ZYDIS_MNEMONIC_FUCOM, kX86pX87InsnCompare, 0);
+    FPP(ZYDIS_MNEMONIC_FUCOMP, kX86pX87InsnCompare, 1);
+    FPP(ZYDIS_MNEMONIC_FUCOMPP, kX86pX87InsnCompare, 2);
+    FP(ZYDIS_MNEMONIC_FXCH, kX86pX87InsnExchange);
+    FP(ZYDIS_MNEMONIC_FCHS, kX86pX87InsnChangeSign);
+    FP(ZYDIS_MNEMONIC_FABS, kX86pX87InsnAbs);
+    FP(ZYDIS_MNEMONIC_FLDZ, kX86pX87InsnConstZero);
+    FP(ZYDIS_MNEMONIC_FLD1, kX86pX87InsnConstOne);
+    FP(ZYDIS_MNEMONIC_FLDPI, kX86pX87InsnConstPi);
+    FP(ZYDIS_MNEMONIC_FNSTSW, kX86pX87InsnStoreStatus);
+    FP(ZYDIS_MNEMONIC_FLDCW, kX86pX87InsnLoadControl);
+    FP(ZYDIS_MNEMONIC_FNSTCW, kX86pX87InsnStoreControl);
+    FP(ZYDIS_MNEMONIC_FFREE, kX86pX87InsnFree);
+    FP(ZYDIS_MNEMONIC_FNINIT, kX86pX87InsnInit);
+#undef FP
+#undef FPP
+#undef FPA
   default:
     break;
   }
@@ -316,7 +416,7 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
   } else {
     int i;
     for (i = 0; i < out->operands; i++) {
-      if (!map_operand(&insn, &ops[i], &out->operand[i])) {
+      if (!map_operand(&insn, &ops[i], &out->operand[i], out->op == kX86pInsnX87)) {
         /* One unmodelled operand makes the whole instruction unsupported.
            A half-filled operand is how an engine executes against a base
            register that was never there. */

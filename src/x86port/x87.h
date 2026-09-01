@@ -147,6 +147,40 @@ typedef enum X86pX87Op {
 int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse);
 
 /*
+ * What an x87 INSTRUCTION does, as the decoder classifies it. Distinct from
+ * X86pX87Op above, which is only the four arithmetic operations: an
+ * instruction also says where its operands come from and what it leaves the
+ * stack looking like.
+ *
+ * The constants are named individually rather than carried as a value, because
+ * FLDPI is not "load 3.14159..." -- it loads the 80-bit constant the hardware
+ * holds, and a literal written out in C source is a different number in the
+ * last few bits.
+ */
+typedef enum X86pX87Insn {
+  kX86pX87InsnLoad = 0,   /* FLD: push a float from memory or ST(i) */
+  kX86pX87InsnLoadInt,    /* FILD: push an integer from memory */
+  kX86pX87InsnStore,      /* FST/FSTP */
+  kX86pX87InsnStoreInt,   /* FIST/FISTP */
+  kX86pX87InsnArith,      /* FADD/FSUB/FMUL/FDIV and their R and P forms */
+  kX86pX87InsnCompare,    /* FCOM/FCOMP/FCOMPP/FUCOM... */
+  kX86pX87InsnExchange,   /* FXCH */
+  kX86pX87InsnChangeSign, /* FCHS */
+  kX86pX87InsnAbs,        /* FABS */
+  kX86pX87InsnConstZero,  /* FLDZ */
+  kX86pX87InsnConstOne,   /* FLD1 */
+  kX86pX87InsnConstPi,    /* FLDPI */
+  kX86pX87InsnStoreStatus,  /* FNSTSW */
+  kX86pX87InsnLoadControl,  /* FLDCW */
+  kX86pX87InsnStoreControl, /* FNSTCW */
+  kX86pX87InsnFree,         /* FFREE */
+  kX86pX87InsnInit,         /* FNINIT */
+  kX86pX87InsnCount         /* MUST stay last */
+} X86pX87Insn;
+
+const char *x86p_x87_insn_name(X86pX87Insn insn);
+
+/*
  * The PORTABLE arithmetic path: compute in the host's widest type, then round
  * to the guest's precision. On an x86 host x86p_x87_arith does not use this --
  * it executes the real instruction under the guest's control word, which

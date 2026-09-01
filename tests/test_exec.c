@@ -357,7 +357,16 @@ static void test_memory_fault_is_named(void) {
    not advance EIP. Silence here would make "the interpreter ran it" and "the
    interpreter skipped it" the same run. */
 static void test_unsupported_is_named_and_does_not_advance(void) {
-  static const uint8_t code[] = {0xd9, 0x44, 0x24, 0x04}; /* FLD dword [esp+4] */
+  /*
+   * FSIN. This was FLD until x87 was wired up and the case started passing for
+   * the wrong reason -- a test whose subject acquires semantics stops testing
+   * anything, and the fix is a genuinely unmodelled instruction, not a
+   * loosened assertion. FSIN is one deliberately: the transcendentals are
+   * refused by name rather than approximated (see the repo's "approximate is
+   * not a synonym for implemented"), so this stays valid until someone decides
+   * otherwise, and then it fails again and asks to be updated.
+   */
+  static const uint8_t code[] = {0xd9, 0xfe}; /* FSIN */
   X86pCpu cpu;
   X86pMem m = arena();
   X86pStepReport rep;
@@ -366,8 +375,8 @@ static void test_unsupported_is_named_and_does_not_advance(void) {
   cpu.eip = CODE_BASE;
 
   CHECK_EQ_U(x86p_step(&cpu, &m, &rep), kX86pStepUnsupported);
-  CHECK(strcmp(rep.mnemonic, "FLD") == 0);
-  CHECK_EQ_U(rep.length, 4u); /* it DECODED; only the semantics are missing */
+  CHECK(strcmp(rep.mnemonic, "FSIN") == 0);
+  CHECK_EQ_U(rep.length, 2u); /* it DECODED; only the semantics are missing */
   CHECK_EQ_U(rep.op, kX86pInsnUnsupported);
   CHECK_EQ_U(cpu.eip, CODE_BASE);
 }
