@@ -22,11 +22,44 @@ Two facts from that measurement shape this repo:
   failures read `mnemonic PFMUL`. Its per-instruction semantics are worth
   seeding from; its decode does not exist to seed from. Ghidra is a
   maintainer-only tool and can never be a player prerequisite, so this framework
-  needs a decoder of its own. **That decision is still open (I004).**
+  needs a decoder of its own. **Settled 2026-09-01: Zydis, pinned at v4.1.1 in
+  `vendor/zydis`** — see "Why Zydis, and how we know" below.
 - **90% of those 8,234 holes are 3DNow!, and it is twenty opcodes.** That is why
   `src/x86port/three_dnow.c` is the first thing here: it is the largest single
   piece of coverage, and the only substantial one that does not depend on the
   decoder decision.
+
+## Why Zydis, and how we know
+
+Decode is mechanical, exhaustively specified, and has no opinion about memory
+models, threading, or code caches — so embedding a proven implementation costs
+nothing architecturally, unlike embedding a whole CPU core, which brings all
+three. Zydis is MIT, allocation-free, and ships pre-generated tables, so it adds
+no build-time code generation (G001). Semantics stay ours: S043's whole point is
+that we are the authority on what correct means.
+
+**The choice is measured, not argued.** `pc/xmen2`'s Ghidra export carries the
+raw bytes of every instruction beside Ghidra's own reading of them, which is an
+offline second opinion over the whole shipped corpus:
+
+```sh
+python3 tools/corpus_extract.py ~/repo/pc/xmen2/scratch/recomp | ./build/x86p_decode_diff
+```
+
+Result, 2026-09-01, over **2,168,629 instructions from 20 modules**:
+
+- **0 failed to decode.**
+- **37 length disagreements (0.0017%), and all 37 are the same convention**: the
+  `0x9B` prefix, where Ghidra folds `FWAIT` into the following x87 instruction
+  (`FSTSW` 24, `FSTCW` 11, `FSAVE` 2) and Zydis reports it as the separate
+  instruction it architecturally is. Neither is wrong, and the literal reading
+  is the one an interpreter wants, because the CPU really does execute two
+  instructions there. **It is not special-cased**: an instrument that silences a
+  category cannot tell you when a real defect joins it.
+- 20,790 mnemonic spellings differ (0.96%), all benign synonyms — `JGE`/`JNL`,
+  `JA`/`JNBE`, Ghidra folding `REP` into the mnemonic. Two are worth knowing:
+  Zydis 4.1 renders `PFRSQRT` as `PFSQRT` and `PFRCPIT1` as `PFCPIT1`, each a
+  letter short. `x86p_3dnow_parse` accepts both spellings because of this run.
 
 ## Boundaries
 

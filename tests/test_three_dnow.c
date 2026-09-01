@@ -97,6 +97,21 @@ static void test_parse_rejects_what_it_should(void) {
   }
   CHECK_EQ_U(rejected, n); /* denominator: every bad spelling probed */
 
+  /* The decoder's own spellings, measured against 2.17M real instructions:
+     zydis 4.1 renders PFRSQRT as "PFSQRT" and PFRCPIT1 as "PFCPIT1". Both must
+     reach the right opcode, and neither may displace a canonical name. */
+  {
+    X86pPfOp got = kX86pPfCount;
+    CHECK(x86p_3dnow_parse("PFSQRT", &got) && got == kX86pPfRsqrt);
+    CHECK(x86p_3dnow_parse("PFCPIT1", &got) && got == kX86pPfRcpIt1);
+    CHECK(x86p_3dnow_parse("PFRSQRT", &got) && got == kX86pPfRsqrt);
+    CHECK(x86p_3dnow_parse("PFRCPIT1", &got) && got == kX86pPfRcpIt1);
+    /* An alias is an INPUT only: the canonical spelling is what the engine
+       reports back, so a refusal message never uses zydis's. */
+    CHECK(strcmp(x86p_3dnow_name(kX86pPfRsqrt), "PFRSQRT") == 0);
+    CHECK(strcmp(x86p_3dnow_name(kX86pPfRcpIt1), "PFRCPIT1") == 0);
+  }
+
   /* Case-insensitive, like every other mnemonic surface. */
   {
     X86pPfOp got = kX86pPfCount;
