@@ -21,7 +21,8 @@ add_library(x86port STATIC
   src/x86port/flags.c
   src/x86port/alu.c
   src/x86port/cpu.c
-  src/x86port/cond.c)
+  src/x86port/cond.c
+  src/x86port/exec.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PRIVATE Zydis)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
@@ -67,3 +68,8 @@ add_executable(test_cond tests/test_cond.c)
 target_link_libraries(test_cond PRIVATE x86port)
 target_compile_options(test_cond PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_cond COMMAND test_cond)
+
+add_executable(test_exec tests/test_exec.c)
+target_link_libraries(test_exec PRIVATE x86port)
+target_compile_options(test_exec PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_exec COMMAND test_exec)

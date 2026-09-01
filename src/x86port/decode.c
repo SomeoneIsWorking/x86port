@@ -42,10 +42,239 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
   return g_mnemonic[m];
 }
 
+/* ---- Zydis -> this framework's own terms --------------------------------
+ *
+ * Everything below exists so that nothing outside this file includes Zydis.
+ * See the operand comment in decode.h for why that boundary is the decoder
+ * decision rather than a tidiness preference.
+ */
+
+static const char *kOpNames[] = {"unsupported", "alu", "alu-unary", "mov",    "movzx", "movsx", "lea",
+                                 "push",        "pop", "xchg",      "jmp",    "jcc",   "setcc", "cmovcc",
+                                 "call",        "ret", "leave",     "nop",    "cdq",   "cwde",  "mul",
+                                 "imul",        "div", "idiv",      "pushfd", "popfd"};
+_Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
+
+const char *x86p_insn_op_name(int op) {
+  if (op < 0 || op >= (int)kX86pInsnOpCount) {
+    return "unknown";
+  }
+  return kOpNames[op];
+}
+
+/*
+ * A Zydis register to an ENCODED register number plus a width.
+ *
+ * Zydis numbers its 8-bit class AL, CL, DL, BL, AH, CH, DH, BH -- which is the
+ * encoding's own order and therefore exactly cpu.h's byte-register convention,
+ * where 4-7 are high bytes. That agreement is asserted by a test rather than
+ * assumed here, because it is the kind of thing a library is entitled to
+ * change and we are not entitled to be surprised by.
+ *
+ * Returns 0 for a register this framework has no model for -- segment,
+ * control, debug, x87, MMX, SSE -- so the caller refuses by name instead of
+ * silently executing against register 0, which is EAX.
+ */
+static int map_register(ZydisRegister r, int8_t *index, uint8_t *size) {
+  ZydisRegisterClass cls = ZydisRegisterGetClass(r);
+  ZyanI8 id = ZydisRegisterGetId(r);
+  if (id < 0 || id > 7) {
+    return 0; /* a 64-bit or extended register cannot appear in 32-bit code */
+  }
+  switch (cls) {
+  case ZYDIS_REGCLASS_GPR8:
+    *index = (int8_t)id;
+    *size = 1;
+    return 1;
+  case ZYDIS_REGCLASS_GPR16:
+    *index = (int8_t)id;
+    *size = 2;
+    return 1;
+  case ZYDIS_REGCLASS_GPR32:
+    *index = (int8_t)id;
+    *size = 4;
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Fill one operand. Returns 0 when it is a shape this framework does not
+   model, which makes the whole instruction unsupported rather than partly
+   decoded -- a half-filled operand is how an engine executes against a base
+   register that was never there. */
+static int map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out) {
+  memset(out, 0, sizeof *out);
+  out->reg = -1;
+  out->base = -1;
+  out->index = -1;
+  out->scale = 1;
+
+  switch (o->type) {
+  case ZYDIS_OPERAND_TYPE_REGISTER: {
+    uint8_t size = 0;
+    if (!map_register(o->reg.value, &out->reg, &size)) {
+      return 0;
+    }
+    out->kind = kX86pOperandReg;
+    out->size = size;
+    return 1;
+  }
+  case ZYDIS_OPERAND_TYPE_MEMORY: {
+    /* A segment override is not modelled: the guest is a flat-model Win32
+       process, so FS and GS are the only meaningful ones and they are a
+       different mechanism (the TEB), not a base to fold into an address. An
+       instruction carrying one is refused by name rather than executed as
+       though the override were absent. */
+    if (insn->attributes & (ZYDIS_ATTRIB_HAS_SEGMENT_FS | ZYDIS_ATTRIB_HAS_SEGMENT_GS)) {
+      return 0;
+    }
+    if (o->mem.base != ZYDIS_REGISTER_NONE) {
+      uint8_t bsize = 0;
+      if (!map_register(o->mem.base, &out->base, &bsize) || bsize != 4) {
+        return 0; /* 16-bit addressing is not something this guest emits */
+      }
+    }
+    if (o->mem.index != ZYDIS_REGISTER_NONE) {
+      uint8_t isize = 0;
+      if (!map_register(o->mem.index, &out->index, &isize) || isize != 4) {
+        return 0;
+      }
+    }
+    out->scale = o->mem.scale ? o->mem.scale : 1;
+    out->disp = o->mem.disp.has_displacement ? (int32_t)o->mem.disp.value : 0;
+    out->kind = kX86pOperandMem;
+    out->size = (uint8_t)(o->size / 8);
+    if (out->size != 1 && out->size != 2 && out->size != 4) {
+      return 0; /* 8- and 10-byte operands are x87/MMX/SSE, not this module */
+    }
+    return 1;
+  }
+  case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+    out->kind = kX86pOperandImm;
+    /* Sign-extension has ALREADY happened, by Zydis, per the encoding: a
+       byte immediate in `ADD EAX, imm8` really does mean a sign-extended
+       dword, and leaving it to each caller is how one of them forgets. */
+    out->imm = (uint32_t)o->imm.value.u;
+    out->relative = o->imm.is_relative ? 1u : 0u;
+    out->size = (uint8_t)(o->size / 8);
+    if (out->size == 0 || out->size > 4) {
+      out->size = 4;
+    }
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Mnemonic -> what we model. Anything absent stays Unsupported, which is a
+   REPORTABLE outcome carrying the mnemonic, not a silent no-op. */
+static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
+  switch (insn->mnemonic) {
+#define ALU(m, a)                                                                                                      \
+  case m:                                                                                                              \
+    out->op = kX86pInsnAlu;                                                                                            \
+    out->alu = (uint8_t)(a);                                                                                           \
+    return
+    ALU(ZYDIS_MNEMONIC_ADD, kX86pAluAdd);
+    ALU(ZYDIS_MNEMONIC_OR, kX86pAluOr);
+    ALU(ZYDIS_MNEMONIC_ADC, kX86pAluAdc);
+    ALU(ZYDIS_MNEMONIC_SBB, kX86pAluSbb);
+    ALU(ZYDIS_MNEMONIC_AND, kX86pAluAnd);
+    ALU(ZYDIS_MNEMONIC_SUB, kX86pAluSub);
+    ALU(ZYDIS_MNEMONIC_XOR, kX86pAluXor);
+    ALU(ZYDIS_MNEMONIC_CMP, kX86pAluCmp);
+    ALU(ZYDIS_MNEMONIC_TEST, kX86pAluTest);
+    ALU(ZYDIS_MNEMONIC_SHL, kX86pAluShl);
+    ALU(ZYDIS_MNEMONIC_SHR, kX86pAluShr);
+    ALU(ZYDIS_MNEMONIC_SAR, kX86pAluSar);
+    ALU(ZYDIS_MNEMONIC_ROL, kX86pAluRol);
+    ALU(ZYDIS_MNEMONIC_ROR, kX86pAluRor);
+    ALU(ZYDIS_MNEMONIC_RCL, kX86pAluRcl);
+    ALU(ZYDIS_MNEMONIC_RCR, kX86pAluRcr);
+#undef ALU
+#define UN(m, a)                                                                                                       \
+  case m:                                                                                                              \
+    out->op = kX86pInsnAluUnary;                                                                                       \
+    out->alu = (uint8_t)(a);                                                                                           \
+    return
+    UN(ZYDIS_MNEMONIC_NOT, kX86pAluNot);
+    UN(ZYDIS_MNEMONIC_NEG, kX86pAluNeg);
+    UN(ZYDIS_MNEMONIC_INC, kX86pAluInc);
+    UN(ZYDIS_MNEMONIC_DEC, kX86pAluDec);
+#undef UN
+#define SIMPLE(m, o)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = (uint8_t)(o);                                                                                            \
+    return
+    SIMPLE(ZYDIS_MNEMONIC_MOV, kX86pInsnMov);
+    SIMPLE(ZYDIS_MNEMONIC_MOVZX, kX86pInsnMovzx);
+    SIMPLE(ZYDIS_MNEMONIC_MOVSX, kX86pInsnMovsx);
+    SIMPLE(ZYDIS_MNEMONIC_LEA, kX86pInsnLea);
+    SIMPLE(ZYDIS_MNEMONIC_PUSH, kX86pInsnPush);
+    SIMPLE(ZYDIS_MNEMONIC_POP, kX86pInsnPop);
+    SIMPLE(ZYDIS_MNEMONIC_XCHG, kX86pInsnXchg);
+    SIMPLE(ZYDIS_MNEMONIC_JMP, kX86pInsnJmp);
+    SIMPLE(ZYDIS_MNEMONIC_CALL, kX86pInsnCall);
+    SIMPLE(ZYDIS_MNEMONIC_RET, kX86pInsnRet);
+    SIMPLE(ZYDIS_MNEMONIC_LEAVE, kX86pInsnLeave);
+    SIMPLE(ZYDIS_MNEMONIC_NOP, kX86pInsnNop);
+    SIMPLE(ZYDIS_MNEMONIC_CDQ, kX86pInsnCdq);
+    SIMPLE(ZYDIS_MNEMONIC_CWDE, kX86pInsnCwde);
+    SIMPLE(ZYDIS_MNEMONIC_MUL, kX86pInsnMul);
+    SIMPLE(ZYDIS_MNEMONIC_IMUL, kX86pInsnImul);
+    SIMPLE(ZYDIS_MNEMONIC_DIV, kX86pInsnDiv);
+    SIMPLE(ZYDIS_MNEMONIC_IDIV, kX86pInsnIdiv);
+    SIMPLE(ZYDIS_MNEMONIC_PUSHFD, kX86pInsnPushfd);
+    SIMPLE(ZYDIS_MNEMONIC_POPFD, kX86pInsnPopfd);
+#undef SIMPLE
+  default:
+    break;
+  }
+  /* The conditional families. Zydis names each condition as its own mnemonic,
+     so this is the one place the 16-way fan-out is written; everything
+     downstream carries an X86pCond. */
+#define CC(jm, sm, cm, c)                                                                                              \
+  if (insn->mnemonic == (jm)) {                                                                                        \
+    out->op = kX86pInsnJcc;                                                                                            \
+    out->cond = (uint8_t)(c);                                                                                          \
+    return;                                                                                                            \
+  }                                                                                                                    \
+  if (insn->mnemonic == (sm)) {                                                                                        \
+    out->op = kX86pInsnSetcc;                                                                                          \
+    out->cond = (uint8_t)(c);                                                                                          \
+    return;                                                                                                            \
+  }                                                                                                                    \
+  if (insn->mnemonic == (cm)) {                                                                                        \
+    out->op = kX86pInsnCmovcc;                                                                                         \
+    out->cond = (uint8_t)(c);                                                                                          \
+    return;                                                                                                            \
+  }
+  CC(ZYDIS_MNEMONIC_JO, ZYDIS_MNEMONIC_SETO, ZYDIS_MNEMONIC_CMOVO, kX86pCondO)
+  CC(ZYDIS_MNEMONIC_JNO, ZYDIS_MNEMONIC_SETNO, ZYDIS_MNEMONIC_CMOVNO, kX86pCondNO)
+  CC(ZYDIS_MNEMONIC_JB, ZYDIS_MNEMONIC_SETB, ZYDIS_MNEMONIC_CMOVB, kX86pCondB)
+  CC(ZYDIS_MNEMONIC_JNB, ZYDIS_MNEMONIC_SETNB, ZYDIS_MNEMONIC_CMOVNB, kX86pCondNB)
+  CC(ZYDIS_MNEMONIC_JZ, ZYDIS_MNEMONIC_SETZ, ZYDIS_MNEMONIC_CMOVZ, kX86pCondZ)
+  CC(ZYDIS_MNEMONIC_JNZ, ZYDIS_MNEMONIC_SETNZ, ZYDIS_MNEMONIC_CMOVNZ, kX86pCondNZ)
+  CC(ZYDIS_MNEMONIC_JBE, ZYDIS_MNEMONIC_SETBE, ZYDIS_MNEMONIC_CMOVBE, kX86pCondBE)
+  CC(ZYDIS_MNEMONIC_JNBE, ZYDIS_MNEMONIC_SETNBE, ZYDIS_MNEMONIC_CMOVNBE, kX86pCondA)
+  CC(ZYDIS_MNEMONIC_JS, ZYDIS_MNEMONIC_SETS, ZYDIS_MNEMONIC_CMOVS, kX86pCondS)
+  CC(ZYDIS_MNEMONIC_JNS, ZYDIS_MNEMONIC_SETNS, ZYDIS_MNEMONIC_CMOVNS, kX86pCondNS)
+  CC(ZYDIS_MNEMONIC_JP, ZYDIS_MNEMONIC_SETP, ZYDIS_MNEMONIC_CMOVP, kX86pCondP)
+  CC(ZYDIS_MNEMONIC_JNP, ZYDIS_MNEMONIC_SETNP, ZYDIS_MNEMONIC_CMOVNP, kX86pCondNP)
+  CC(ZYDIS_MNEMONIC_JL, ZYDIS_MNEMONIC_SETL, ZYDIS_MNEMONIC_CMOVL, kX86pCondL)
+  CC(ZYDIS_MNEMONIC_JNL, ZYDIS_MNEMONIC_SETNL, ZYDIS_MNEMONIC_CMOVNL, kX86pCondGE)
+  CC(ZYDIS_MNEMONIC_JLE, ZYDIS_MNEMONIC_SETLE, ZYDIS_MNEMONIC_CMOVLE, kX86pCondLE)
+  CC(ZYDIS_MNEMONIC_JNLE, ZYDIS_MNEMONIC_SETNLE, ZYDIS_MNEMONIC_CMOVNLE, kX86pCondG)
+#undef CC
+  out->op = kX86pInsnUnsupported;
+}
+
 uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
   static ZydisDecoder decoder;
   static int decoder_ready;
   ZydisDecodedInstruction insn;
+  ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
 
   if (!bytes || !out || len == 0) {
     return 0;
@@ -66,16 +295,36 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
     decoder_ready = 1;
   }
 
-  if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&decoder, ZYAN_NULL, (const void *)bytes, len, &insn))) {
+  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, (const void *)bytes, len, &insn, ops))) {
     return 0;
   }
   if (insn.length == 0) { /* cannot happen on success; a zero would loop a caller forever */
     return 0;
   }
 
+  memset(out, 0, sizeof *out);
   out->length = insn.length;
   out->mnemonic = upper_mnemonic(insn.mnemonic);
   out->operands = insn.operand_count_visible;
+  map_mnemonic(&insn, out);
+
+  if (out->operands > X86P_MAX_OPERANDS) {
+    /* More explicit operands than this model holds. Refused by name rather
+       than truncated: an instruction executed without its third operand is
+       a different instruction. */
+    out->op = kX86pInsnUnsupported;
+  } else {
+    int i;
+    for (i = 0; i < out->operands; i++) {
+      if (!map_operand(&insn, &ops[i], &out->operand[i])) {
+        /* One unmodelled operand makes the whole instruction unsupported.
+           A half-filled operand is how an engine executes against a base
+           register that was never there. */
+        out->op = kX86pInsnUnsupported;
+        break;
+      }
+    }
+  }
   return insn.length;
 }
 

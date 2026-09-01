@@ -121,6 +121,14 @@ int main(void) {
   unsigned long name_agree = 0, name_differ = 0;
   struct NamePair pairs[NAMEPAIRS];
   int npairs = 0;
+  /* Semantic coverage, which is a DIFFERENT question from decode coverage and
+     the one that says how far an interpreter could actually get. An
+     instruction can decode perfectly and still have no semantics in this
+     build; keeping the two numbers apart stops a decoder that reads
+     everything and an engine that runs nothing from looking like progress. */
+  unsigned long modelled = 0, unmodelled = 0;
+  struct NamePair unmodelled_by_name[NAMEPAIRS];
+  int nunmodelled = 0;
   char undec_sample[SAMPLES][MAX_LINE];
   int nundec = 0;
   char lendis_sample[SAMPLES][MAX_LINE];
@@ -163,6 +171,15 @@ int main(void) {
         snprintf(undec_sample[nundec++], MAX_LINE, "%s  corpus says %s (%ld bytes)", line, corpus_mn, corpus_len);
       }
       continue;
+    }
+
+    if (insn.op == kX86pInsnUnsupported) {
+      unmodelled++;
+      /* Counted BY MNEMONIC, because "unmodelled: 400,000" is a number and
+         "FLD 25185, FSTP 21115" is a work list. */
+      note_pair(unmodelled_by_name, &nunmodelled, corpus_mn, "");
+    } else {
+      modelled++;
     }
 
     if ((long)insn.length == corpus_len) {
@@ -218,6 +235,41 @@ int main(void) {
      shrinking the denominator. */
   {
     unsigned long accounted = malformed + undecodable + len_agree + len_disagree;
+    /* THE COVERAGE LINE. Decode agreement says the bytes were read correctly;
+     this says how many of them this build could actually execute. */
+    printf("\nsemantics in this build: %lu of %lu modelled (%.2f%%), %lu unmodelled\n",
+           modelled,
+           total,
+           100.0 * (double)modelled / (double)(total ? total : 1),
+           unmodelled);
+    if (nunmodelled > 0) {
+      int ui;
+      printf("  unmodelled by mnemonic -- the work list, ranked, since ranking is\n"
+             "  what turned \"8,234 holes\" into \"twenty 3DNow! opcodes\":\n");
+      for (ui = 0; ui < nunmodelled; ui++) {
+        int uj, best = ui;
+        for (uj = ui + 1; uj < nunmodelled; uj++) {
+          if (unmodelled_by_name[uj].n > unmodelled_by_name[best].n) {
+            best = uj;
+          }
+        }
+        if (best != ui) {
+          struct NamePair t = unmodelled_by_name[ui];
+          unmodelled_by_name[ui] = unmodelled_by_name[best];
+          unmodelled_by_name[best] = t;
+        }
+        if (ui < 20) {
+          printf("    %-14s %8lu  (%.3f%%)\n",
+                 unmodelled_by_name[ui].corpus,
+                 unmodelled_by_name[ui].n,
+                 100.0 * (double)unmodelled_by_name[ui].n / (double)(total ? total : 1));
+        }
+      }
+      if (nunmodelled > 20) {
+        printf("    ... and %d more distinct mnemonic(s)\n", nunmodelled - 20);
+      }
+    }
+
     printf("  accounted for: %lu of %lu%s\n",
            accounted,
            total,
