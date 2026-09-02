@@ -41,12 +41,17 @@ typedef struct X86pJitEngine X86pJitEngine;
 /* Why a run stopped. Every one of these is a REPORTED outcome; none of them is
    a state the caller has to infer from the CPU. */
 typedef enum X86pJitRunStatus {
-  kX86pRunBudget = 0,      /* ran the requested number of instructions, no more */
-  kX86pRunDecodeFailed,    /* the bytes at EIP are not an instruction */
-  kX86pRunUnsupported,     /* named, but neither backend nor interpreter has it */
-  kX86pRunFetchFault,      /* EIP itself is not in mapped memory */
-  kX86pRunMemoryFault,     /* a guest access was refused; cpu->eip is on it */
-  kX86pRunDivideError,     /* #DE: the guest must receive this */
+  kX86pRunBudget = 0,   /* ran the requested number of instructions, no more */
+  kX86pRunDecodeFailed, /* the bytes at EIP are not an instruction */
+  kX86pRunUnsupported,  /* named, but neither backend nor interpreter has it */
+  kX86pRunFetchFault,   /* EIP itself is not in mapped memory */
+  kX86pRunMemoryFault,  /* a guest access was refused; cpu->eip is on it */
+  kX86pRunDivideError,  /* #DE: the guest must receive this */
+  /* Traps and faults the guest actually took. Distinct from Unsupported: the
+     instruction is modelled and this is its outcome. See exec.h. */
+  kX86pRunInterrupt,
+  kX86pRunProtectionFault,
+  kX86pRunBoundRange,
   kX86pRunTranslateFailed, /* the block at this EIP could not be translated */
   kX86pRunOutOfCode,       /* the code region filled and a flush did not help */
   kX86pRunStatusCount      /* MUST stay last: the denominator */

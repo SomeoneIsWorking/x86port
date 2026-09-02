@@ -31,6 +31,12 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
     return "memory fault";
   case kX86pRunDivideError:
     return "divide error";
+  case kX86pRunInterrupt:
+    return "software interrupt";
+  case kX86pRunProtectionFault:
+    return "general-protection fault (a ring-3 process may not do that)";
+  case kX86pRunBoundRange:
+    return "bound range exceeded";
   case kX86pRunTranslateFailed:
     return "translation failed";
   case kX86pRunOutOfCode:
@@ -236,6 +242,12 @@ static X86pJitRunStatus from_step(X86pStepStatus s) {
     return kX86pRunMemoryFault;
   case kX86pStepDivideError:
     return kX86pRunDivideError;
+  case kX86pStepInterrupt:
+    return kX86pRunInterrupt;
+  case kX86pStepProtectionFault:
+    return kX86pRunProtectionFault;
+  case kX86pStepBoundRange:
+    return kX86pRunBoundRange;
   case kX86pStepStatusCount:
     break;
   }

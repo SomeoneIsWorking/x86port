@@ -1049,6 +1049,12 @@ static uint32_t jit_helper_execute(X86pCpu *cpu, const X86pMem *mem, const X86pI
     return 0u;
   case kX86pStepDivideError:
     return (uint32_t)kX86pJitExitDivideError;
+  case kX86pStepInterrupt:
+    return (uint32_t)kX86pJitExitInterrupt;
+  case kX86pStepProtectionFault:
+    return (uint32_t)kX86pJitExitProtectionFault;
+  case kX86pStepBoundRange:
+    return (uint32_t)kX86pJitExitBoundRange;
   case kX86pStepUnsupported:
     /* can_emit refused to route an unsupported instruction here, so reaching
        this is a defect in this file rather than in the guest. Reported as an

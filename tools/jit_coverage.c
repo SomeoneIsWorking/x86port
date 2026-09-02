@@ -423,9 +423,18 @@ int main(int argc, char **argv) {
                   ci.flags.r != cj.flags.r || ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
                 printf("    flags: interp kind=%d a=%08X b=%08X r=%08X w=%d cin=%u | jit kind=%d a=%08X b=%08X "
                        "r=%08X w=%d cin=%u\n",
-                       (int)ci.flags.kind, ci.flags.a, ci.flags.b, ci.flags.r, ci.flags.w,
-                       (unsigned)ci.flags.carry_in, (int)cj.flags.kind, cj.flags.a, cj.flags.b, cj.flags.r,
-                       cj.flags.w, (unsigned)cj.flags.carry_in);
+                       (int)ci.flags.kind,
+                       ci.flags.a,
+                       ci.flags.b,
+                       ci.flags.r,
+                       ci.flags.w,
+                       (unsigned)ci.flags.carry_in,
+                       (int)cj.flags.kind,
+                       cj.flags.a,
+                       cj.flags.b,
+                       cj.flags.r,
+                       cj.flags.w,
+                       (unsigned)cj.flags.carry_in);
               }
               if (ci.x87.top != cj.x87.top) {
                 printf("    x87 top: interp=%u jit=%u\n", ci.x87.top, cj.x87.top);

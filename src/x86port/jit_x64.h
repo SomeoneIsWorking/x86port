@@ -68,6 +68,12 @@ typedef enum X86pJitExit {
    * would deliver a page fault for a division by zero.
    */
   kX86pJitExitDivideError,
+  /* Not gaps: outcomes. See exec.h -- an INT3 in a game binary usually means
+     execution reached alignment padding, and saying so is more useful than
+     saying the translator gave up. */
+  kX86pJitExitInterrupt,
+  kX86pJitExitProtectionFault,
+  kX86pJitExitBoundRange,
   kX86pJitExitCount /* MUST stay last */
 } X86pJitExit;
 

@@ -34,7 +34,18 @@ typedef enum X86pStepStatus {
   kX86pStepFetchFault,   /* EIP itself is not in mapped memory */
   kX86pStepMemoryFault,  /* the instruction touched unmapped memory */
   kX86pStepDivideError,  /* #DE: the guest must receive this */
-  kX86pStepStatusCount   /* MUST stay last */
+  /*
+   * The traps and faults below are OUTCOMES, not gaps. An instruction that
+   * reports one has been fully modelled: this is what it does. Keeping them
+   * distinct from Unsupported is the difference between "this engine has not
+   * implemented HLT" and "the guest executed HLT, which a ring-3 process may
+   * not do" -- and in a game binary the second usually means execution reached
+   * alignment padding, which is worth saying out loud.
+   */
+  kX86pStepInterrupt,       /* INT n, INT3, INT1, INTO: `trap_vector` says which */
+  kX86pStepProtectionFault, /* #GP: a privileged or I/O instruction at ring 3 */
+  kX86pStepBoundRange,      /* #BR: BOUND found the index outside its pair */
+  kX86pStepStatusCount      /* MUST stay last */
 } X86pStepStatus;
 
 /*
@@ -51,6 +62,7 @@ typedef struct X86pStepReport {
   const char *mnemonic; /* never null after a decode; "?" otherwise */
   uint8_t op;           /* X86pInsnOp */
   uint32_t fault_addr;  /* the guest address that faulted, when one did */
+  uint8_t trap_vector;  /* the interrupt vector, when status is Interrupt; also on the CPU */
 } X86pStepReport;
 
 /*

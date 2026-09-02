@@ -204,6 +204,29 @@ typedef enum X86pInsnOp {
   kX86pInsnLoope,
   kX86pInsnLoopne,
   kX86pInsnJecxz,
+  /* Traps. INT3 is by far the most common instruction left in a game binary
+     that nothing executes: 0xCC is MSVC's alignment filler between functions,
+     so a linear walk meets hundreds of them and a running program meets none.
+     Modelled as the breakpoint trap it is, which is both correct and the
+     honest thing to report if one is ever reached. */
+  kX86pInsnInt3,
+  kX86pInsnInt1,
+  kX86pInsnInt,   /* operand[0] is the vector */
+  kX86pInsnInto,  /* trap only when OF is set */
+  kX86pInsnIretd, /* pop EIP, CS and EFLAGS */
+  kX86pInsnBound, /* #BR when the index is outside the pair in memory */
+  kX86pInsnArpl,  /* adjust the requested privilege level */
+  kX86pInsnSldt,  /* store the local descriptor table selector */
+  kX86pInsnLfp,   /* LES/LDS/LFS/LGS/LSS: a far pointer into Sreg:r32 */
+  /* Privileged and I/O, which a ring-3 process may not execute. `privilege.h`
+     owns which, and why that is semantics rather than a gap. */
+  kX86pInsnHlt,
+  kX86pInsnWbinvd,
+  kX86pInsnCli,
+  kX86pInsnSti,
+  kX86pInsnPortIo, /* IN, OUT, INS, OUTS -- one kind, since one outcome */
+  kX86pInsnCpuid,
+  kX86pInsnRdtsc,
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
 
@@ -285,6 +308,7 @@ typedef struct X86pInsn {
   uint8_t simd;        /* X86pSimdOp, when op == kX86pInsnSimd */
   uint8_t bcd;         /* X86pBcdOp, when op == kX86pInsnBcd */
   uint8_t bit;         /* X86pBitOp, when op == kX86pInsnBit */
+  uint8_t seg_dest;    /* X86pSegReg loaded by kX86pInsnLfp */
   uint8_t pf;          /* X86pPfOp, when simd == kX86pSimdPf */
   /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
      two's-complement INTEGER, not as a float of the same width. Recorded here

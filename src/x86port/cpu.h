@@ -123,6 +123,19 @@ typedef struct X86pCpu {
      instruction whose result would depend on it says so rather than assuming
      the default. */
   uint32_t mxcsr;
+  /* The local descriptor table selector SLDT reports. A flat Win32 process has
+     no LDT of its own, so this is zero unless something sets it -- stated as a
+     field rather than as a constant in exec.c because it is machine state, and
+     a reader looking for what SLDT returns should find it here. */
+  uint16_t ldtr;
+  /* The vector of the last software interrupt or trap. Written only alongside
+     kX86pStepInterrupt; kept on the CPU rather than returned, so the JIT's
+     helper path reports the same fact as the interpreter's. */
+  uint8_t trap_vector;
+  /* The timestamp counter RDTSC reports. On the CPU rather than in a static,
+     so two engines running two guests do not share one clock -- and so a reset
+     genuinely resets it. */
+  uint64_t tsc;
 } X86pCpu;
 
 /*
