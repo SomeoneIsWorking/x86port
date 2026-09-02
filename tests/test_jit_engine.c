@@ -169,17 +169,30 @@ static void test_engine_matches_interpreter_on_a_looping_program(void) {
      that this file did anything. */
   CHECK(st.blocks_translated > 0u);
   CHECK(st.blocks_entered > st.blocks_translated); /* the cache was HIT */
-  CHECK(st.fallback_steps > 0u);                   /* PUSHFD really did fall back */
-  /* And by the FAST route: a block that stops on an unmodelled instruction
-     steps it directly, rather than exiting, missing the cache, translating, and
-     being refused. Both are correct; only one of them is not quadratic in a hot
-     loop, and nothing in the guest state can tell them apart. */
-  CHECK(st.fallback_after_block > 0u);
+  /*
+   * NO fallback steps, and this is the point of the helper route.
+   *
+   * PUSHFD has no x86-64 emitter here, and it used to END the block: the
+   * engine exited, stepped the interpreter once, and translated again from the
+   * next address -- every time round the loop. It is now executed by a call
+   * from INSIDE the block, so the loop is one block entered repeatedly and the
+   * dispatch loop never steps at all.
+   *
+   * Asserted as an equality rather than a bound: "fell back less often" would
+   * still pass if a future change quietly reintroduced the split.
+   */
+  CHECK(st.fallback_steps == 0u);
+  CHECK(st.fallback_after_block == 0u);
+  /* And the instructions really did go through the helper rather than the
+     block having silently skipped them. */
+  CHECK(st.guest_insns_via_helper > 0u);
   CHECK(st.guest_insns_translated > 0u);
-  printf("    %llu block(s) translated, %llu entered, %llu fallback step(s), %llu byte(s) of code, via %s\n",
+  printf("    %llu block(s) translated, %llu entered, %llu fallback step(s), %llu via helper, %llu "
+         "byte(s) of code, via %s\n",
          (unsigned long long)st.blocks_translated,
          (unsigned long long)st.blocks_entered,
          (unsigned long long)st.fallback_steps,
+         (unsigned long long)st.guest_insns_via_helper,
          (unsigned long long)st.code_bytes_used,
          x86p_jit_engine_mechanism());
 

@@ -64,6 +64,8 @@ const char *x86p_jit_exit_name(X86pJitExit e) {
     return "unsupported instruction";
   case kX86pJitExitMemoryFault:
     return "guest memory fault";
+  case kX86pJitExitDivideError:
+    return "divide error";
   case kX86pJitExitCount:
   default:
     return "?";
@@ -430,7 +432,26 @@ typedef struct BlockCtx {
   MemPlan plan;
   X86pEmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
+  /*
+   * Sites where a helper reported a non-Ok status. They go to a DIFFERENT stub
+   * from the bounds-check faults: that stub decides the exit code and the guest
+   * EIP itself, whereas here the helper has already set both -- the exit code
+   * is in EAX and EIP was left on the instruction. A shared stub would
+   * overwrite one with the other.
+   */
+  X86pEmitSite helper_faults[MAX_INSNS];
+  unsigned nhelper_faults;
+  unsigned helper_calls;
+  const X86pMem *mem;
 } BlockCtx;
+
+static void note_helper_fault(BlockCtx *c, X86pEmitSite site) {
+  if (c->nhelper_faults < sizeof c->helper_faults / sizeof c->helper_faults[0]) {
+    c->helper_faults[c->nhelper_faults++] = site;
+    return;
+  }
+  c->e->overflow = 1;
+}
 
 static void note_fault(BlockCtx *c, X86pEmitSite site) {
   if (c->nfaults < sizeof c->faults / sizeof c->faults[0]) {
@@ -973,6 +994,139 @@ static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
  * misaligned, and misalignment does not fault: it corrupts whichever helper
  * first touches aligned SSE state, far from here.
  */
+/*
+ * THE INTERPRETER, CALLED FROM INSIDE A TRANSLATED BLOCK.
+ *
+ * Not a fallback: a fallback ends the block, returns to the dispatch loop,
+ * steps once and translates again from the next address, and a function full
+ * of floating point would spend its life doing that. This runs the instruction
+ * WITHOUT leaving the block, so an FLD in the middle of otherwise-translatable
+ * code costs a call rather than a round trip -- and, more to the point, does
+ * not truncate the block at the first one.
+ *
+ * WHY THIS IS NOT A SECOND SEMANTICS. It is the same x86p_execute_decoded the
+ * interpreter uses, on the same decoded instruction, so there is nothing here
+ * to disagree with. What the JIT owns for these families is scheduling, not
+ * meaning. Families worth inlining get inlined later; that is a PERFORMANCE
+ * decision, and this makes it one rather than a coverage decision.
+ *
+ * The instruction is decoded at TRANSLATION time and its X86pInsn lives in the
+ * code buffer beside the call, so nothing is decoded at run time. Re-decoding
+ * would make a floating-point instruction cost more under the JIT than under
+ * the interpreter, which would be a strange thing for a JIT to do.
+ */
+static uint32_t jit_helper_execute(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn) {
+  switch (x86p_execute_decoded(cpu, mem, insn, NULL)) {
+  case kX86pStepOk:
+    return 0u;
+  case kX86pStepDivideError:
+    return (uint32_t)kX86pJitExitDivideError;
+  case kX86pStepUnsupported:
+    /* can_emit refused to route an unsupported instruction here, so reaching
+       this is a defect in this file rather than in the guest. Reported as an
+       exit the caller must handle, never as success. */
+    return (uint32_t)kX86pJitExitUnsupported;
+  default:
+    return (uint32_t)kX86pJitExitMemoryFault;
+  }
+}
+
+/*
+ * Call the interpreter for one instruction, without leaving the block.
+ *
+ * The decoded X86pInsn is placed IN the code buffer, jumped over, and reached
+ * with a RIP-relative LEA. In the buffer rather than in a side table because
+ * the arena is a bump pointer that a flush rewinds wholesale: a side
+ * allocation would need its own lifetime, and a lifetime that must agree with
+ * a code region's is one that will eventually disagree. RIP-relative rather
+ * than an absolute pointer because the write and exec addresses of that buffer
+ * differ under W^X.
+ *
+ * The jump over the data is taken once per execution and is perfectly
+ * predicted; it is not on the same scale as the call it precedes.
+ */
+/*
+ * The helper sequence is the longest thing this file emits, and its length
+ * depends on sizeof(X86pInsn) -- which belongs to another header. Checked at
+ * compile time rather than trusted: growing the decoded form by a field would
+ * otherwise silently push a block past the per-instruction reservation, and
+ * the emit loop reserves WORST_CASE_INSN_BYTES before each instruction on the
+ * strength of this number.
+ */
+#define HELPER_CALL_MAX_BYTES (64u + 7u + (unsigned)sizeof(X86pInsn))
+_Static_assert(HELPER_CALL_MAX_BYTES <= X86P_JIT_WORST_CASE_INSN_BYTES,
+               "an interpreter call no longer fits the per-instruction reservation");
+
+static void emit_helper_call(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  X86pEmitSite over;
+  size_t table;
+  X86pEmitSite failed;
+
+  /* The helper reads cpu->eip: it is where the instruction is, which is what
+     x86p_execute_decoded advances from and what a fault must leave behind. */
+  x86p_emit_store32_imm(e, CPU_REG, eip_off(), insn_eip);
+
+  over = x86p_emit_jmp_rel32(e);
+  x86p_emit_align(e, 8u); /* X86pInsn holds pointers */
+  table = x86p_emit_here(e);
+  x86p_emit_data(e, insn, sizeof *insn);
+  x86p_emit_bind(e, over);
+
+  x86p_emit_mov_r64_r64(e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r64_imm64(e, kX64Rsi, (uint64_t)(uintptr_t)c->mem);
+  x86p_emit_lea_rip(e, kX64Rdx, table);
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&jit_helper_execute);
+  x86p_emit_call_r64(e, kX64Rax);
+
+  /* Zero is success. Anything else is an exit code already in EAX, with EIP
+     already left where that exit means it should be. */
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  failed = x86p_emit_jcc_rel32(e, 0x5u); /* jnz */
+  note_helper_fault(c, failed);
+  c->helper_calls++;
+}
+
+/*
+ * Can this instruction change EIP?
+ *
+ * Asked as a WHITELIST of operations that provably cannot, because the cost of
+ * the two mistakes is not symmetric. Treating a branch as straight-line code
+ * means the block carries on emitting instructions that the guest was never
+ * going to reach, at an EIP the block then overwrites -- silent, and wrong in
+ * a way no state comparison at the block boundary can see. Treating
+ * straight-line code as a branch merely ends the block early.
+ */
+static int helper_insn_is_straight_line(const X86pInsn *insn) {
+  switch (insn->op) {
+  case kX86pInsnAlu:
+  case kX86pInsnAluUnary:
+  case kX86pInsnMov:
+  case kX86pInsnMovzx:
+  case kX86pInsnMovsx:
+  case kX86pInsnLea:
+  case kX86pInsnPush:
+  case kX86pInsnPop:
+  case kX86pInsnXchg:
+  case kX86pInsnSetcc:
+  case kX86pInsnCmovcc:
+  case kX86pInsnLeave:
+  case kX86pInsnNop:
+  case kX86pInsnCdq:
+  case kX86pInsnCwde:
+  case kX86pInsnMul:
+  case kX86pInsnImul:
+  case kX86pInsnDiv:
+  case kX86pInsnIdiv:
+  case kX86pInsnPushfd:
+  case kX86pInsnPopfd:
+  case kX86pInsnX87:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
 static void emit_prologue(X86pEmit *e) {
   x86p_emit_push_r64(e, CPU_REG);
   x86p_emit_mov_r64_r64(e, CPU_REG, kX64Rdi);
@@ -980,6 +1134,18 @@ static void emit_prologue(X86pEmit *e) {
 
 static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
   x86p_emit_store32_imm(e, CPU_REG, eip_off(), next_eip);
+  x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
+  x86p_emit_pop_r64(e, CPU_REG);
+  x86p_emit_ret(e);
+}
+
+/*
+ * The same exit, leaving EIP exactly as it stands.
+ *
+ * For an instruction a helper executed: the helper has already put EIP where
+ * the instruction says it goes, and this file does not know where that is.
+ */
+static void emit_epilogue_keep_eip(X86pEmit *e, X86pJitExit exit) {
   x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
   x86p_emit_pop_r64(e, CPU_REG);
   x86p_emit_ret(e);
@@ -1112,6 +1278,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   x86p_emit_init(&e, code, code_cap);
   memset(&ctx, 0, sizeof ctx);
   ctx.e = &e;
+  ctx.mem = mem;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
@@ -1169,13 +1336,33 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     }
 
     if (!can_emit(&insn)) {
-      if (count == 0) {
-        say(reason, reason_len, "%s at %08X has no x86-64 emitter in this build", insn.mnemonic, pc);
-        return kX86pJitUnsupportedAtEntry;
+      if (insn.op == (uint8_t)kX86pInsnUnsupported) {
+        /* No semantics ANYWHERE -- not here, not in the interpreter -- so
+           there is nothing to route to and the block genuinely ends. */
+        if (count == 0) {
+          say(reason, reason_len, "%s at %08X has no semantics in this build", insn.mnemonic, pc);
+          return kX86pJitUnsupportedAtEntry;
+        }
+        exit = kX86pJitExitUnsupported;
+        stopper = insn.mnemonic;
+        break;
       }
-      exit = kX86pJitExitUnsupported;
-      stopper = insn.mnemonic;
-      break;
+
+      emit_helper_call(&ctx, &insn, pc);
+      /* A helper writes flags this file did not choose, so the next carry-in
+         has no statically known predecessor. */
+      last_kind = -1;
+      pc += insn.length;
+      count++;
+      if (!helper_insn_is_straight_line(&insn)) {
+        /* The helper set EIP -- to a branch target, a return address, or the
+           next instruction -- and only it knows which. Ending with an epilogue
+           that OVERWROTE EIP would turn every helper-executed branch into a
+           fall-through, correctly and invisibly, for the whole block. */
+        emit_epilogue_keep_eip(&e, kX86pJitExitBlockEnd);
+        terminated = 1;
+      }
+      continue;
     }
 
     if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet || is_indirect_branch(&insn)) {
@@ -1295,6 +1482,20 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     x86p_emit_ret(&e);
   }
 
+  /*
+   * The helper stub. EAX already holds the exit code and EIP was left by the
+   * helper on the instruction that failed, so this only unwinds -- which is
+   * why it cannot share the stub above, which writes both.
+   */
+  if (ctx.nhelper_faults) {
+    unsigned f;
+    for (f = 0; f < ctx.nhelper_faults; f++) {
+      x86p_emit_bind(&e, ctx.helper_faults[f]);
+    }
+    x86p_emit_pop_r64(&e, CPU_REG);
+    x86p_emit_ret(&e);
+  }
+
   if (!x86p_emit_sites_bound(&e)) {
     /* An unbound forward jump carries whatever displacement the buffer held --
        a branch into the middle of an unrelated instruction. Refuse. */
@@ -1321,6 +1522,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   out->host_bytes = e.len;
   out->stopper = stopper;
   out->flag_helper_calls = ctx.flag_helper_calls;
+  out->helper_calls = ctx.helper_calls;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
@@ -1337,6 +1539,12 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
   return (X86pJitExit)fn(cpu);
 }
 
-int x86p_jit_can_translate(const X86pInsn *insn) {
+int x86p_jit_emits_natively(const X86pInsn *insn) {
   return can_emit(insn);
+}
+
+int x86p_jit_can_translate(const X86pInsn *insn) {
+  /* Either route counts: a helper call keeps the block going, which is what
+     "translated" has to mean for a coverage number to track the work. */
+  return can_emit(insn) || insn->op != (uint8_t)kX86pInsnUnsupported;
 }

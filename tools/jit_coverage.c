@@ -105,6 +105,11 @@ static Stopper g_refused[512];
 static unsigned g_refusals;
 static unsigned long g_insn_seen;
 static unsigned long g_insn_refused;
+/* Of the refused, how many the INTERPRETER cannot run either. That is the
+   difference between "needs an emitter" and "needs semantics", and they are
+   different jobs: the first can be routed through the existing authority, the
+   second has no authority to route to. */
+static unsigned long g_insn_no_semantics;
 
 static void note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m) {
   unsigned i;
@@ -191,6 +196,9 @@ static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
       char shape[32];
       format_shape(&in, shape, sizeof shape);
       g_insn_refused++;
+      if (in.op == (uint8_t)kX86pInsnUnsupported) {
+        g_insn_no_semantics++;
+      }
       note_into(g_refused, (unsigned)(sizeof g_refused / sizeof g_refused[0]), &g_refusals, shape);
     }
     off += in.length;
@@ -210,6 +218,7 @@ int main(int argc, char **argv) {
   unsigned long blocks = 0;
   unsigned long diverged = 0;
   unsigned long compared = 0;
+  unsigned long helper_insns = 0;
   unsigned i;
 
   if (argc > 1) {
@@ -239,6 +248,8 @@ int main(int argc, char **argv) {
     char reason[256];
     X86pJitStatus st;
     uint32_t total;
+    uint32_t walked;
+    unsigned long blocks_here = 0u;
 
     if (!tab) {
       continue;
@@ -270,85 +281,129 @@ int main(int argc, char **argv) {
     total = count_insns(&mem, entry, nbytes);
     insns_total += total;
 
-    st = x86p_jit_translate(&mem, entry, code, CODE_SIZE, &blk, reason, sizeof reason);
-    if (st != kX86pJitOk) {
-      /* No block at all. The FIRST instruction is the stopper, and naming it is
-         the whole point -- these are the entries that dominate the queue. */
-      uint8_t b[X86P_MAX_INSN_LEN];
-      X86pInsn in;
-      uint32_t k;
-      uint32_t have = 0;
-      for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN && k < nbytes; k++) {
-        b[k] = g_body[k];
-        have++;
+    /*
+     * TRANSLATE THE WHOLE FUNCTION, not just its entry block.
+     *
+     * Translating once at the entry measured "how long is the first basic
+     * block", which is about five instructions in any compiled code and has
+     * almost nothing to do with how much of the program can run. Every
+     * function was reported at 5/N covered and the number moved barely at all
+     * when whole families gained emitters.
+     *
+     * So this walks the body linearly, translating at each address the
+     * previous block ended on. A refused instruction is stepped OVER and the
+     * walk continues, because the engine does exactly that -- it hands the
+     * instruction to the interpreter and translates again from the next
+     * address -- and abandoning the rest of the function here would report a
+     * coverage this framework does not actually lose.
+     *
+     * Linear rather than following branches: a function's bytes are its
+     * instructions, and a static walk cannot know which are reachable. That
+     * over-counts unreachable padding and under-counts nothing, and it is
+     * stated rather than hidden.
+     */
+    walked = 0u;
+    while (walked < nbytes) {
+      X86pMem sub;
+      sub.host = g_body + walked;
+      sub.lo = entry + walked;
+      sub.size = nbytes - walked;
+      if (sub.size < 4u) {
+        break;
       }
-      if (have && x86p_decode(b, have, &in)) {
-        char shape[24];
-        format_shape(&in, shape, sizeof shape);
-        note_stopper(shape);
-      } else {
+      st = x86p_jit_translate(&sub, entry + walked, code, CODE_SIZE, &blk, reason, sizeof reason);
+      if (st != kX86pJitOk) {
+        uint8_t b[X86P_MAX_INSN_LEN];
+        X86pInsn in;
+        uint32_t k;
+        uint32_t have = 0;
+        for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN && walked + k < nbytes; k++) {
+          b[k] = g_body[walked + k];
+          have++;
+        }
+        if (have && x86p_decode(b, have, &in) && in.length) {
+          char shape[32];
+          format_shape(&in, shape, sizeof shape);
+          note_stopper(shape);
+          walked += in.length;
+          continue;
+        }
         note_stopper("(undecodable)");
+        break;
       }
-      continue;
-    }
 
-    fns_with_block++;
-    blocks++;
-    insns_covered += blk.insns;
-    if (blk.ends_in_branch) {
-      note_stopper("(branch: block ended normally)");
-    } else if (blk.stopper == NULL) {
-      note_stopper("(ran out of room / insn cap)");
-    } else {
-      /* The stopper is the instruction just PAST the translated bytes, so it
-         can be decoded again here for its shape rather than only its name. */
-      uint8_t b[X86P_MAX_INSN_LEN];
-      X86pInsn in;
-      uint32_t k;
-      uint32_t have = 0;
-      for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN && blk.guest_len + k < nbytes; k++) {
-        b[k] = g_body[blk.guest_len + k];
-        have++;
+      if (blocks_here == 0u) {
+        fns_with_block++;
       }
-      if (have && x86p_decode(b, have, &in)) {
-        char shape[24];
-        format_shape(&in, shape, sizeof shape);
-        note_stopper(shape);
+      blocks_here++;
+      blocks++;
+      insns_covered += blk.insns;
+      helper_insns += blk.helper_calls;
+      if (blk.ends_in_branch) {
+        note_stopper("(branch: block ended normally)");
+      } else if (blk.stopper == NULL) {
+        note_stopper("(ran out of room / insn cap)");
       } else {
-        note_stopper(blk.stopper);
-      }
-    }
-
-    /* Differential on REAL code: same start state, both engines, whole machine. */
-    {
-      X86pCpu ci;
-      X86pCpu cj;
-      uint32_t k;
-      int bad = 0;
-      x86p_cpu_reset(&ci);
-      for (k = 0; k < kX86pRegCount; k++) {
-        ci.reg[k] = 0x11111111u * (k + 1u);
-      }
-      ci.eip = entry;
-      cj = ci;
-      for (k = 0; k < blk.insns; k++) {
-        if (x86p_step(&ci, &mem, NULL) != kX86pStepOk) {
-          bad = 1;
-          break;
+        uint8_t b[X86P_MAX_INSN_LEN];
+        X86pInsn in;
+        uint32_t k;
+        uint32_t have = 0;
+        for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN && walked + blk.guest_len + k < nbytes; k++) {
+          b[k] = g_body[walked + blk.guest_len + k];
+          have++;
+        }
+        if (have && x86p_decode(b, have, &in)) {
+          char shape[32];
+          format_shape(&in, shape, sizeof shape);
+          note_stopper(shape);
+        } else {
+          note_stopper(blk.stopper);
         }
       }
-      if (!bad) {
-        (void)x86p_jit_enter(&blk, &cj);
-        compared++;
-        if (memcmp(ci.reg, cj.reg, sizeof ci.reg) != 0 || ci.eip != cj.eip || ci.flags.kind != cj.flags.kind ||
-            ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b || ci.flags.r != cj.flags.r ||
-            ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
-          diverged++;
-          if (diverged <= 5) {
-            printf("DIVERGENCE at %08X after %u insn(s)\n", entry, blk.insns);
+      if (blk.guest_len == 0u) {
+        /* A zero-length block would loop here forever. It is a defect in the
+           translator, not a corpus oddity, so it is reported and not skipped
+           past quietly. */
+        fprintf(stderr, "jit_coverage: zero-length block at %08X\n", entry + walked);
+        break;
+      }
+
+      /*
+       * Differential on REAL code: same start state, both engines, whole
+       * machine. Coverage without correctness is a number that only sounds
+       * like progress.
+       */
+      {
+        X86pCpu ci;
+        X86pCpu cj;
+        uint32_t k;
+        int bad = 0;
+        x86p_cpu_reset(&ci);
+        for (k = 0; k < kX86pRegCount; k++) {
+          ci.reg[k] = 0x11111111u * (k + 1u);
+        }
+        ci.eip = entry + walked;
+        cj = ci;
+        for (k = 0; k < blk.insns; k++) {
+          if (x86p_step(&ci, &sub, NULL) != kX86pStepOk) {
+            bad = 1;
+            break;
+          }
+        }
+        if (!bad) {
+          (void)x86p_jit_enter(&blk, &cj);
+          compared++;
+          if (memcmp(ci.reg, cj.reg, sizeof ci.reg) != 0 || ci.eip != cj.eip || ci.flags.kind != cj.flags.kind ||
+              ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b || ci.flags.r != cj.flags.r ||
+              ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
+            diverged++;
+            if (diverged <= 5) {
+              printf("DIVERGENCE at %08X after %u insn(s)\n", entry + walked, blk.insns);
+            }
           }
         }
       }
+      walked += blk.guest_len;
     }
   }
 
@@ -366,6 +421,9 @@ int main(int argc, char **argv) {
          insns_total ? 100.0 * (double)insns_covered / (double)insns_total : 0.0);
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
+  printf("  of those, via a helper    %lu  (%.2f%% of translated)   <-- NOT host code\n",
+         helper_insns,
+         insns_covered ? 100.0 * (double)helper_insns / (double)insns_covered : 0.0);
   printf("\n  differential on real code: %lu block(s) compared, %lu divergence(s)\n", compared, diverged);
   if (compared == 0) {
     printf("  REFUSED: nothing was compared, so correctness here is unproven\n");
@@ -383,11 +441,16 @@ int main(int argc, char **argv) {
          g_insn_seen,
          g_insn_seen ? 100.0 * (double)g_insn_refused / (double)g_insn_seen : 0.0,
          g_refusals);
+  printf("    of those, %lu have NO SEMANTICS ANYWHERE (%.2f%% of the corpus): the\n",
+         g_insn_no_semantics,
+         g_insn_seen ? 100.0 * (double)g_insn_no_semantics / (double)g_insn_seen : 0.0);
+  printf("    interpreter cannot run them either, so they need semantics, not an emitter.\n");
+  printf("    The other %lu already have an authority to route to.\n\n", g_insn_refused - g_insn_no_semantics);
   if (g_refusals == (unsigned)(sizeof g_refused / sizeof g_refused[0])) {
     printf("    WARNING: the shape table is FULL, so this list is truncated and the\n");
     printf("    distinct-shape count is a floor rather than the real number.\n\n");
   }
-  for (i = 0; i < g_refusals && i < 40u; i++) {
+  for (i = 0; i < g_refusals; i++) {
     printf("    %-32s %8lu  (%.2f%%)\n",
            g_refused[i].name,
            g_refused[i].count,

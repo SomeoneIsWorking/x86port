@@ -70,6 +70,11 @@ static unsigned long g_branch_blocks;
 static unsigned long g_refused;
 static unsigned long g_self_modified;
 static unsigned long g_helper_calls;
+/* Instructions the blocks executed by CALLING the interpreter. A denominator:
+   if the generator stopped producing x87 and the rest of the helper-routed
+   set, every comparison below would still pass and would be testing nothing
+   about that route. */
+static unsigned long g_interp_calls;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -168,7 +173,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 59u);
+  unsigned pick = (unsigned)(r % 71u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -449,6 +454,98 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0xE8u | dst);
     p[2] = (uint8_t)((r >> 20) & 0x1Fu);
     return 3;
+  /*
+   * From here on: instructions with NO x86-64 emitter, executed by a call into
+   * the interpreter from inside the block.
+   *
+   * They are in the generator for the same reason every other shape is. That
+   * route touches state nothing else does -- the x87 stack, EFLAGS as a whole
+   * word -- and it is the route the block takes for 5% of real game code, so
+   * leaving it to the corpus tool would mean the only check on it needed a
+   * copy of a commercial game.
+   */
+  case 54: /* PUSHFD -- 9C. Materialises the WHOLE EFLAGS word from the lazy
+              (kind, a, b, r) form, which no emitted instruction does. */
+    p[0] = 0x9Cu;
+    return 1;
+  case 55: /* POPFD -- 9D. And back again, which is how a wrong flag becomes a
+              wrong VALUE that later comparisons can see. */
+    p[0] = 0x9Du;
+    return 1;
+  case 56: /* CDQ -- 99 */
+    p[0] = 0x99u;
+    return 1;
+  case 57: /* IMUL r32, r/m32 -- 0F AF /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0xAFu;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 58: /* MOVZX r32, r/m8 -- 0F B6 /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0xB6u;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 59: /* MOVSX r32, r/m8 -- 0F BE /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0xBEu;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 60: /* SETcc r/m8 -- 0F 90+cc, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0x90u | ((r >> 12) & 0xFu));
+    p[2] = (uint8_t)(0xC0u | dst);
+    return 3;
+  case 61: /* FLD dword [base+disp8] -- D9 /0. Pushes, so it moves TOP. */
+    p[0] = 0xD9u;
+    p[1] = (uint8_t)(0x40u | (0u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 62: /* FSTP dword [base+disp8] -- D9 /3. Pops. Pairing it with FLD keeps
+              the stack from simply filling up and reporting overflow forever,
+              which would test one state and call it eight. */
+    p[0] = 0xD9u;
+    p[1] = (uint8_t)(0x40u | (3u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 63: /* FADD dword [base+disp8] -- D8 /0 */
+    p[0] = 0xD8u;
+    p[1] = (uint8_t)(0x40u | (0u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 64: /* FMUL dword [base+disp8] -- D8 /1 */
+    p[0] = 0xD8u;
+    p[1] = (uint8_t)(0x40u | (1u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 65: /* FILD dword [base+disp8] -- DB /0. Reads the bytes as an INTEGER,
+              so a model that treated the FI forms as floats of the same width
+              differs on every value. */
+    p[0] = 0xDBu;
+    p[1] = (uint8_t)(0x40u | (0u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 66: /* FLD ST(i) -- D9 C0+i */
+    p[0] = 0xD9u;
+    p[1] = (uint8_t)(0xC0u | ((r >> 12) & 7u));
+    return 2;
+  case 67: /* FADDP ST(i), ST(0) -- DE C0+i. The pop suffix is part of the
+              operation, not a detail of it. */
+    p[0] = 0xDEu;
+    p[1] = (uint8_t)(0xC0u | ((r >> 12) & 7u));
+    return 2;
+  case 68: /* FXCH ST(i) -- D9 C8+i */
+    p[0] = 0xD9u;
+    p[1] = (uint8_t)(0xC8u | ((r >> 12) & 7u));
+    return 2;
+  case 69: /* FCHS -- D9 E0 */
+    p[0] = 0xD9u;
+    p[1] = 0xE0u;
+    return 2;
+  case 70: /* FSTP dword, but from the OTHER encoding of the stack: FSTP ST(i),
+              DD D8+i. */
+    p[0] = 0xDDu;
+    p[1] = (uint8_t)(0xD8u | ((r >> 12) & 7u));
+    return 2;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -591,6 +688,65 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
   FLAG(x86p_flag_sf, "SF")
   FLAG(x86p_flag_of, "OF")
 #undef FLAG
+  /*
+   * The x87 machine, compared REGISTER BY POSITION rather than as a memcmp of
+   * the struct.
+   *
+   * It has to be compared at all: the generator emits floating-point
+   * instructions, and every one of them is executed by a call into the
+   * interpreter. If this function looked only at the integer registers, a
+   * translated block could drop an FLD entirely -- or push it onto the wrong
+   * physical register -- and pass, because nothing else in the machine would
+   * move.
+   *
+   * By position because TOP is a rotation: two states with the same values in
+   * ST(0)..ST(7) and different `top` are different machines, and two with the
+   * same physical array and different `top` are also different machines. A
+   * memcmp would catch both, but it would also compare the padding bytes of a
+   * long double array, which are not architectural state.
+   */
+  {
+    int k;
+    if (a->x87.top != b->x87.top || a->x87.control != b->x87.control || a->x87.status != b->x87.status) {
+      printf("    FAIL %s: x87 top/cw/sw interp=(%u %04X %04X) jit=(%u %04X %04X)\n",
+             what,
+             a->x87.top,
+             a->x87.control,
+             a->x87.status,
+             b->x87.top,
+             b->x87.control,
+             b->x87.status);
+      ok = 0;
+    }
+    for (k = 0; k < X86P_X87_REGS; k++) {
+      long double va = 0.0L;
+      long double vb = 0.0L;
+      int ha = x86p_x87_get(&a->x87, k, &va);
+      int hb = x86p_x87_get(&b->x87, k, &vb);
+      /*
+       * Compare the ARCHITECTURAL bytes, not sizeof(long double).
+       *
+       * On this host an 80-bit extended value occupies ten bytes inside a
+       * sixteen-byte object, and the remaining six are padding that no
+       * instruction defines. A memcmp over the whole object reported a
+       * divergence between two values that printed identically, which is the
+       * opposite of what a differential is for. Where `long double` is not
+       * x87's format the whole object is significant, and x87.c is the
+       * authority on which case this is.
+       */
+      const size_t significant = x86p_x87_precision_is_exact() ? 10u : sizeof va;
+      if (ha != hb || (ha && memcmp(&va, &vb, significant) != 0)) {
+        printf("    FAIL %s: ST(%d) interp=%s%.20Lg jit=%s%.20Lg\n",
+               what,
+               k,
+               ha ? "" : "(empty)",
+               va,
+               hb ? "" : "(empty)",
+               vb);
+        ok = 0;
+      }
+    }
+  }
   g_checks++;
   if (!ok) {
     g_failed++;
@@ -687,7 +843,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
 
     /* Counted by the independent walk below, and used by the helper-call
        bound: a shift's flag kind is not knowable until it runs. */
-    unsigned shift_insns = 0u;
+    unsigned unknown_kind_insns = 0u;
 
     /*
      * guest_len must be exactly the bytes the translated instructions occupy,
@@ -703,7 +859,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
       uint32_t span = 0u;
       uint32_t k;
       int walked = 1;
-      shift_insns = 0u;
+      unknown_kind_insns = 0u;
       for (k = 0; k < blk.insns; k++) {
         uint8_t ib[X86P_MAX_INSN_LEN];
         X86pInsn di;
@@ -721,7 +877,13 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
         }
         span += di.length;
         if (di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) {
-          shift_insns++;
+          unknown_kind_insns++;
+        } else if (!x86p_jit_emits_natively(&di)) {
+          /* Executed by a call into the interpreter, which writes flags this
+             build did not choose -- so the next instruction's carry-in has no
+             statically known predecessor either. Counted HERE, from an
+             independent decode, rather than taken from the block. */
+          unknown_kind_insns++;
         }
       }
       g_checks++;
@@ -768,9 +930,21 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      * So the round is dropped and COUNTED. A silent skip here could grow to
      * swallow the corpus while the suite still reported a clean run.
      */
-    if (memcmp(g_after_interp, g_before, pr.len) != 0 || memcmp(g_guest, g_before, pr.len) != 0) {
-      g_self_modified++;
-      continue;
+    /*
+     * The range checked is what the BLOCK covers, not what the generator
+     * emitted. Blocks used to stop at the first instruction with no emitter,
+     * so they never ran past the generated bytes; they now translate on
+     * through the NOP fill that follows, and a store landing in that fill is
+     * every bit as self-modifying. Checking only `pr.len` reported one such
+     * round as a divergence -- correctly detecting that the two engines
+     * disagreed, and wrongly blaming the translator.
+     */
+    {
+      size_t covered = pr.len > blk.guest_len ? pr.len : (size_t)blk.guest_len;
+      if (memcmp(g_after_interp, g_before, covered) != 0 || memcmp(g_guest, g_before, covered) != 0) {
+        g_self_modified++;
+        continue;
+      }
     }
     g_checks++;
     if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {
@@ -802,21 +976,23 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      * comparison can see it -- measured: treating an instruction that writes no
      * flags (NOT) as if it destroyed the predecessor's kind passed everything.
      *
-     * Plus one per SHIFT, which is the one instruction whose recorded kind is
-     * not decidable at translation time: a count of zero writes no flags and
-     * leaves the previous kind in place, and the count can be a register. The
-     * allowance is per shift rather than blanket so that a backend which
-     * stopped deriving carry-in ENTIRELY still fails here.
+     * Plus one per instruction whose recorded flag kind is not decidable at
+     * translation time: a SHIFT, because a count of zero writes no flags at
+     * all and the count can be a register; and anything executed by a call
+     * into the interpreter, because this build did not choose what it writes.
+     * The allowance is per instruction rather than blanket so that a backend
+     * which stopped deriving carry-in ENTIRELY still fails here.
      */
     g_checks++;
-    if (blk.flag_helper_calls > 1u + shift_insns) {
+    if (blk.flag_helper_calls > 1u + unknown_kind_insns) {
       g_failed++;
       printf("    FAIL round %d: %u carry-in helper call(s) in one block; at most %u is derivable\n",
              round,
              blk.flag_helper_calls,
-             1u + shift_insns);
+             1u + unknown_kind_insns);
     }
     g_helper_calls += blk.flag_helper_calls;
+    g_interp_calls += blk.helper_calls;
 
     g_programs++;
     g_guest_insns += blk.insns;
@@ -880,10 +1056,12 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
  * runs a single instruction between two identical states, so a failure names
  * the shape that is wrong and nothing else.
  *
- * The terminator is PUSHFD (0x9C): decodable, and deliberately WITHOUT an
- * emitter, so the block stops where this test means it to. If PUSHFD ever gains
- * one, this test would silently start comparing longer runs than it asked for,
- * so it checks the block length rather than trusting the arrangement.
+ * The terminator is EMMS (0F 77): decodable, and with no semantics in this
+ * build AT ALL -- not in the emitter and not in the interpreter -- which is
+ * now what it takes to stop a block. An instruction the interpreter can run is
+ * no longer a stopper, because the block calls it. If EMMS ever gains
+ * semantics this test would silently start comparing longer runs than it asked
+ * for, so it checks the block length rather than trusting the arrangement.
  */
 static unsigned long g_single_compares;
 
@@ -943,7 +1121,9 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
         continue;
       }
     }
-    g_guest[len] = 0x9Cu; /* PUSHFD -- decodable, no emitter, stops the block */
+    /* EMMS -- decodable, no semantics anywhere, stops the block. */
+    g_guest[len] = 0x0Fu;
+    g_guest[len + 1u] = 0x77u;
 
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
@@ -1022,8 +1202,9 @@ static void test_unsupported_at_entry_produces_no_block(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* PUSHFD -- decodes, has no emitter in this build. */
-  g_guest[0] = 0x9Cu;
+  /* EMMS -- decodes, and has no semantics anywhere in this build. */
+  g_guest[0] = 0x0Fu;
+  g_guest[1] = 0x77u;
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
@@ -1031,7 +1212,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
-  CHECK(strstr(reason, "PUSHFD") != NULL);
+  CHECK(strstr(reason, "EMMS") != NULL);
   munmap(code, 4096);
 }
 
@@ -1049,10 +1230,11 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* MOV EAX, 0x11223344 ; PUSHFD */
+  /* MOV EAX, 0x11223344 ; EMMS */
   g_guest[0] = 0xB8u;
   put_u32(g_guest + 1, 0x11223344u);
-  g_guest[5] = 0x9Cu;
+  g_guest[5] = 0x0Fu;
+  g_guest[6] = 0x77u;
 
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
@@ -1062,7 +1244,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   }
   CHECK(blk.insns == 1u);
   CHECK(blk.guest_len == 5u);
-  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "PUSHFD") == 0);
+  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "EMMS") == 0);
 
   seed_cpu(&cpu, 99u);
   exit = x86p_jit_enter(&blk, &cpu);
@@ -1142,12 +1324,18 @@ int main(void) {
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
   printf("%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal, %lu on a store into\n"
-         "the program itself; %lu carry-in helper call(s) over %lu block(s)\n",
+         "the program itself;\n%lu instruction(s) run by calling the interpreter; %lu carry-in helper "
+         "call(s) over %lu block(s)\n",
          g_single_compares,
          g_refused,
          g_self_modified,
+         g_interp_calls,
          g_helper_calls,
          g_programs);
+  if (g_interp_calls == 0u) {
+    printf("REFUSED: no instruction went through the interpreter call, so that route is unproven\n");
+    g_failed++;
+  }
   if (g_single_compares == 0u) {
     printf("NO single-instruction comparison ran: this suite claims nothing\n");
     return 1;

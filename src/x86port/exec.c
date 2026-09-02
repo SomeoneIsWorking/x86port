@@ -474,8 +474,8 @@ static void execute(Ctx *c) {
 X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *report) {
   uint8_t bytes[X86P_MAX_INSN_LEN];
   X86pInsn insn;
-  Ctx c;
   uint32_t avail, i;
+  uint32_t fault_addr = 0u;
   X86pStepStatus st;
 
   if (report) {
@@ -535,11 +535,36 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
     return kX86pStepUnsupported;
   }
 
+  st = x86p_execute_decoded(cpu, mem, &insn, &fault_addr);
+  if (report) {
+    report->status = (uint8_t)st;
+    if (st != kX86pStepOk) {
+      report->fault_addr = fault_addr;
+    }
+  }
+  return st;
+}
+
+X86pStepStatus x86p_execute_decoded(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr) {
+  Ctx c;
+
+  if (fault_addr) {
+    *fault_addr = 0u;
+  }
+  if (!cpu || !insn) {
+    return kX86pStepFetchFault;
+  }
+  if (insn->op == (uint8_t)kX86pInsnUnsupported) {
+    /* Checked, not assumed. Advancing EIP past an instruction with no
+       semantics would leave a machine that looks like it made progress. */
+    return kX86pStepUnsupported;
+  }
+
   memset(&c, 0, sizeof c);
   c.cpu = cpu;
   c.mem = mem;
-  c.insn = &insn;
-  c.next_eip = cpu->eip + insn.length;
+  c.insn = insn;
+  c.next_eip = cpu->eip + insn->length;
   execute(&c);
 
   if (c.fault) {
@@ -547,16 +572,11 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
        has instructions that fault midway -- but the caller can always say
        which instruction it was, which is the part that matters for a
        divergence report. */
-    st = (X86pStepStatus)c.fault;
-    if (report) {
-      report->status = (uint8_t)st;
-      report->fault_addr = c.fault_addr;
+    if (fault_addr) {
+      *fault_addr = c.fault_addr;
     }
-    return st;
+    return (X86pStepStatus)c.fault;
   }
   cpu->eip = c.next_eip;
-  if (report) {
-    report->status = kX86pStepOk;
-  }
   return kX86pStepOk;
 }

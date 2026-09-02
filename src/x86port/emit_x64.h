@@ -134,6 +134,38 @@ void x86p_emit_mov_r64_imm64(X86pEmit *e, X86pHostReg dst, uint64_t imm);
    helper that takes a pointer to part of it. */
 void x86p_emit_lea64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
 
+/*
+ * lea r64, [rip + disp32] -- the address of something else in THIS buffer.
+ *
+ * `target_off` is an offset from the start of the buffer, and the
+ * displacement is computed from the end of the emitted instruction, which is
+ * what RIP means at that point. Taking an offset rather than a displacement
+ * puts that -1-instruction-length subtraction in one place instead of at every
+ * call site.
+ *
+ * RIP-relative rather than an absolute immediate BECAUSE OF W^X: on a host
+ * that maps the code arena twice, the address the translator writes to and the
+ * address the block runs at are different, and only the caller knows both. A
+ * baked absolute pointer would be the write address, correct on Linux and
+ * wrong on Android. A RIP-relative reference resolves against wherever the
+ * block actually runs, so it is right in both.
+ */
+void x86p_emit_lea_rip(X86pEmit *e, X86pHostReg dst, size_t target_off);
+
+/*
+ * Raw bytes, for DATA placed in the instruction stream. The caller is
+ * responsible for jumping over them: bytes emitted here are not instructions
+ * and executing them is undefined.
+ */
+void x86p_emit_data(X86pEmit *e, const void *p, size_t n);
+
+/* Pad with single-byte NOPs until the buffer length is a multiple of `align`.
+   Data emitted after it is then correctly aligned for its type. */
+void x86p_emit_align(X86pEmit *e, size_t align);
+
+/* Where the next byte will land, as an offset from the start of the buffer. */
+size_t x86p_emit_here(const X86pEmit *e);
+
 /* mov dword [base + disp], imm32 */
 void x86p_emit_store32_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm);
 

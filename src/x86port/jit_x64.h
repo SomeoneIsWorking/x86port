@@ -59,6 +59,15 @@ typedef enum X86pJitExit {
    * opposite responses.
    */
   kX86pJitExitMemoryFault,
+  /*
+   * #DE, raised inside a helper-executed instruction. EIP is left AT it, as
+   * for a memory fault.
+   *
+   * A separate exit rather than folding into MemoryFault: the guest must
+   * RECEIVE a divide error, and a caller that could not tell the two apart
+   * would deliver a page fault for a division by zero.
+   */
+  kX86pJitExitDivideError,
   kX86pJitExitCount /* MUST stay last */
 } X86pJitExit;
 
@@ -122,6 +131,16 @@ typedef struct X86pJitBlock {
    * information it had.
    */
   unsigned flag_helper_calls;
+  /*
+   * How many instructions in the block were executed by calling the
+   * interpreter rather than emitted as host code.
+   *
+   * Published because it is the difference between a JIT and a threaded
+   * interpreter, and guest state cannot see it: routing EVERY instruction
+   * through the helper would be entirely correct and pass every differential.
+   * A test that did not watch this number could not tell the two apart.
+   */
+  unsigned helper_calls;
 } X86pJitBlock;
 
 /*
@@ -169,6 +188,21 @@ int x86p_jit_available(void);
  * only ever appears late looks free. This gives the honest denominator.
  */
 int x86p_jit_can_translate(const X86pInsn *insn);
+
+/*
+ * Would this instruction become HOST CODE, as opposed to a call into the
+ * interpreter?
+ *
+ * The distinction x86p_jit_can_translate deliberately hides, exported because
+ * two callers need it and neither should reimplement it. The corpus tool wants
+ * the ranked list of families still worth an emitter -- which is now a
+ * performance queue rather than a coverage one. The differential wants to
+ * bound the carry-in helper calls in a block, and a helper-executed
+ * instruction writes flags this build did not choose, so it cannot derive the
+ * next one's carry-in; taking that count from the block itself would be the
+ * block grading its own work.
+ */
+int x86p_jit_emits_natively(const X86pInsn *insn);
 
 #ifdef __cplusplus
 } /* extern "C" */
