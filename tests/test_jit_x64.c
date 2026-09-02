@@ -65,6 +65,7 @@ static unsigned long g_programs;
 static unsigned long g_guest_insns;
 static unsigned long g_state_compares;
 static unsigned long g_branch_blocks;
+static unsigned long g_refused;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -127,7 +128,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 20u);
+  unsigned pick = (unsigned)(r % 25u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -201,6 +202,26 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[3] = memdisp;
     return 4;
   }
+  case 14: /* PUSH r32 -- 50+r */
+    p[0] = (uint8_t)(0x50u + dst);
+    return 1;
+  case 15: /* POP r32 -- 58+r */
+    p[0] = (uint8_t)(0x58u + dst);
+    return 1;
+  case 16: /* PUSH imm32 -- 68 id */
+    p[0] = 0x68u;
+    put_u32(p + 1, interesting(r));
+    return 5;
+  case 17: /* PUSH [base+disp8] -- FF /6, mod=01 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0x40u | (6u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 18: /* POP [base+disp8] -- 8F /0, mod=01 */
+    p[0] = 0x8Fu;
+    p[1] = (uint8_t)(0x40u | membase);
+    p[2] = memdisp;
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -281,6 +302,13 @@ static void seed_cpu(X86pCpu *cpu, uint64_t r) {
    * this register held a random value.
    */
   cpu->reg[kX86pEdi] = 3u;
+  /*
+   * A stack in the upper half of the mapping, so PUSH walks DOWN into unused
+   * space rather than into the program it is executing. With a wild ESP every
+   * push and pop would fault and the whole stack path would be exercised only
+   * through its refusal.
+   */
+  cpu->reg[kX86pEsp] = GUEST_BASE + 0x800u;
   cpu->eip = GUEST_BASE;
 }
 
@@ -389,6 +417,15 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     seed_cpu(&cj, seed);
 
     st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    if (st == kX86pJitUnsupportedAtEntry) {
+      /* The generator produced a shape this backend refuses BY NAME -- a
+         memory-form ADC, say. Refusing is the designed behaviour, not a
+         defect, so the round is skipped and COUNTED: a run where the refusals
+         quietly grew to swallow the corpus must be visible in the totals
+         rather than showing as a clean pass over nothing. */
+      g_refused++;
+      continue;
+    }
     g_checks++;
     if (st != kX86pJitOk) {
       g_failed++;
@@ -533,10 +570,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
  * runs a single instruction between two identical states, so a failure names
  * the shape that is wrong and nothing else.
  *
- * The terminator is PUSH (0x50): decodable, and deliberately WITHOUT an
- * emitter, so the block stops after exactly one instruction. If PUSH ever gains
- * an emitter this test would silently start comparing two-instruction blocks,
- * so it asserts blk.insns == 1 rather than trusting the arrangement.
+ * The terminator is PUSHFD (0x9C): decodable, and deliberately WITHOUT an
+ * emitter, so the block stops where this test means it to. If PUSHFD ever gains
+ * one, this test would silently start comparing longer runs than it asked for,
+ * so it checks the block length rather than trusting the arrangement.
  */
 static unsigned long g_single_compares;
 
@@ -594,14 +631,15 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
         continue;
       }
     }
-    g_guest[len] = 0x50u; /* PUSH EAX -- decodable, no emitter, stops the block */
+    g_guest[len] = 0x9Cu; /* PUSHFD -- decodable, no emitter, stops the block */
 
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
     st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
-      continue; /* the generator produced a shape this backend refuses by name */
+      g_refused++;
+      continue; /* a shape this backend refuses by name */
     }
     g_checks++;
     if (st != kX86pJitOk) {
@@ -663,8 +701,8 @@ static void test_unsupported_at_entry_produces_no_block(void) {
     return;
   }
   memset(g_guest, 0, sizeof g_guest);
-  /* PUSH EAX -- decodes, has no emitter in this build. */
-  g_guest[0] = 0x50u;
+  /* PUSHFD -- decodes, has no emitter in this build. */
+  g_guest[0] = 0x9Cu;
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
@@ -672,7 +710,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
-  CHECK(strstr(reason, "PUSH") != NULL);
+  CHECK(strstr(reason, "PUSHFD") != NULL);
   munmap(code, 4096);
 }
 
@@ -690,10 +728,10 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
     return;
   }
   memset(g_guest, 0, sizeof g_guest);
-  /* MOV EAX, 0x11223344 ; PUSH EAX */
+  /* MOV EAX, 0x11223344 ; PUSHFD */
   g_guest[0] = 0xB8u;
   put_u32(g_guest + 1, 0x11223344u);
-  g_guest[5] = 0x50u;
+  g_guest[5] = 0x9Cu;
 
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
@@ -703,7 +741,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   }
   CHECK(blk.insns == 1u);
   CHECK(blk.guest_len == 5u);
-  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "PUSH") == 0);
+  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "PUSHFD") == 0);
 
   seed_cpu(&cpu, 99u);
   exit = x86p_jit_enter(&blk, &cpu);
@@ -781,7 +819,8 @@ int main(void) {
          g_guest_insns,
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
-  printf("%lu single-instruction comparison(s)\n", g_single_compares);
+  printf(
+      "%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal\n", g_single_compares, g_refused);
   if (g_single_compares == 0u) {
     printf("NO single-instruction comparison ran: this suite claims nothing\n");
     return 1;

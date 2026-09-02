@@ -219,6 +219,15 @@ static int can_emit(const X86pInsn *insn) {
       return 0;
     }
     return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
+  case kX86pInsnPush:
+    /* An immediate narrower than 32 bits is sign-extended by a rule that lives
+       in the interpreter, and folding a copy of it in here would be a second
+       authority on it. PUSH imm8 is refused BY NAME until the value can come
+       from the one place that owns the rule. */
+    return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]) ||
+                                   (operand_is_imm(&insn->operand[0]) && insn->operand[0].size == 4));
+  case kX86pInsnPop:
+    return insn->operands == 1 && operand_writable(&insn->operand[0]);
   default:
     return 0;
   }
@@ -562,6 +571,65 @@ static void emit_alu_inline(BlockCtx *c,
   }
 }
 
+/*
+ * PUSH and POP.
+ *
+ * The stack is ordinary guest memory, so both go through the same bounds check
+ * and the same fault stub as any other access. What is specific to them is the
+ * ORDER, and in both cases it is the order the interpreter uses because it is
+ * the order the architecture specifies:
+ *
+ *   - PUSH reads its operand BEFORE moving ESP, so `PUSH ESP` stores the old
+ *     value, and it moves ESP only AFTER the store has been accepted, so a
+ *     faulting push leaves the stack pointer where it was rather than past a
+ *     value it never wrote. The second rule is invisible until something
+ *     faults, and then it corrupts every frame above it.
+ *   - POP advances ESP BEFORE writing the destination, so `POP ESP` ends
+ *     holding the popped value rather than the adjusted pointer, and a memory
+ *     destination is addressed from the ALREADY advanced ESP.
+ */
+static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *o = &insn->operand[0];
+
+  if (o->kind == kX86pOperandImm) {
+    x86p_emit_mov_r32_imm32(c->e, kX64Rsi, o->imm);
+  } else if (o->kind == kX86pOperandMem) {
+    emit_mem_prepare(c, o, insn_eip);
+    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+  } else {
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(o->reg));
+  }
+
+  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
+  x86p_emit_alu_r32_imm32(c->e, kX64Sub, EA_REG, 4u);
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  emit_host_pointer(c->e, &c->plan);
+  x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
+  /* The bounds check preserves EA_REG -- it copies into ADDR_TMP -- so the new
+     ESP is still here and needs no second computation. */
+  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
+}
+
+static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *o = &insn->operand[0];
+
+  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  emit_host_pointer(c->e, &c->plan);
+  x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+
+  x86p_emit_mov_r32_r32(c->e, kX64Rdx, EA_REG);
+  x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kX64Rdx);
+
+  if (o->kind == kX86pOperandMem) {
+    emit_mem_prepare(c, o, insn_eip);
+    x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
+    return;
+  }
+  x86p_emit_store32(c->e, CPU_REG, reg_off(o->reg), kX64Rsi);
+}
+
 static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
@@ -783,6 +851,12 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
       break;
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
+      break;
+    case kX86pInsnPush:
+      emit_push(&ctx, &insn, pc);
+      break;
+    case kX86pInsnPop:
+      emit_pop(&ctx, &insn, pc);
       break;
     case kX86pInsnAlu: {
       X86pHostAlu host;
