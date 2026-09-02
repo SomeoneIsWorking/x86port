@@ -158,18 +158,18 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
  * last few bits.
  */
 typedef enum X86pX87Insn {
-  kX86pX87InsnLoad = 0,   /* FLD: push a float from memory or ST(i) */
-  kX86pX87InsnLoadInt,    /* FILD: push an integer from memory */
-  kX86pX87InsnStore,      /* FST/FSTP */
-  kX86pX87InsnStoreInt,   /* FIST/FISTP */
-  kX86pX87InsnArith,      /* FADD/FSUB/FMUL/FDIV and their R and P forms */
-  kX86pX87InsnCompare,    /* FCOM/FCOMP/FCOMPP/FUCOM... */
-  kX86pX87InsnExchange,   /* FXCH */
-  kX86pX87InsnChangeSign, /* FCHS */
-  kX86pX87InsnAbs,        /* FABS */
-  kX86pX87InsnConstZero,  /* FLDZ */
-  kX86pX87InsnConstOne,   /* FLD1 */
-  kX86pX87InsnConstPi,    /* FLDPI */
+  kX86pX87InsnLoad = 0,     /* FLD: push a float from memory or ST(i) */
+  kX86pX87InsnLoadInt,      /* FILD: push an integer from memory */
+  kX86pX87InsnStore,        /* FST/FSTP */
+  kX86pX87InsnStoreInt,     /* FIST/FISTP */
+  kX86pX87InsnArith,        /* FADD/FSUB/FMUL/FDIV and their R and P forms */
+  kX86pX87InsnCompare,      /* FCOM/FCOMP/FCOMPP/FUCOM... */
+  kX86pX87InsnExchange,     /* FXCH */
+  kX86pX87InsnChangeSign,   /* FCHS */
+  kX86pX87InsnAbs,          /* FABS */
+  kX86pX87InsnConstZero,    /* FLDZ */
+  kX86pX87InsnConstOne,     /* FLD1 */
+  kX86pX87InsnConstPi,      /* FLDPI */
   kX86pX87InsnStoreStatus,  /* FNSTSW */
   kX86pX87InsnLoadControl,  /* FLDCW */
   kX86pX87InsnStoreControl, /* FNSTCW */

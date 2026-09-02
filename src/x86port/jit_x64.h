@@ -73,11 +73,16 @@ typedef enum X86pJitStatus {
 const char *x86p_jit_status_name(X86pJitStatus s);
 
 typedef struct X86pJitBlock {
-  void *entry;         /* host address to call; see x86p_jit_enter */
-  uint32_t guest_eip;  /* the guest address this block starts at */
-  uint32_t guest_len;  /* guest bytes covered -- what range invalidation needs */
-  uint32_t insns;      /* guest instructions translated. ZERO IS NEVER OK. */
-  size_t host_bytes;   /* host bytes written */
+  void *entry;        /* host address to call; see x86p_jit_enter */
+  uint32_t guest_eip; /* the guest address this block starts at */
+  uint32_t guest_len; /* guest bytes covered -- what range invalidation needs */
+  uint32_t insns;     /* guest instructions translated. ZERO IS NEVER OK. */
+  size_t host_bytes;  /* host bytes written */
+  /* Whether the block ends in a translated branch. A caller can tell from this
+     that the block has a known successor and needs no interpreter step, and a
+     TEST can tell that its branch path ran at all -- without it, a suite whose
+     generator stopped producing branches would keep reporting success. */
+  int ends_in_branch;
   const char *stopper; /* mnemonic that ended the block, or NULL if it ran out
                           of room or hit the instruction limit. NAMED so the
                           unsupported set is a ranked work list, not a count. */

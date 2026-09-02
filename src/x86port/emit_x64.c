@@ -171,6 +171,19 @@ void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint3
   put32(e, imm);
 }
 
+void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
+  rex(e, 0, b, a);
+  put(e, 0x85u);
+  modrm_reg(e, b, a);
+}
+
+void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHostReg src) {
+  rex(e, 0, dst, src);
+  put(e, 0x0Fu);
+  put(e, (uint8_t)(0x40u + (cc & 0xFu)));
+  modrm_reg(e, dst, src);
+}
+
 /* ---- structure --------------------------------------------------------- */
 
 void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r) {
