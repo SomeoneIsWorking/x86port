@@ -162,6 +162,26 @@ void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);
  */
 void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHostReg src);
 
+/* <alu> r32, [base + disp] */
+void x86p_emit_alu_r32_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
+/*
+ * setcc r8 -- materialise a condition as 0 or 1.
+ *
+ * RESTRICTED TO RAX..RBX by contract, and the restriction is real rather than
+ * cautious: without REX, byte-register numbers 4-7 mean AH, CH, DH, BH rather
+ * than SPL, BPL, SIL, DIL. Emitting this for RSP would write AH and look
+ * entirely plausible in a disassembly. Callers use AL or CL.
+ */
+void x86p_emit_setcc_r8(X86pEmit *e, unsigned cc, X86pHostReg dst);
+
+/* mov byte [base + disp], r8 -- same RAX..RBX restriction as setcc. */
+void x86p_emit_store8_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
+
+/* movzx r32, byte [base + disp] -- a one-byte guest field widened without
+   carrying whatever happened to be in the upper bits of the destination. */
+void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
 /* ---- structure --------------------------------------------------------- */
 
 void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r);

@@ -184,6 +184,44 @@ void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHos
   modrm_reg(e, dst, src);
 }
 
+void x86p_emit_alu_r32_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  /* The r32, r/m32 direction is opcode = op*8 + 3, one above the r/m32, r32
+     form. Getting the two the wrong way round assembles cleanly and computes
+     the operation backwards. */
+  rex(e, 0, dst, base);
+  put(e, (uint8_t)(((unsigned)op << 3) | 3u));
+  modrm_mem(e, dst, base, disp);
+}
+
+void x86p_emit_setcc_r8(X86pEmit *e, unsigned cc, X86pHostReg dst) {
+  if ((unsigned)dst > (unsigned)kX64Rbx) {
+    /* Refused rather than emitted wrongly: see the header. Marking the buffer
+       overflowed makes the block discarded instead of silently misbehaving. */
+    e->overflow = 1;
+    return;
+  }
+  put(e, 0x0Fu);
+  put(e, (uint8_t)(0x90u + (cc & 0xFu)));
+  put(e, (uint8_t)(0xC0u | ((unsigned)dst & 7u))); /* /0, mod=11 */
+}
+
+void x86p_emit_store8_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src) {
+  if ((unsigned)src > (unsigned)kX64Rbx) {
+    e->overflow = 1;
+    return;
+  }
+  rex(e, 0, src, base);
+  put(e, 0x88u);
+  modrm_mem(e, src, base, disp);
+}
+
+void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  rex(e, 0, dst, base);
+  put(e, 0x0Fu);
+  put(e, 0xB6u);
+  modrm_mem(e, dst, base, disp);
+}
+
 /* ---- structure --------------------------------------------------------- */
 
 void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r) {

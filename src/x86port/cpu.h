@@ -47,8 +47,24 @@ typedef enum X86pReg {
   kX86pRegCount /* MUST stay last */
 } X86pReg;
 
+/*
+ * CACHE-LINE ALIGNED, and this is a measured requirement rather than tidiness.
+ *
+ * Translated code reads or writes this struct on nearly every emitted
+ * instruction -- guest registers live here, and so does the flag state each
+ * arithmetic operation records. When an instance straddled a cache-line
+ * boundary, `x86p_jit_bench` measured translated code at 1.93 ns per guest
+ * instruction; aligned, the same code measured 0.97. A clean factor of two,
+ * decided by where the allocator happened to put it.
+ *
+ * The interpreter is indifferent (its cost is dominated by decode), which is
+ * exactly why this went unnoticed until there was a translator, and why the
+ * alignment belongs on the type rather than in one caller.
+ */
 typedef struct X86pCpu {
-  uint32_t reg[kX86pRegCount];
+  /* The alignment specifier sits on the first member, which propagates to the
+     whole struct -- C11 does not accept one on the struct tag itself. */
+  _Alignas(64) uint32_t reg[kX86pRegCount];
   uint32_t eip;
   X86pFlags flags;
   /* The FPU is part of the guest's architectural state, not a separate
