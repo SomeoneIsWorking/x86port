@@ -1421,6 +1421,15 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
            fall-through, correctly and invisibly, for the whole block. */
         emit_epilogue_keep_eip(&e, kX86pJitExitBlockEnd);
         terminated = 1;
+        /* ... and the block STOPS, like the other two places that terminate
+           one. Carrying on emitted instructions after the epilogue: dead code
+           the block could never reach, and -- worse -- counted in `insns`, so
+           the block claimed to cover instructions it had just decided not to
+           execute. That is invisible until something steps a guest `insns`
+           times and compares, which is what tools/jit_coverage.c does: it
+           surfaced the day SAHF became the first non-straight-line instruction
+           to reach this path. */
+        break;
       }
       continue;
     }

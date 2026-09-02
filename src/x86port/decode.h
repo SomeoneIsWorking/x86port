@@ -26,6 +26,8 @@
 #define X86PORT_DECODE_H
 
 #include "alu.h"
+#include "bcd.h"
+#include "bit_ops.h"
 #include "cond.h"
 #include "x87.h"
 #include "x87_transcendental.h"
@@ -179,8 +181,29 @@ typedef enum X86pInsnOp {
    * function.
    */
   kX86pInsnSimd,
-  kX86pInsnCld,    /* DF = 0: the string operations count upward */
-  kX86pInsnStd,    /* DF = 1: ... and downward */
+  kX86pInsnCld, /* DF = 0: the string operations count upward */
+  kX86pInsnStd, /* DF = 1: ... and downward */
+  kX86pInsnBcd, /* `bcd` holds an X86pBcdOp */
+  kX86pInsnBit, /* `bit` holds an X86pBitOp */
+  /* SHLD and SHRD are separate kinds rather than one carrying a direction,
+     following CLD/STD and CDQ/CWDE above: a kind per instruction costs an
+     enumerator and saves every reader a lookup. */
+  kX86pInsnShld,
+  kX86pInsnShrd,
+  kX86pInsnSahf, /* AH -> the low byte of EFLAGS */
+  kX86pInsnLahf, /* ... and back */
+  kX86pInsnStc,
+  kX86pInsnClc,
+  kX86pInsnCmc,
+  kX86pInsnSalc, /* undocumented, but real silicon: AL = CF ? 0xFF : 0x00 */
+  kX86pInsnXlat, /* AL = [seg:EBX + AL] */
+  kX86pInsnPushad,
+  kX86pInsnPopad,
+  kX86pInsnEnter, /* a stack frame, with the nesting level nobody uses */
+  kX86pInsnLoop,
+  kX86pInsnLoope,
+  kX86pInsnLoopne,
+  kX86pInsnJecxz,
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
 
@@ -260,6 +283,8 @@ typedef struct X86pInsn {
   uint8_t rep;         /* X86pRepKind, when op == kX86pInsnString */
   uint8_t str_width;   /* element size in bytes: 1, 2 or 4 */
   uint8_t simd;        /* X86pSimdOp, when op == kX86pInsnSimd */
+  uint8_t bcd;         /* X86pBcdOp, when op == kX86pInsnBcd */
+  uint8_t bit;         /* X86pBitOp, when op == kX86pInsnBit */
   uint8_t pf;          /* X86pPfOp, when simd == kX86pSimdPf */
   /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
      two's-complement INTEGER, not as a float of the same width. Recorded here
