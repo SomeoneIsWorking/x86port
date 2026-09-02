@@ -1336,3 +1336,7 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
   *(void **)&fn = b->entry;
   return (X86pJitExit)fn(cpu);
 }
+
+int x86p_jit_can_translate(const X86pInsn *insn) {
+  return can_emit(insn);
+}
