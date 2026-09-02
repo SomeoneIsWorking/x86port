@@ -279,6 +279,12 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnRet:
     /* RET, or RET imm16 which also releases the caller's arguments. */
     return insn->operands == 0 || (insn->operands == 1 && operand_is_imm(&insn->operand[0]));
+  case kX86pInsnAluUnary:
+    if (insn->alu > (uint8_t)kX86pAluDec) {
+      return 0;
+    }
+    return insn->operands == 1 && insn->operand[0].kind != kX86pOperandImm &&
+           mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
   case kX86pInsnLea:
     /* The size of an LEA's memory operand describes an access that never
        happens, so operand_is_mem32's width rule does not apply -- only that
@@ -403,6 +409,7 @@ static void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
  */
 typedef struct BlockCtx {
   X86pEmit *e;
+  unsigned flag_helper_calls;
   MemPlan plan;
   X86pEmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
@@ -554,32 +561,46 @@ static int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, 
  * predecessor because this backend does not emit them; they can only arrive
  * through the unknown-predecessor path, which asks the real function.
  */
-static void emit_compute_carry_in(X86pEmit *e, int last_kind) {
+static int emit_compute_carry_in(X86pEmit *e, int last_kind) {
   switch (last_kind) {
   case kX86pFlagsNone:
   case kX86pFlagsLogic:
     /* Both give CF == 0 with no computation at all. */
     x86p_emit_mov_r32_imm32(e, CARRY_REG, 0u);
-    return;
+    return 0;
   case kX86pFlagsAdd:
     /* CF = r < a, unsigned */
     x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_R);
     x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_A);
     x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
-    return;
+    return 0;
+  case kX86pFlagsExplicit:
+    /* A real EFLAGS word, which ADC and SBB leave behind: CF is bit 0 of `a`,
+       so masking it IS the 0-or-1 the field wants. Known at translation time
+       like any other kind -- x86p_alu always records Explicit for those two --
+       so it needs no more of a helper call than an ADD does. */
+    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_A);
+    x86p_emit_alu_r32_imm32(e, kX64And, CARRY_REG, X86P_CF);
+    return 0;
+  case kX86pFlagsInc:
+  case kX86pFlagsDec:
+    /* PRESERVED. INC and DEC do not write CF, so the carry the state already
+       holds IS the carry, and x86p_flag_cf returns exactly this byte. */
+    x86p_emit_load8_zx(e, CARRY_REG, CPU_REG, FLAG_CARRY_IN);
+    return 0;
   case kX86pFlagsSub:
     /* CF = a < b, unsigned */
     x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_A);
     x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_B);
     x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
-    return;
+    return 0;
   default:
     /* Unknown predecessor: ask the one authority. Once per block. */
     x86p_emit_lea64(e, kX64Rdi, CPU_REG, flags_off());
     x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_flag_cf);
     x86p_emit_call_r64(e, kX64Rax);
     x86p_emit_mov_r32_r32(e, CARRY_REG, kX64Rax);
-    return;
+    return 1;
   }
 }
 
@@ -634,7 +655,7 @@ static void emit_alu_inline(BlockCtx *c,
    * left the flags half-updated on a fault: a divergence that only appears
    * three instructions later, when something finally reads CF.
    */
-  emit_compute_carry_in(c->e, last_kind);
+  c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
 
   /*
    * The memory operand, whichever side it is on, is prepared ONCE and its
@@ -768,6 +789,99 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     return;
   }
   x86p_emit_store32(c->e, CPU_REG, reg_off(o->reg), kX64Rsi);
+}
+
+/*
+ * INC, DEC, NEG and NOT.
+ *
+ * NOT writes NO FLAGS AT ALL, which is why it is a separate case rather than
+ * `XOR a, -1`: the XOR would clear CF and OF. It therefore leaves last_kind
+ * alone as well -- an instruction that writes no flags does not become the
+ * predecessor of the next one.
+ *
+ * INC and DEC PRESERVE CF, which is the entire reason `carry_in` exists: guest
+ * code really does put an INC between an ADD and an ADC.
+ *
+ * Returns the flag kind recorded, or -1 for NOT, which records none.
+ */
+static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, uint32_t insn_eip) {
+  const X86pOperand *o = &insn->operand[0];
+  const int w = o->size;
+  const int is_mem = (o->kind == kX86pOperandMem);
+  X86pFlagKind kind;
+
+  if (insn->alu == (uint8_t)kX86pAluNot) {
+    if (is_mem) {
+      emit_mem_prepare_w(c, o, insn_eip, w);
+      emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, w);
+    } else {
+      emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(o->reg, w), w);
+    }
+    /* XOR with all ones is the host's NOT; the guest's flag rule is honoured by
+       storing nothing, not by choosing a different host opcode. */
+    x86p_emit_alu_r32_imm32(c->e, kX64Xor, kX64Rax, 0xFFFFFFFFu);
+    if (w != 4) {
+      x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
+    }
+    if (is_mem) {
+      emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
+    } else {
+      emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
+    }
+    return -1;
+  }
+
+  c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
+
+  if (is_mem) {
+    emit_mem_prepare_w(c, o, insn_eip, w);
+    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
+  } else {
+    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(o->reg, w), w);
+  }
+
+  if (insn->alu == (uint8_t)kX86pAluNeg) {
+    /* 0 - a, recorded as the SUB it is, so CF falls out of the borrow rather
+       than being special-cased as "a was nonzero". */
+    x86p_emit_mov_r32_imm32(c->e, kX64Rax, 0u);
+    x86p_emit_alu_r32_r32(c->e, kX64Sub, kX64Rax, kX64Rsi);
+    kind = kX86pFlagsSub;
+  } else {
+    x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
+    if (insn->alu == (uint8_t)kX86pAluInc) {
+      x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rax, 1u);
+      kind = kX86pFlagsInc;
+    } else {
+      x86p_emit_alu_r32_imm32(c->e, kX64Sub, kX64Rax, 1u);
+      kind = kX86pFlagsDec;
+    }
+  }
+  if (w != 4) {
+    x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
+  }
+
+  /* NEG's operands are (0, a); INC and DEC's are (a, 1). The tuple must be
+     what x86p_alu_unary would have stored, because every derived flag reads it
+     and so does the next instruction's carry-in. */
+  if (kind == kX86pFlagsSub) {
+    x86p_emit_store32_imm(c->e, CPU_REG, FLAG_A, 0u);
+    x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rsi);
+  } else {
+    x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
+    x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
+  }
+  x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
+  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
+  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+
+  if (is_mem) {
+    emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
+  } else {
+    emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
+  }
+  return (int)kind;
 }
 
 static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
@@ -1080,6 +1194,15 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
       break;
+    case kX86pInsnAluUnary: {
+      int k = emit_alu_unary_inline(&ctx, &insn, last_kind, pc);
+      /* NOT records no flags, so the PREVIOUS instruction is still the
+         predecessor for the next one's carry-in. */
+      if (k >= 0) {
+        last_kind = k;
+      }
+      break;
+    }
     case kX86pInsnLea:
       emit_lea(&ctx, &insn);
       break;
@@ -1098,9 +1221,10 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
         last_kind = (int)kind;
       } else {
         emit_alu(&e, &insn);
-        /* x86p_alu decides the kind for ADC/SBB (Explicit), so the next
-           instruction's predecessor is no longer statically known. */
-        last_kind = -1;
+        /* x86p_alu records Explicit for ADC and SBB, unconditionally -- so the
+           next instruction's predecessor IS statically known, and treating it
+           as unknown cost a helper call per ADC in every block. */
+        last_kind = (int)kX86pFlagsExplicit;
       }
       break;
     }
@@ -1163,6 +1287,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   out->insns = count;
   out->host_bytes = e.len;
   out->stopper = stopper;
+  out->flag_helper_calls = ctx.flag_helper_calls;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
