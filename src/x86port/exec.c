@@ -1,6 +1,7 @@
 /* exec.c -- see exec.h for why every outcome is named. */
 #include "exec.h"
 
+#include "simd.h"
 #include "string_ops.h"
 
 #include "x87_exec.h"
@@ -471,6 +472,25 @@ static void execute(Ctx *c) {
     }
     div_result_store(c, w, q, r);
     return;
+  }
+
+  case kX86pInsnSimd: {
+    uint32_t fault = 0u;
+    switch (x86p_simd_execute(cpu, c->mem, in, &fault)) {
+    case kX86pSimdOk:
+      return;
+    case kX86pSimdFault:
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = fault;
+      return;
+    case kX86pSimdUnsupported:
+    case kX86pSimdStatusCount:
+    default:
+      /* NAMED, not swallowed: the approximation instructions are refused on
+         purpose and a caller must be able to say which one it met. */
+      c->fault = kX86pStepUnsupported;
+      return;
+    }
   }
 
   case kX86pInsnCld:

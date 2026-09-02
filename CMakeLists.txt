@@ -42,6 +42,9 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 
 add_library(x86port STATIC
   src/x86port/string_ops.c
+  src/x86port/simd.c
+  src/x86port/simd_int.c
+  src/x86port/simd_float.c
   src/x86port/three_dnow.c
   src/x86port/decode.c
   src/x86port/engine.c
@@ -84,6 +87,11 @@ add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)
 target_compile_options(test_three_dnow PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_three_dnow COMMAND test_three_dnow)
+
+add_executable(test_simd tests/test_simd.c)
+target_link_libraries(test_simd PRIVATE x86port)
+target_compile_options(test_simd PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_simd COMMAND test_simd)
 
 add_executable(test_string_ops tests/test_string_ops.c)
 target_link_libraries(test_string_ops PRIVATE x86port)

@@ -393,9 +393,16 @@ int main(int argc, char **argv) {
         if (!bad) {
           (void)x86p_jit_enter(&blk, &cj);
           compared++;
+          /* The SIMD state too. Six per cent of translated instructions are
+             floating point or vector, and comparing only the integer file
+             would call a block that dropped every one of them identical. */
           if (memcmp(ci.reg, cj.reg, sizeof ci.reg) != 0 || ci.eip != cj.eip || ci.flags.kind != cj.flags.kind ||
               ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b || ci.flags.r != cj.flags.r ||
-              ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
+              ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in ||
+              memcmp(ci.xmm, cj.xmm, sizeof ci.xmm) != 0 || ci.mxcsr != cj.mxcsr || ci.df != cj.df ||
+              memcmp(ci.seg, cj.seg, sizeof ci.seg) != 0 || ci.x87.top != cj.x87.top ||
+              memcmp(ci.x87.tag, cj.x87.tag, sizeof ci.x87.tag) != 0 ||
+              memcmp(ci.x87.reg, cj.x87.reg, sizeof ci.x87.reg) != 0) {
             diverged++;
             if (diverged <= 5) {
               printf("DIVERGENCE at %08X after %u insn(s)\n", entry + walked, blk.insns);
