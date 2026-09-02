@@ -128,7 +128,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 30u);
+  unsigned pick = (unsigned)(r % 35u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -252,6 +252,28 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)((r >> 22) & 0xFFu);
     p[2] = 0u;
     return 3;
+  case 24: /* JMP r32 -- FF /4, mod=11 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0xE0u | dst);
+    return 2;
+  case 25: /* CALL r32 -- FF /2, mod=11 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0xD0u | dst);
+    return 2;
+  case 26: /* JMP [base+disp8] -- FF /4, mod=01 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0x40u | (4u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 27: /* CALL [base+disp8] -- FF /2, mod=01 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0x40u | (2u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 28: /* PUSH imm8 -- 6A ib, SIGN-EXTENDED to a dword */
+    p[0] = 0x6Au;
+    p[1] = (uint8_t)((r >> 22) & 0xFFu);
+    return 2;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
