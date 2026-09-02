@@ -25,7 +25,8 @@ add_library(x86port STATIC
   src/x86port/exec.c
   src/x86port/x87.c
   src/x86port/x87_exec.c
-  src/x86port/emit_x64.c)
+  src/x86port/emit_x64.c
+  src/x86port/jit_x64.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PRIVATE Zydis m)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
@@ -93,3 +94,10 @@ add_executable(test_emit_x64 tests/test_emit_x64.c)
 target_link_libraries(test_emit_x64 PRIVATE x86port Zydis)
 target_compile_options(test_emit_x64 PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_emit_x64 COMMAND test_emit_x64)
+
+# The differential: translated code against the interpreter, whole machine.
+add_executable(test_jit_x64 tests/test_jit_x64.c)
+target_link_libraries(test_jit_x64 PRIVATE x86port)
+target_compile_options(test_jit_x64 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_jit_x64 COMMAND test_jit_x64)
+set_tests_properties(test_jit_x64 PROPERTIES SKIP_RETURN_CODE 77)

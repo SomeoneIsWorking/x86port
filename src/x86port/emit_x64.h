@@ -125,6 +125,16 @@ void x86p_emit_load32(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t di
 /* mov [base + disp], r32 */
 void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
 
+/* mov r64, imm64 -- how the address of a helper function reaches the code. */
+void x86p_emit_mov_r64_imm64(X86pEmit *e, X86pHostReg dst, uint64_t imm);
+
+/* lea r64, [base + disp] -- an ADDRESS inside the guest CPU struct, for a
+   helper that takes a pointer to part of it. */
+void x86p_emit_lea64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
+/* mov dword [base + disp], imm32 */
+void x86p_emit_store32_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm);
+
 /* mov byte [base + disp], imm8 -- for the one-byte fields of X86pFlags. */
 void x86p_emit_store8_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint8_t imm);
 
@@ -141,6 +151,12 @@ void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint3
 void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r);
 void x86p_emit_pop_r64(X86pEmit *e, X86pHostReg r);
 void x86p_emit_ret(X86pEmit *e);
+
+/* call r64. Indirect through a register because a direct CALL is a 32-bit
+   relative displacement, and translated code is not guaranteed to land within
+   2 GB of the helper it calls -- a limit that holds on a developer's machine
+   and fails once the code arena moves. */
+void x86p_emit_call_r64(X86pEmit *e, X86pHostReg target);
 
 /* A single-byte raw opcode, for the handful of forms with no operands. */
 void x86p_emit_byte(X86pEmit *e, uint8_t b);
