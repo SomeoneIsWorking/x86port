@@ -80,6 +80,20 @@ typedef enum X86pJitStatus {
 
 const char *x86p_jit_status_name(X86pJitStatus s);
 
+/*
+ * The smallest code buffer that can hold ANY block.
+ *
+ * Exported because the dispatch loop has to decide when its arena is too full
+ * to translate into, and a number it picked itself would be a second opinion
+ * about this file's worst case -- one that stays plausible while quietly
+ * flushing after every block, or worse, while asking for a translation that
+ * cannot fit. Below this, x86p_jit_translate refuses with kX86pJitOutOfSpace;
+ * at or above it, a block of at least one instruction always comes back.
+ */
+#define X86P_JIT_WORST_CASE_INSN_BYTES 224u
+#define X86P_JIT_EPILOGUE_BYTES 64u
+#define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
+
 typedef struct X86pJitBlock {
   void *entry;        /* host address to call; see x86p_jit_enter */
   uint32_t guest_eip; /* the guest address this block starts at */
