@@ -121,8 +121,8 @@ static unsigned long g_insn_refused;
    second has no authority to route to. */
 static unsigned long g_insn_no_semantics;
 
-static void note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m, const uint8_t *bytes, unsigned len,
-                      uint32_t addr) {
+static void
+note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m, const uint8_t *bytes, unsigned len, uint32_t addr) {
   unsigned i;
   for (i = 0; i < *n; i++) {
     if (strcmp(tab[i].name, m) == 0) {
@@ -186,7 +186,15 @@ static int hexval(int c) {
 
 /* Count the instructions a function really holds, so coverage has a
    denominator that does not come from the translator being measured. */
-static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
+/*
+ * How many instructions live in [base, base+len).
+ *
+ * `census` says whether this walk is the one that owns the denominator. It is
+ * called a second time to ACCOUNT for instructions the translating walk gave
+ * up on, and counting those into the corpus total as well would inflate both
+ * sides of the ratio it exists to explain.
+ */
+static uint32_t count_insns_ex(const X86pMem *mem, uint32_t base, uint32_t len, int census) {
   uint32_t off = 0;
   uint32_t n = 0;
   while (off < len) {
@@ -207,26 +215,27 @@ static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
     }
     /* The census: every instruction in the corpus, whether or not any block
        ever reached it. This is the denominator for 100% coverage. */
-    g_insn_seen++;
-    if (!x86p_jit_can_translate(&in)) {
+    if (census) {
+      g_insn_seen++;
+    }
+    if (census && !x86p_jit_can_translate(&in)) {
       char shape[32];
       format_shape(&in, shape, sizeof shape);
       g_insn_refused++;
       if (in.op == (uint8_t)kX86pInsnUnsupported) {
         g_insn_no_semantics++;
       }
-      note_into(g_refused,
-                (unsigned)(sizeof g_refused / sizeof g_refused[0]),
-                &g_refusals,
-                shape,
-                b,
-                in.length,
-                base + off);
+      note_into(
+          g_refused, (unsigned)(sizeof g_refused / sizeof g_refused[0]), &g_refusals, shape, b, in.length, base + off);
     }
     off += in.length;
     n++;
   }
   return n;
+}
+
+static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
+  return count_insns_ex(mem, base, len, 1);
 }
 
 int main(int argc, char **argv) {
@@ -237,6 +246,17 @@ int main(int argc, char **argv) {
   unsigned long fns_with_block = 0;
   unsigned long insns_total = 0;
   unsigned long insns_covered = 0;
+  /*
+   * WHERE THE UNTRANSLATED INSTRUCTIONS WENT.
+   *
+   * "99.45% covered" is only a fact if the other 0.55% is named. These three
+   * account for every instruction the walk did not hand to a block, and the
+   * report prints what is left over -- which must be zero, or one of the
+   * three is wrong about its own cause.
+   */
+  unsigned long skipped_refused = 0; /* stepped over: no emitter for it */
+  unsigned long skipped_undec = 0;   /* the bytes stopped decoding: data, not code */
+  unsigned long skipped_tail = 0;    /* fewer than four bytes left to translate from */
   unsigned long blocks = 0;
   unsigned long diverged = 0;
   unsigned long compared = 0;
@@ -324,15 +344,21 @@ int main(int argc, char **argv) {
      * over-counts unreachable padding and under-counts nothing, and it is
      * stated rather than hidden.
      */
+    /*
+     * The walk moves the START ADDRESS through the function and keeps the
+     * WHOLE function mapped, which is what the engine does.
+     *
+     * Re-slicing the mapping at each step instead -- host, lo and size all
+     * advanced together -- looked equivalent and was not: the translator
+     * requires a mapping of at least four bytes, because its bounds check
+     * computes size - 4, so every function ended with a stub too small to
+     * translate. It cost 11,584 instructions, 0.53% of the corpus, all of
+     * them translatable, and it read as a coverage gap in the engine rather
+     * than a defect in the instrument measuring it.
+     */
     walked = 0u;
     while (walked < nbytes) {
-      X86pMem sub;
-      sub.host = g_body + walked;
-      sub.lo = entry + walked;
-      sub.size = nbytes - walked;
-      if (sub.size < 4u) {
-        break;
-      }
+      const X86pMem sub = mem;
       st = x86p_jit_translate(&sub, entry + walked, code, CODE_SIZE, &blk, reason, sizeof reason);
       if (st != kX86pJitOk) {
         uint8_t b[X86P_MAX_INSN_LEN];
@@ -347,10 +373,12 @@ int main(int argc, char **argv) {
           char shape[32];
           format_shape(&in, shape, sizeof shape);
           note_stopper(shape);
+          skipped_refused++;
           walked += in.length;
           continue;
         }
         note_stopper("(undecodable)");
+        skipped_undec += count_insns_ex(&sub, entry + walked, nbytes - walked, 0);
         break;
       }
 
@@ -503,6 +531,20 @@ int main(int argc, char **argv) {
   printf("  instructions translated   %lu  (%.2f%%)   <-- COVERAGE\n",
          insns_covered,
          insns_total ? 100.0 * (double)insns_covered / (double)insns_total : 0.0);
+  {
+    /* The residual is the honest part: three named causes and whatever they
+       failed to explain. A non-zero leftover means this accounting is wrong,
+       and printing it is the only way that ever surfaces. */
+    unsigned long lost = insns_total - insns_covered;
+    unsigned long named = skipped_refused + skipped_undec + skipped_tail;
+    printf("  not translated            %lu  (%.2f%%)\n",
+           lost,
+           insns_total ? 100.0 * (double)lost / (double)insns_total : 0.0);
+    printf("    refused, stepped over   %lu\n", skipped_refused);
+    printf("    undecodable bytes       %lu\n", skipped_undec);
+    printf("    function tail < 4 bytes %lu\n", skipped_tail);
+    printf("    unaccounted             %ld   <-- must be 0\n", (long)lost - (long)named);
+  }
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
   printf("  of those, via a helper    %lu  (%.2f%% of translated)   <-- NOT host code\n",

@@ -243,6 +243,22 @@ static int mov_is_emittable(const X86pInsn *insn) {
 }
 
 static int can_emit(const X86pInsn *insn) {
+  int i;
+  /*
+   * A 16-BIT ADDRESS goes to the interpreter, whatever the instruction is.
+   *
+   * Every emitter here computes the effective address the 32-bit way, and the
+   * two agree until a sum crosses 0xFFFF -- so a wrong translation would be
+   * right on nearly every input and wrong on the wrap, which is the case the
+   * encoding exists for. One check at the gate rather than one in each of the
+   * dozen operand predicates, because the predicate that gets forgotten is
+   * the one that silently produces a valid-looking block.
+   */
+  for (i = 0; i < insn->operands && i < X86P_MAX_OPERANDS; i++) {
+    if (insn->operand[i].kind == kX86pOperandMem && insn->operand[i].addr16) {
+      return 0;
+    }
+  }
   if (is_relative_branch(insn)) {
     return 1;
   }
@@ -431,6 +447,16 @@ static X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t
   x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
   if (plan->lo != 0u) {
     x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
+  }
+  /*
+   * A mapping narrower than the access has NO in-bounds address, so the check
+   * becomes unconditional rather than arithmetic. Subtracting w from a smaller
+   * size underflows to about four billion and would admit every address --
+   * and w reaches 16 for an SSE access, so refusing to translate against a
+   * mapping under one dword did not prevent it, it only moved it.
+   */
+  if (plan->size < (uint32_t)w) {
+    return x86p_emit_jmp_rel32(e);
   }
   x86p_emit_alu_r32_imm32(e, kX64Cmp, ADDR_TMP, plan->size - (uint32_t)w);
   return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
@@ -1348,12 +1374,6 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
-  if (mem->size < 4u) {
-    /* The bounds check computes size - 4; a mapping smaller than one dword
-       would underflow it into an enormous limit that admits everything. */
-    say(reason, reason_len, "guest mapping of %u byte(s) is too small to address", mem->size);
-    return kX86pJitOutOfSpace;
-  }
   emit_prologue(&e);
 
   for (;;) {

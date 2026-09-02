@@ -54,6 +54,15 @@ static uint32_t effective_address(Ctx *c, const X86pOperand *o) {
     addr += x86p_reg_read(c->cpu, o->index, 4) * (uint32_t)o->scale;
   }
   /*
+   * A 16-bit address wraps within its sixteen bits, and it does so BEFORE the
+   * segment base is added -- which is the whole observable difference between
+   * [BX+disp] and [EBX+disp], and the reason the decoder records the address
+   * size rather than letting the two share a path.
+   */
+  if (o->addr16) {
+    addr &= 0xFFFFu;
+  }
+  /*
    * The segment base, for the two segments that have one.
    *
    * ES, CS, SS and DS are flat in every 32-bit Win32 process, so there is
@@ -69,6 +78,36 @@ static uint32_t effective_address(Ctx *c, const X86pOperand *o) {
   /* Wraps at 32 bits, which is what the hardware does and what a guest with a
      negative displacement off a low base relies on. */
   return addr;
+}
+
+/*
+ * Where a far transfer goes: either both halves are in the instruction
+ * (ptr16:32) or both are adjacent in memory (m16:32), offset first.
+ *
+ * Returns 0 having set a fault. A far transfer that could not resolve its
+ * destination must not fall through to a near one -- the stack effects differ
+ * -- so there is no "best effort" return here.
+ */
+static int far_target(Ctx *c, const X86pOperand *o, uint32_t *offset, uint16_t *selector) {
+  uint32_t addr, off = 0, sel = 0;
+  if (o->kind == kX86pOperandFarPtr) {
+    *offset = o->imm;
+    *selector = o->selector;
+    return 1;
+  }
+  if (o->kind != kX86pOperandMem) {
+    c->fault = kX86pStepUnsupported;
+    return 0;
+  }
+  addr = effective_address(c, o);
+  if (!x86p_mem_read(c->mem, addr, 4, &off) || !x86p_mem_read(c->mem, addr + 4u, 2, &sel)) {
+    c->fault = kX86pStepMemoryFault;
+    c->fault_addr = addr;
+    return 0;
+  }
+  *offset = off;
+  *selector = (uint16_t)sel;
+  return 1;
 }
 
 static uint32_t read_operand(Ctx *c, const X86pOperand *o) {
@@ -396,6 +435,53 @@ static void execute(Ctx *c) {
     if (in->operands >= 1 && o0->kind == kX86pOperandImm) {
       cpu->reg[kX86pEsp] += o0->imm;
     }
+    c->next_eip = ra;
+    return;
+  }
+
+  case kX86pInsnCallFar: {
+    /* Push CS, then the return offset, then load both. The order is the one
+       the hardware uses and the one RETF unwinds, so it is not free to be
+       convenient: CS ends up at the higher address. */
+    uint32_t off = 0;
+    uint16_t sel = 0;
+    if (!far_target(c, o0, &off, &sel)) {
+      return;
+    }
+    if (!x86p_push32(cpu, c->mem, cpu->seg[kX86pSegCs]) || !x86p_push32(cpu, c->mem, c->next_eip)) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = cpu->reg[kX86pEsp] - 4u;
+      return;
+    }
+    cpu->seg[kX86pSegCs] = sel;
+    c->next_eip = off;
+    return;
+  }
+
+  case kX86pInsnJmpFar: {
+    uint32_t off = 0;
+    uint16_t sel = 0;
+    if (!far_target(c, o0, &off, &sel)) {
+      return;
+    }
+    cpu->seg[kX86pSegCs] = sel;
+    c->next_eip = off;
+    return;
+  }
+
+  case kX86pInsnRetf: {
+    uint32_t ra = 0, sel = 0;
+    if (!x86p_pop32(cpu, c->mem, &ra) || !x86p_pop32(cpu, c->mem, &sel)) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = cpu->reg[kX86pEsp];
+      return;
+    }
+    /* Like the near form, RETF imm16 releases the caller's arguments after
+       both words are off the stack. */
+    if (in->operands >= 1 && o0->kind == kX86pOperandImm) {
+      cpu->reg[kX86pEsp] += o0->imm;
+    }
+    cpu->seg[kX86pSegCs] = (uint16_t)sel;
     c->next_eip = ra;
     return;
   }

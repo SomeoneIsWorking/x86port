@@ -225,7 +225,7 @@ typedef enum X86pX87Insn {
   kX86pX87InsnCmov,
   kX86pX87InsnSaveState,    /* FNSAVE/FSAVE: the whole unit to 108 bytes, then FNINIT */
   kX86pX87InsnRestoreState, /* FRSTOR: and back */
-  kX86pX87InsnCount        /* MUST stay last */
+  kX86pX87InsnCount         /* MUST stay last */
 } X86pX87Insn;
 
 const char *x86p_x87_insn_name(X86pX87Insn insn);
