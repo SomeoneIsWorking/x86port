@@ -168,7 +168,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 53u);
+  unsigned pick = (unsigned)(r % 59u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -407,6 +407,48 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0x40u | (1u << 3) | membase);
     p[2] = memdisp;
     return 3;
+  case 47: /* SHL r/m32, imm8 -- C1 /4. The count deliberately RANGES over 0
+              (writes no flags at all), 1..31, and >= 32 (masked to five bits),
+              which are three different rules rather than three values. */
+    p[0] = 0xC1u;
+    p[1] = (uint8_t)(0xE0u | dst);
+    p[2] = (uint8_t)((r >> 20) & 0x3Fu);
+    return 3;
+  case 48: /* SHR r/m32, imm8 -- C1 /5 */
+    p[0] = 0xC1u;
+    p[1] = (uint8_t)(0xE8u | dst);
+    p[2] = (uint8_t)((r >> 20) & 0x3Fu);
+    return 3;
+  case 49: /* SAR r/m32, imm8 -- C1 /7. Replicates the sign rather than
+              shifting in zeroes, so a host SHR here would agree on every
+              non-negative input and differ on every negative one. */
+    p[0] = 0xC1u;
+    p[1] = (uint8_t)(0xF8u | dst);
+    p[2] = (uint8_t)((r >> 20) & 0x3Fu);
+    return 3;
+  case 50: /* SHL r/m32, CL -- D3 /4. The count is a REGISTER, one byte wide
+              while the destination is four: loading it at the destination's
+              width would pass the whole of ECX as the count. */
+    p[0] = 0xD3u;
+    p[1] = (uint8_t)(0xE0u | dst);
+    return 2;
+  case 51: /* SAR r/m32, CL -- D3 /7 */
+    p[0] = 0xD3u;
+    p[1] = (uint8_t)(0xF8u | dst);
+    return 2;
+  case 52: /* SHL r/m16, imm8 -- 66 C1 /4. A count of 16..31 is not masked away
+              at this width: it is in range for the mask and past the operand
+              width, which is the case that returns zero. */
+    p[0] = 0x66u;
+    p[1] = 0xC1u;
+    p[2] = (uint8_t)(0xE0u | dst);
+    p[3] = (uint8_t)((r >> 20) & 0x1Fu);
+    return 4;
+  case 53: /* SHR r/m8, imm8 -- C0 /5 */
+    p[0] = 0xC0u;
+    p[1] = (uint8_t)(0xE8u | dst);
+    p[2] = (uint8_t)((r >> 20) & 0x1Fu);
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -643,6 +685,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
        reported Ok would make no progress and every counter would look fine. */
     CHECK(blk.insns > 0u);
 
+    /* Counted by the independent walk below, and used by the helper-call
+       bound: a shift's flag kind is not knowable until it runs. */
+    unsigned shift_insns = 0u;
+
     /*
      * guest_len must be exactly the bytes the translated instructions occupy,
      * computed here by an INDEPENDENT walk rather than taken from the block.
@@ -657,6 +703,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
       uint32_t span = 0u;
       uint32_t k;
       int walked = 1;
+      shift_insns = 0u;
       for (k = 0; k < blk.insns; k++) {
         uint8_t ib[X86P_MAX_INSN_LEN];
         X86pInsn di;
@@ -673,6 +720,9 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
           break;
         }
         span += di.length;
+        if (di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) {
+          shift_insns++;
+        }
       }
       g_checks++;
       if (!walked) {
@@ -751,13 +801,20 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      * the helper more often is entirely correct and merely slow, so no state
      * comparison can see it -- measured: treating an instruction that writes no
      * flags (NOT) as if it destroyed the predecessor's kind passed everything.
+     *
+     * Plus one per SHIFT, which is the one instruction whose recorded kind is
+     * not decidable at translation time: a count of zero writes no flags and
+     * leaves the previous kind in place, and the count can be a register. The
+     * allowance is per shift rather than blanket so that a backend which
+     * stopped deriving carry-in ENTIRELY still fails here.
      */
     g_checks++;
-    if (blk.flag_helper_calls > 1u) {
+    if (blk.flag_helper_calls > 1u + shift_insns) {
       g_failed++;
-      printf("    FAIL round %d: %u carry-in helper call(s) in one block; at most one is derivable\n",
+      printf("    FAIL round %d: %u carry-in helper call(s) in one block; at most %u is derivable\n",
              round,
-             blk.flag_helper_calls);
+             blk.flag_helper_calls,
+             1u + shift_insns);
     }
     g_helper_calls += blk.flag_helper_calls;
 
