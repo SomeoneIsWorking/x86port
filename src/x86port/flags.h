@@ -53,6 +53,11 @@ extern "C" {
 #define X86P_ZF (1u << 6)
 #define X86P_SF (1u << 7)
 #define X86P_OF (1u << 11)
+/* DF is NOT one of the six this model derives -- nothing computes it, CLD and
+   STD set it outright, and it survives every arithmetic operation. It lives in
+   X86pCpu; the bit position is here so PUSHFD and POPFD have one place to
+   agree with. */
+#define X86P_DF (1u << 10)
 
 /* Bit 1 reads as 1 on every x86, and IF is set in any user-mode process this
    engine will ever run. A PUSHFD that omitted them would differ from hardware

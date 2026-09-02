@@ -72,6 +72,16 @@ typedef struct X86pCpu {
      lives here so there is one thing to snapshot when two engines are compared
      against each other. */
   X86pX87 x87;
+  /*
+   * The direction flag, held apart from the lazy flag model.
+   *
+   * DF is not derived from an arithmetic result: nothing computes it, CLD and
+   * STD set it outright, and it survives every operation that writes the six
+   * arithmetic flags. Putting it in X86pFlags would mean every x86p_flags_set
+   * had to preserve a field it knows nothing about. PUSHFD and POPFD are the
+   * two places the two representations meet, and they say so.
+   */
+  uint8_t df;
 } X86pCpu;
 
 /*

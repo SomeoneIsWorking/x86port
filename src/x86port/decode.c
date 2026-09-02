@@ -49,10 +49,10 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  * decision rather than a tidiness preference.
  */
 
-static const char *kOpNames[] = {"unsupported", "alu", "alu-unary", "mov",    "movzx", "movsx", "lea",
-                                 "push",        "pop", "xchg",      "jmp",    "jcc",   "setcc", "cmovcc",
-                                 "call",        "ret", "leave",     "nop",    "cdq",   "cwde",  "mul",
-                                 "imul",        "div", "idiv",      "pushfd", "popfd", "x87"};
+static const char *kOpNames[] = {"unsupported", "alu",   "alu-unary", "mov",    "movzx", "movsx",  "lea",  "push",
+                                 "pop",         "xchg",  "jmp",       "jcc",    "setcc", "cmovcc", "call", "ret",
+                                 "leave",       "nop",   "cdq",       "cwde",   "mul",   "imul",   "div",  "idiv",
+                                 "pushfd",      "popfd", "x87",       "string", "cld",   "std"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
 const char *x86p_insn_op_name(int op) {
@@ -190,6 +190,24 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
 
 /* Mnemonic -> what we model. Anything absent stays Unsupported, which is a
    REPORTABLE outcome carrying the mnemonic, not a silent no-op. */
+/*
+ * Which repeat prefix a string instruction carries.
+ *
+ * ZYDIS_ATTRIB_HAS_REP is F3 and HAS_REPNE is F2; Zydis also spells F3 on
+ * SCAS/CMPS as REPE, which is the same byte. Checked in that order so a
+ * decoder update that starts reporting the REPE spelling cannot silently turn
+ * a repeat into no repeat.
+ */
+static X86pRepKind string_rep(const ZydisDecodedInstruction *insn) {
+  if (insn->attributes & (ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE)) {
+    return kX86pRepRep;
+  }
+  if (insn->attributes & (ZYDIS_ATTRIB_HAS_REPNE)) {
+    return kX86pRepRepne;
+  }
+  return kX86pRepNone;
+}
+
 static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
   switch (insn->mnemonic) {
 #define ALU(m, a)                                                                                                      \
@@ -248,7 +266,46 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_IDIV, kX86pInsnIdiv);
     SIMPLE(ZYDIS_MNEMONIC_PUSHFD, kX86pInsnPushfd);
     SIMPLE(ZYDIS_MNEMONIC_POPFD, kX86pInsnPopfd);
+    SIMPLE(ZYDIS_MNEMONIC_CLD, kX86pInsnCld);
+    SIMPLE(ZYDIS_MNEMONIC_STD, kX86pInsnStd);
 #undef SIMPLE
+
+/*
+ * The string operations, keyed on operation and element width.
+ *
+ * The width is in the MNEMONIC here, not in an operand: Zydis reports the
+ * implicit ESI/EDI/EAX operands, but the suffix is the authority on how many
+ * bytes move, and reading it from an implicit operand would make the decoder
+ * depend on how a third-party library chose to expose them.
+ *
+ * The repeat prefix is read from the instruction's attributes rather than from
+ * the mnemonic, because Zydis spells REP MOVSD as MOVSD with an attribute --
+ * see the decode_diff run recorded in CLAUDE.md, where Ghidra folds REP into
+ * the mnemonic and Zydis does not.
+ */
+#define STR(m, k, w)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = kX86pInsnString;                                                                                         \
+    out->str = (uint8_t)(k);                                                                                           \
+    out->str_width = (uint8_t)(w);                                                                                     \
+    out->rep = (uint8_t)string_rep(insn);                                                                              \
+    return
+    STR(ZYDIS_MNEMONIC_MOVSB, kX86pStringMovs, 1);
+    STR(ZYDIS_MNEMONIC_MOVSW, kX86pStringMovs, 2);
+    STR(ZYDIS_MNEMONIC_MOVSD, kX86pStringMovs, 4);
+    STR(ZYDIS_MNEMONIC_STOSB, kX86pStringStos, 1);
+    STR(ZYDIS_MNEMONIC_STOSW, kX86pStringStos, 2);
+    STR(ZYDIS_MNEMONIC_STOSD, kX86pStringStos, 4);
+    STR(ZYDIS_MNEMONIC_LODSB, kX86pStringLods, 1);
+    STR(ZYDIS_MNEMONIC_LODSW, kX86pStringLods, 2);
+    STR(ZYDIS_MNEMONIC_LODSD, kX86pStringLods, 4);
+    STR(ZYDIS_MNEMONIC_SCASB, kX86pStringScas, 1);
+    STR(ZYDIS_MNEMONIC_SCASW, kX86pStringScas, 2);
+    STR(ZYDIS_MNEMONIC_SCASD, kX86pStringScas, 4);
+    STR(ZYDIS_MNEMONIC_CMPSB, kX86pStringCmps, 1);
+    STR(ZYDIS_MNEMONIC_CMPSW, kX86pStringCmps, 2);
+    STR(ZYDIS_MNEMONIC_CMPSD, kX86pStringCmps, 4);
+#undef STR
 /*
  * x87. The tables are keyed on the SUFFIX as much as the operation: the P is a
  * pop and the R is an operand swap, and both are part of what the instruction
