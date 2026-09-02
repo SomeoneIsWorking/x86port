@@ -1,6 +1,7 @@
 /* emit_x64.c -- see emit_x64.h for the three encoding traps this gets right. */
 #include "emit_x64.h"
 
+#include <stdint.h>
 #include <string.h>
 
 void x86p_emit_init(X86pEmit *e, void *buf, size_t cap) {
@@ -140,6 +141,47 @@ void x86p_emit_lea64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t dis
   rex(e, 1, dst, base);
   put(e, 0x8Du);
   modrm_mem(e, dst, base, disp);
+}
+
+void x86p_emit_lea_rip(X86pEmit *e, X86pHostReg dst, size_t target_off) {
+  size_t end;
+  int64_t disp;
+  /* mod=00, rm=101 is RIP-relative in 64-bit mode -- the one encoding where
+     "no base register" means something other than an absolute address. */
+  rex(e, 1, dst, kX64Rax);
+  put(e, 0x8Du);
+  put(e, (uint8_t)(((dst & 7) << 3) | 5u));
+  end = e->len + 4u;
+  disp = (int64_t)target_off - (int64_t)end;
+  if (disp < INT32_MIN || disp > INT32_MAX) {
+    /* Cannot happen for a target in the same block, and is recorded rather
+       than truncated if it ever does: a wrapped displacement would read data
+       from two gigabytes away and look like a corrupt instruction. */
+    e->overflow = 1;
+    return;
+  }
+  put32(e, (uint32_t)(int32_t)disp);
+}
+
+void x86p_emit_data(X86pEmit *e, const void *p, size_t n) {
+  const uint8_t *b = (const uint8_t *)p;
+  size_t i;
+  for (i = 0; i < n; i++) {
+    put(e, b[i]);
+  }
+}
+
+void x86p_emit_align(X86pEmit *e, size_t align) {
+  if (align == 0u) {
+    return;
+  }
+  while ((e->len % align) != 0u) {
+    put(e, 0x90u);
+  }
+}
+
+size_t x86p_emit_here(const X86pEmit *e) {
+  return e->len;
 }
 
 void x86p_emit_store32_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm) {

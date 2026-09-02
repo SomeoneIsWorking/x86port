@@ -67,6 +67,26 @@ typedef struct X86pStepReport {
  */
 X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *report);
 
+/*
+ * Execute an ALREADY DECODED instruction whose address is cpu->eip.
+ *
+ * Split out of x86p_step so a second engine can reuse the semantics WITHOUT
+ * paying to decode again. The JIT needs exactly this: it has already decoded
+ * the instruction at translation time, and for the families it has no emitter
+ * for it calls here from inside the translated block rather than ending the
+ * block and going round the dispatch loop. Re-decoding at run time would make
+ * a floating-point instruction cost more in the JIT than in the interpreter.
+ *
+ * `insn` MUST be the instruction at cpu->eip and MUST NOT be
+ * kX86pInsnUnsupported; both are the caller's to establish, and the second is
+ * checked rather than assumed because a caller that got it wrong would
+ * silently advance EIP past an instruction that never ran.
+ *
+ * On success EIP has advanced or branched. On a fault EIP is unchanged and
+ * `fault_addr`, when not null, receives the guest address that faulted.
+ */
+X86pStepStatus x86p_execute_decoded(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr);
+
 /* Name a status, for logs and refusals. Never null. */
 const char *x86p_step_status_name(X86pStepStatus s);
 

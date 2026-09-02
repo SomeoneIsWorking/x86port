@@ -88,6 +88,17 @@ typedef struct X86pJitEngineStats {
   uint64_t translate_refusals; /* translations that hit an unmodelled entry */
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
+  /*
+   * Guest instructions the blocks execute by CALLING the interpreter rather
+   * than as emitted host code.
+   *
+   * The honest counterweight to the coverage number. Routing every instruction
+   * through the helper would translate 100% of a program and produce a
+   * threaded interpreter; guest state cannot tell the difference, and only
+   * this ratio can. Counted at translation, so it measures the code produced
+   * rather than how often it ran.
+   */
+  uint64_t guest_insns_via_helper;
 } X86pJitEngineStats;
 
 /*

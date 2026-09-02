@@ -218,6 +218,7 @@ static void *translate_at(X86pJitEngine *e, uint32_t eip, X86pJitStatus *st, cha
 
   e->stats.blocks_translated++;
   e->stats.guest_insns_translated += blk.insns;
+  e->stats.guest_insns_via_helper += blk.helper_calls;
   return exec;
 }
 
