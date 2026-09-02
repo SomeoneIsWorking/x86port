@@ -251,8 +251,25 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnMov:
     return mov_is_emittable(insn);
   case kX86pInsnAlu:
-    /* Shifts and rotates take their count from CL or an immediate and have
-       their own flag rules; excluded until they are tested on their own. */
+    if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluSar) {
+      /*
+       * SHL, SHR and SAR go through x86p_alu rather than being emitted inline,
+       * for the same reason ADC and SBB do: their rules are not a host shift.
+       * The count is masked to five bits, a count at or past the operand width
+       * has three different answers depending on direction, and a count of ZERO
+       * writes no flags AT ALL -- not preserved, not written -- which the lazy
+       * model has no kind for and flags.c refuses to record. Reproducing that
+       * here would be a second authority on it. A memory destination stays out
+       * because the call clobbers the host pointer.
+       */
+      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
+             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
+             (insn->operand[1].kind == kX86pOperandImm ||
+              (insn->operand[1].kind == kX86pOperandReg && insn->operand[1].reg == kX86pEcx &&
+               insn->operand[1].size == 1));
+    }
+    /* Rotates are not modelled here at all: they write CF and OF and leave the
+       other four alone, which the lazy model expresses as a whole EFLAGS word. */
     if (insn->alu > (uint8_t)kX86pAluTest) {
       return 0;
     }
@@ -892,9 +909,16 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   const int w = dst->size;
   emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
   if (src->kind == kX86pOperandImm) {
+    /* Masked by the DESTINATION width, which is what x86p_alu does to `b`.
+       Not by the immediate's own size: `83 /r` reports size 1 and carries an
+       already sign-extended dword, so masking it to a byte would turn
+       ADD EAX, -1 into ADD EAX, 255. */
     x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm & width_mask(w)); /* b */
   } else {
-    emit_load_w(e, kX64Rdx, CPU_REG, reg_off_w(src->reg, w), w);
+    /* At the SOURCE's own width. For the binary operations that is the
+       destination's width, but a shift's count is CL -- one byte -- and
+       loading four would pass the whole of ECX as the count. */
+    emit_load_w(e, kX64Rdx, CPU_REG, reg_off_w(src->reg, src->size), src->size);
   }
   x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)insn->alu);
   x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)w);
@@ -1221,10 +1245,19 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
         last_kind = (int)kind;
       } else {
         emit_alu(&e, &insn);
-        /* x86p_alu records Explicit for ADC and SBB, unconditionally -- so the
-           next instruction's predecessor IS statically known, and treating it
-           as unknown cost a helper call per ADC in every block. */
-        last_kind = (int)kX86pFlagsExplicit;
+        if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluSar) {
+          /* A shift's recorded kind depends on its COUNT, which is not known
+             until the block runs: a zero count writes no flags, leaving
+             whatever was there. Genuinely unknown, so the next carry-in asks
+             the real function. */
+          last_kind = -1;
+        } else {
+          /* x86p_alu records Explicit for ADC and SBB, unconditionally -- so
+             the next instruction's predecessor IS statically known, and
+             treating it as unknown cost a helper call per ADC in every
+             block. */
+          last_kind = (int)kX86pFlagsExplicit;
+        }
       }
       break;
     }
