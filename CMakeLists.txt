@@ -37,6 +37,10 @@ add_executable(x86p_decode_diff tools/decode_diff.c)
 target_link_libraries(x86p_decode_diff PRIVATE x86port)
 target_compile_options(x86p_decode_diff PRIVATE -Wall -Wextra -Werror)
 
+add_executable(x86p_jit_bench tools/jit_bench.c)
+target_link_libraries(x86p_jit_bench PRIVATE x86port)
+target_compile_options(x86p_jit_bench PRIVATE -Wall -Wextra -Werror -O2)
+
 enable_testing()
 add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)
