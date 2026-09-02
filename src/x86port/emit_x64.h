@@ -192,6 +192,17 @@ void x86p_emit_store8_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostR
 void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
 
 /*
+ * The 16-bit forms, for guest operands of width 2.
+ *
+ * All three carry the 0x66 operand-size prefix, which must be emitted BEFORE
+ * any REX byte: REX has to be the last prefix before the opcode, and a 0x66
+ * after it is not a prefix at all. Both orders assemble.
+ */
+void x86p_emit_load16_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+void x86p_emit_store16_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
+void x86p_emit_store16_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t imm);
+
+/*
  * FORWARD JUMPS, with the destination filled in later.
  *
  * CMOVcc covers selecting between two values, which is why conditional
