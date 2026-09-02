@@ -41,6 +41,19 @@ static uint32_t effective_address(Ctx *c, const X86pOperand *o) {
   if (o->index >= 0) {
     addr += x86p_reg_read(c->cpu, o->index, 4) * (uint32_t)o->scale;
   }
+  /*
+   * The segment base, for the two segments that have one.
+   *
+   * ES, CS, SS and DS are flat in every 32-bit Win32 process, so there is
+   * nothing to add and nothing to load; FS is how a guest reaches its TEB.
+   * Written as a switch on a value the DECODER already resolved, so the fast
+   * path costs a compare rather than an indexed load on every access.
+   */
+  if (o->seg == (uint8_t)kX86pSegFs) {
+    addr += c->cpu->fs_base;
+  } else if (o->seg == (uint8_t)kX86pSegGs) {
+    addr += c->cpu->gs_base;
+  }
   /* Wraps at 32 bits, which is what the hardware does and what a guest with a
      negative displacement off a low base relies on. */
   return addr;
@@ -51,6 +64,10 @@ static uint32_t read_operand(Ctx *c, const X86pOperand *o) {
   switch (o->kind) {
   case kX86pOperandReg:
     return x86p_reg_read(c->cpu, o->reg, o->size);
+  case kX86pOperandSeg:
+    /* Zero-extended: MOV r32, Sreg writes the selector into the low sixteen
+       bits and clears the rest, it does not preserve them. */
+    return c->cpu->seg[o->reg];
   case kX86pOperandImm:
     return o->imm;
   case kX86pOperandMem: {
@@ -75,6 +92,14 @@ static void write_operand(Ctx *c, const X86pOperand *o, uint32_t value) {
   switch (o->kind) {
   case kX86pOperandReg:
     x86p_reg_write(c->cpu, o->reg, o->size, value);
+    return;
+  case kX86pOperandSeg:
+    /* The selector only. Loading a segment register also reloads its hidden
+       descriptor on real hardware; in a flat process the descriptor never
+       changes, which is why this framework can hold a selector and be right --
+       and why cpu.h states the flat model as a contract rather than leaving it
+       implied. */
+    c->cpu->seg[o->reg] = (uint16_t)value;
     return;
   case kX86pOperandMem: {
     uint32_t addr = effective_address(c, o);

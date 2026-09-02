@@ -173,7 +173,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 71u);
+  unsigned pick = (unsigned)(r % 79u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -546,6 +546,51 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[0] = 0xDDu;
     p[1] = (uint8_t)(0xD8u | ((r >> 12) & 7u));
     return 2;
+  case 71: /* MOV r32, FS:[base+disp8] -- 64 8B /r, mod=01.
+              The one addressing mode with a segment BASE to add. A backend
+              that ignored the prefix would read the right shape at the wrong
+              address, and with fs_base seeded to zero the two would agree. */
+    p[0] = 0x64u;
+    p[1] = 0x8Bu;
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 72: /* MOV FS:[base+disp8], r32 -- 64 89 /r, mod=01 */
+    p[0] = 0x64u;
+    p[1] = 0x89u;
+    p[2] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 73: /* LEA r32, FS:[base+disp8] -- 8D with the prefix present.
+              LEA computes the OFFSET and must NOT add the segment base; this
+              is the case that separates the two address computations. */
+    p[0] = 0x64u;
+    p[1] = 0x8Du;
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 74: /* MOV r/m16, Sreg -- 8C /r, mod=11. ES, FS or GS; never CS, which
+              is not encodable as a destination. */
+    p[0] = 0x8Cu;
+    p[1] = (uint8_t)(0xC0u | ((((r >> 12) % 3u) == 0u ? 0u : (((r >> 12) % 3u) == 1u ? 4u : 5u)) << 3) | dst);
+    return 2;
+  case 75: /* MOV Sreg, r/m16 -- 8E /r, mod=11 */
+    p[0] = 0x8Eu;
+    p[1] = (uint8_t)(0xC0u | ((((r >> 12) % 3u) == 0u ? 0u : (((r >> 12) % 3u) == 1u ? 4u : 5u)) << 3) | src);
+    return 2;
+  case 76: /* MOVSD -- A5, no repeat. Advances ESI and EDI by four. */
+    p[0] = 0xA5u;
+    return 1;
+  case 77: /* REP STOSD -- F3 AB. ECX is seeded from `interesting`, so this is
+              sometimes zero (does nothing) and sometimes very large (faults
+              partway, which both engines must agree about). */
+    p[0] = 0xF3u;
+    p[1] = 0xABu;
+    return 2;
+  case 78: /* STD or CLD -- FD / FC. The stride's SIGN, which nothing else in
+              the generator sets. */
+    p[0] = ((r >> 12) & 1u) ? 0xFDu : 0xFCu;
+    return 1;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -597,6 +642,20 @@ static Prog generate(uint64_t *rng, uint32_t want_insns) {
 static void seed_cpu(X86pCpu *cpu, uint64_t r) {
   int i;
   x86p_cpu_reset(cpu);
+  /*
+   * A NON-ZERO FS base, and distinct selectors.
+   *
+   * With fs_base left at zero an FS-prefixed access and a plain one compute
+   * the same address, so a backend that dropped the prefix would agree with
+   * the interpreter everywhere. Small enough that a prefixed access still
+   * lands inside the mapping most of the time and faults the rest, which are
+   * both outcomes worth comparing.
+   */
+  cpu->fs_base = 0x40u;
+  cpu->gs_base = 0x80u;
+  for (i = 0; i < kX86pSegRegCount; i++) {
+    cpu->seg[i] = (uint16_t)(0x0023u + 8u * (unsigned)i);
+  }
   for (i = 0; i < kX86pRegCount; i++) {
     r = r * 6364136223846793005ull + 1442695040888963407ull;
     cpu->reg[i] = interesting(r);
@@ -653,6 +712,28 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
       printf("    FAIL %s: %s interp=%08X jit=%08X\n", what, x86p_reg_name(i, 4), a->reg[i], b->reg[i]);
       ok = 0;
     }
+  }
+  {
+    int k;
+    for (k = 0; k < kX86pSegRegCount; k++) {
+      if (a->seg[k] != b->seg[k]) {
+        printf("    FAIL %s: seg[%d] interp=%04X jit=%04X\n", what, k, a->seg[k], b->seg[k]);
+        ok = 0;
+      }
+    }
+  }
+  if (a->df != b->df) {
+    printf("    FAIL %s: DF interp=%u jit=%u\n", what, a->df, b->df);
+    ok = 0;
+  }
+  if (a->fs_base != b->fs_base || a->gs_base != b->gs_base) {
+    printf("    FAIL %s: segment bases interp=(%08X %08X) jit=(%08X %08X)\n",
+           what,
+           a->fs_base,
+           a->gs_base,
+           b->fs_base,
+           b->gs_base);
+    ok = 0;
   }
   if (a->eip != b->eip) {
     printf("    FAIL %s: EIP interp=%08X jit=%08X\n", what, a->eip, b->eip);

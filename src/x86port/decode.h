@@ -61,10 +61,24 @@ typedef enum X86pOperandKind {
      an engine ends up indexing the FPU array with a value that means something
      else. `reg` holds i, 0-7. */
   kX86pOperandSt,
+  /*
+   * A segment register, as an OPERAND -- what MOV Sreg, r/m16 and MOV r/m16,
+   * Sreg move. `reg` holds an X86pSegReg.
+   *
+   * Separate from kX86pOperandReg because the two register files are separate:
+   * segment register 4 is FS and general register 4 is ESP, and a model that
+   * let them share an index would read a stack pointer where the guest asked
+   * for a selector.
+   */
+  kX86pOperandSeg,
   kX86pOperandKindCount /* MUST stay last */
 } X86pOperandKind;
 
 typedef struct X86pOperand {
+  /* For a memory operand: which segment it is relative to, as an X86pSegReg.
+     Defaulted by the encoding (SS for a base of ESP or EBP, DS otherwise) and
+     overridden by a prefix. Only FS and GS have a base to add. */
+  uint8_t seg;
   uint8_t kind; /* X86pOperandKind */
   /* Operand width in BYTES. 1, 2 or 4 for the integer engine; an x87 memory
      operand is additionally 8 (double) or 10 (the extended format), and those
@@ -184,6 +198,27 @@ typedef enum X86pRepKind {
   kX86pRepRepne, /* F2 */
   kX86pRepKindCount
 } X86pRepKind;
+
+/*
+ * The segment registers, in the encoding's own order -- which is what the
+ * ModRM reg field of MOV Sreg means, so the number IS the encoding.
+ *
+ * THE FLAT MODEL IS A CONTRACT, NOT AN ASSUMPTION. In the 32-bit Win32
+ * processes this framework targets, ES, CS, SS and DS all have a zero base and
+ * only FS (the TEB) and GS may be non-zero. X86pCpu therefore holds a base for
+ * those two and for no others: making it an array of six would invite an
+ * engine to set a base this framework does not honour everywhere, and the
+ * disagreement would show up as one address in a million being wrong.
+ */
+typedef enum X86pSegReg {
+  kX86pSegEs = 0,
+  kX86pSegCs,
+  kX86pSegSs,
+  kX86pSegDs,
+  kX86pSegFs,
+  kX86pSegGs,
+  kX86pSegRegCount /* MUST stay last */
+} X86pSegReg;
 
 #define X86P_MAX_OPERANDS 3
 
