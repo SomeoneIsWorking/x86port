@@ -201,7 +201,24 @@ typedef enum X86pX87Insn {
   kX86pX87InsnStoreControl, /* FNSTCW */
   kX86pX87InsnFree,         /* FFREE */
   kX86pX87InsnInit,         /* FNINIT */
-  kX86pX87InsnCount         /* MUST stay last */
+  /*
+   * The functions evaluated on the host's own x87 unit. `x87_fn` says which.
+   *
+   * One instruction kind rather than sixteen, because what the DECODER has to
+   * say about them is identical -- they take no memory operand and their
+   * operands are the top of the stack -- and what differs is which opcode runs,
+   * which is x87_transcendental.c's business.
+   */
+  kX86pX87InsnFn,
+  kX86pX87InsnWait,        /* FWAIT/WAIT: with exceptions masked, nothing to do */
+  kX86pX87InsnClearExc,    /* FNCLEX */
+  kX86pX87InsnTest,        /* FTST: compare ST(0) with +0.0 */
+  kX86pX87InsnCompareInt,  /* FCOMI/FCOMIP/FUCOMI/FUCOMIP: into EFLAGS */
+  kX86pX87InsnConstLog2E,  /* FLDL2E */
+  kX86pX87InsnConstLog2T,  /* FLDL2T */
+  kX86pX87InsnConstLn2,    /* FLDLN2 */
+  kX86pX87InsnConstLog102, /* FLDLG2 */
+  kX86pX87InsnCount        /* MUST stay last */
 } X86pX87Insn;
 
 const char *x86p_x87_insn_name(X86pX87Insn insn);

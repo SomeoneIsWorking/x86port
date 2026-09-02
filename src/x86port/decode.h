@@ -28,6 +28,7 @@
 #include "alu.h"
 #include "cond.h"
 #include "x87.h"
+#include "x87_transcendental.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -249,6 +250,7 @@ typedef struct X86pInsn {
   uint8_t cond;         /* X86pCond, per `op` */
   uint8_t x87;          /* X86pX87Insn, when op == kX86pInsnX87 */
   uint8_t x87_op;       /* X86pX87Op, when x87 == kX86pX87InsnArith */
+  uint8_t x87_fn;       /* X86pX87Fn, when x87 == kX86pX87InsnFn */
   /* The pop suffix. Set for FSTP, FADDP, FCOMP and friends; FCOMPP pops TWICE,
      so this counts rather than flags -- a single bit would make FCOMPP either
      FCOMP or a second instruction, and both are wrong. */
