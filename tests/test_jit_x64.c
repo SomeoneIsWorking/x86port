@@ -70,6 +70,8 @@ static unsigned long g_branch_blocks;
 #define GUEST_SIZE 4096u
 
 static uint8_t g_guest[GUEST_SIZE];
+static uint8_t g_before[GUEST_SIZE];
+static uint8_t g_after_interp[GUEST_SIZE];
 
 static X86pMem guest_mem(void) {
   X86pMem m;
@@ -129,6 +131,15 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
+  /*
+   * EBX, EBP or ESI: the three seeded with in-range addresses. ESI points two
+   * bytes below the END of the mapping, and its displacement is kept to 0..3 so
+   * the access STARTS inside and runs off -- the only shape that separates a
+   * check against `size - w` from one against `size`.
+   */
+  unsigned mb = (unsigned)((r >> 30) & 3u);
+  unsigned membase = (mb == 3u) ? 6u : (mb == 1u) ? 5u : 3u;
+  uint8_t memdisp = (membase == 6u) ? (uint8_t)((r >> 22) & 3u) : (uint8_t)((r >> 22) & 0x3Fu);
 
   switch (pick) {
   case 0: /* MOV r32, imm32 -- B8+r */
@@ -158,6 +169,38 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[0] = (uint8_t)(0x70u | ((r >> 12) & 0xFu));
     p[1] = (uint8_t)((r >> 20) & 0x1Fu);
     return 2;
+  case 9: /* MOV r32, [base+disp8] -- 8B /r, mod=01 */
+    p[0] = 0x8Bu;
+    p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 10: /* MOV [base+disp8], r32 -- 89 /r, mod=01 */
+    p[0] = 0x89u;
+    p[1] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 11: /* <alu> r32, [base+disp8] -- (op*8+3) /r, mod=01 */
+    p[0] = (uint8_t)((aluop << 3) | 3u);
+    p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 12: /* <alu> [base+disp8], r32 -- (op*8+1) /r, mod=01 */
+    p[0] = (uint8_t)((aluop << 3) | 1u);
+    p[1] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 13: { /* MOV r32, [base+index*scale+disp8] -- SIB, mod=01 */
+    /* Half the time the index is EDI, which is small and in range, so the
+       SCALE decides the address instead of the access faulting regardless. */
+    unsigned use_edi = (unsigned)((r >> 27) & 1u);
+    unsigned sibindex = use_edi ? 7u : (unsigned)((r >> 28) & 7u);
+    unsigned sibbase = use_edi ? 3u : membase;
+    p[0] = 0x8Bu;
+    p[1] = (uint8_t)(0x40u | (dst << 3) | 4u); /* rm=100: SIB follows */
+    p[2] = (uint8_t)((((r >> 26) & 3u) << 6) | (sibindex << 3) | sibbase);
+    p[3] = memdisp;
+    return 4;
+  }
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -195,6 +238,17 @@ static Prog generate(uint64_t *rng, uint32_t want_insns) {
 
 /* ---- state comparison ---------------------------------------------------- */
 
+/*
+ * Where generated memory operands point.
+ *
+ * Well clear of the program itself: a store landing in the instruction stream
+ * would be self-modifying code, and the interpreter re-reads instructions from
+ * this same buffer while the JIT is running code translated BEFORE the write.
+ * The two would then diverge legitimately, and the suite would report a
+ * translator bug that is really a test-harness bug.
+ */
+#define DATA_OFF 0x400u
+
 static void seed_cpu(X86pCpu *cpu, uint64_t r) {
   int i;
   x86p_cpu_reset(cpu);
@@ -202,6 +256,31 @@ static void seed_cpu(X86pCpu *cpu, uint64_t r) {
     r = r * 6364136223846793005ull + 1442695040888963407ull;
     cpu->reg[i] = interesting(r);
   }
+  /*
+   * EBX and EBP are given in-range addresses so generated memory operands
+   * mostly HIT. The other six keep their wild values, so operands based on them
+   * mostly fault -- and both paths matter: a backend whose bounds check never
+   * fires and one whose check always fires are equally broken, and a corpus
+   * that only exercises one of them cannot tell.
+   */
+  cpu->reg[kX86pEbx] = GUEST_BASE + DATA_OFF;
+  cpu->reg[kX86pEbp] = GUEST_BASE + DATA_OFF + 0x40u;
+  /*
+   * ESI sits just below the TOP of the mapping, so a four-byte access based on
+   * it starts inside and runs off the end. That is the case a bounds check
+   * written as `addr - lo > size` lets through while every in-the-middle access
+   * still behaves, and a corpus that only walks the interior cannot see it:
+   * measured -- comparing against `size` instead of `size - w` survived
+   * mutation until this register existed.
+   */
+  cpu->reg[kX86pEsi] = GUEST_BASE + GUEST_SIZE - 4u;
+  /*
+   * EDI is a small INDEX rather than an address. With a wild index every scaled
+   * operand faults whatever the scale is, so the scale itself is never
+   * exercised -- measured: turning scale 4 into scale 2 survived mutation while
+   * this register held a random value.
+   */
+  cpu->reg[kX86pEdi] = 3u;
   cpu->eip = GUEST_BASE;
 }
 
@@ -366,8 +445,31 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
       }
     }
 
+    /*
+     * BOTH ENGINES MUST SEE THE SAME MEMORY. They share one guest buffer, so
+     * running the interpreter first leaves ITS stores in place and the JIT then
+     * reads values the guest program never wrote -- a divergence with no
+     * translator bug behind it. Snapshot, run, keep the interpreter's memory,
+     * rewind, run the JIT, and compare the two images: memory is architectural
+     * state, so a store to the wrong address is a failure this must name rather
+     * than a difference it happens not to look at.
+     */
+    memcpy(g_before, g_guest, sizeof g_guest);
     run_interp(&ci, &mem, blk.insns);
+    memcpy(g_after_interp, g_guest, sizeof g_guest);
+    memcpy(g_guest, g_before, sizeof g_guest);
     (void)x86p_jit_enter(&blk, &cj);
+    if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0) {
+      unsigned d = 0;
+      size_t bi;
+      for (bi = 0; bi < sizeof g_guest; bi++) {
+        if (g_after_interp[bi] != g_guest[bi] && d++ < 4u) {
+          printf(
+              "    FAIL generated program: guest[%04zX] interp=%02X jit=%02X\n", bi, g_after_interp[bi], g_guest[bi]);
+        }
+      }
+      g_failed++;
+    }
 
     g_programs++;
     g_guest_insns += blk.insns;
@@ -376,6 +478,40 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     }
 
     if (!same_state(&ci, &cj, "generated program")) {
+      /* Decode and print the program: a divergence report that does not say
+         WHICH instructions were involved is a number, not a lead. */
+      uint32_t off = 0;
+      uint32_t k;
+      for (k = 0; k < blk.insns; k++) {
+        uint8_t ib[X86P_MAX_INSN_LEN];
+        X86pInsn di;
+        uint32_t j;
+        for (j = 0; j < (uint32_t)X86P_MAX_INSN_LEN; j++) {
+          uint32_t bv;
+          ib[j] = x86p_mem_read(&mem, GUEST_BASE + off + j, 1, &bv) ? (uint8_t)bv : 0u;
+        }
+        if (!x86p_decode(ib, X86P_MAX_INSN_LEN, &di)) {
+          break;
+        }
+        printf("        [%u] %-8s op=%u alu=%u ops=%d k0=%u k1=%u\n",
+               k,
+               di.mnemonic,
+               di.op,
+               di.alu,
+               di.operands,
+               di.operand[0].kind,
+               di.operand[1].kind);
+        {
+          unsigned bi2;
+          printf("             bytes:");
+          for (bi2 = 0; bi2 < di.length; bi2++) {
+            uint32_t bv2;
+            printf(" %02X", x86p_mem_read(&mem, GUEST_BASE + off + bi2, 1, &bv2) ? (unsigned)bv2 : 0u);
+          }
+          printf("\n");
+        }
+        off += di.length;
+      }
       printf("      round %d, seed %llu, %u guest insn(s), %zu host byte(s)\n",
              round,
              (unsigned long long)seed,
@@ -387,6 +523,133 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
 }
 
 /* ---- the negatives: refusals are named and are not silent ---------------- */
+
+/*
+ * ONE guest instruction per comparison.
+ *
+ * The block differential above proves a whole block agrees, and when it does
+ * not it names a divergence that may have been introduced any of fourteen
+ * instructions earlier -- a fact about the block, not about an emitter. This
+ * runs a single instruction between two identical states, so a failure names
+ * the shape that is wrong and nothing else.
+ *
+ * The terminator is PUSH (0x50): decodable, and deliberately WITHOUT an
+ * emitter, so the block stops after exactly one instruction. If PUSH ever gains
+ * an emitter this test would silently start comparing two-instruction blocks,
+ * so it asserts blk.insns == 1 rather than trusting the arrangement.
+ */
+static unsigned long g_single_compares;
+
+static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
+  void *code = code_alloc(65536);
+  uint64_t rng = 0xA5A5C0FFEEull;
+  int round;
+
+  CHECK(code != NULL);
+  if (!code) {
+    return;
+  }
+
+  for (round = 0; round < 4000; round++) {
+    X86pMem mem = guest_mem();
+    X86pCpu ci;
+    X86pCpu cj;
+    X86pJitBlock blk;
+    char reason[192];
+    X86pJitStatus st;
+    uint64_t seed;
+    uint32_t len;
+    uint32_t want;
+
+    memset(g_guest, 0x90, sizeof g_guest);
+    rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+    seed = rng;
+    /*
+     * One instruction, then TWO. A single instruction always translates with
+     * no known predecessor flag state, so the inlined carry-in forms -- the
+     * whole point of tracking the previous flag kind -- are only reachable
+     * from the second instruction of a pair. Testing only singletons leaves
+     * that path to the block differential, which cannot say which of fourteen
+     * instructions was wrong.
+     */
+    want = 1u + (uint32_t)(round & 3);
+    len = emit_guest_insn(g_guest, seed);
+    if (len == 0u) {
+      continue;
+    }
+    {
+      uint32_t k2;
+      uint32_t bad = 0;
+      for (k2 = 1u; k2 < want; k2++) {
+        uint32_t len2;
+        rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+        len2 = emit_guest_insn(g_guest + len, rng);
+        if (len2 == 0u) {
+          bad = 1;
+          break;
+        }
+        len += len2;
+      }
+      if (bad) {
+        continue;
+      }
+    }
+    g_guest[len] = 0x50u; /* PUSH EAX -- decodable, no emitter, stops the block */
+
+    seed_cpu(&ci, seed);
+    seed_cpu(&cj, seed);
+
+    st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    if (st == kX86pJitUnsupportedAtEntry) {
+      continue; /* the generator produced a shape this backend refuses by name */
+    }
+    g_checks++;
+    if (st != kX86pJitOk) {
+      g_failed++;
+      printf("    FAIL single round %d: translate -> %s (%s)\n", round, x86p_jit_status_name(st), reason);
+      continue;
+    }
+    g_checks++;
+    /* A branch ends the block, so a pair whose first instruction is a branch
+       legitimately translates as one. Anything LONGER than asked for means the
+       PUSH terminator gained an emitter and this test quietly stopped being
+       what it claims to be. */
+    if (blk.insns > want || blk.insns == 0u) {
+      g_failed++;
+      printf("    FAIL single round %d: asked for %u instruction(s), block has %u\n", round, want, blk.insns);
+      continue;
+    }
+    want = blk.insns;
+
+    memcpy(g_before, g_guest, sizeof g_guest);
+    run_interp(&ci, &mem, want);
+    memcpy(g_after_interp, g_guest, sizeof g_guest);
+    memcpy(g_guest, g_before, sizeof g_guest);
+    (void)x86p_jit_enter(&blk, &cj);
+    g_single_compares++;
+
+    if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0 || !same_state(&ci, &cj, "single instruction")) {
+      uint32_t o = 0;
+      uint32_t k;
+      for (k = 0; k < want; k++) {
+        X86pInsn di;
+        unsigned bi;
+        if (!x86p_decode(g_before + o, X86P_MAX_INSN_LEN, &di)) {
+          break;
+        }
+        printf("        %-8s alu=%u k0=%u k1=%u bytes:", di.mnemonic, di.alu, di.operand[0].kind, di.operand[1].kind);
+        for (bi = 0; bi < di.length; bi++) {
+          printf(" %02X", g_before[o + bi]);
+        }
+        printf("\n");
+        o += di.length;
+      }
+      printf("        single round %d, seed %llu\n", round, (unsigned long long)seed);
+      g_failed++;
+    }
+  }
+  munmap(code, 65536);
+}
 
 static void test_unsupported_at_entry_produces_no_block(void) {
   void *code = code_alloc(4096);
@@ -506,6 +769,7 @@ int main(void) {
   }
 
   RUN(test_jit_matches_interpreter_on_generated_programs);
+  RUN(test_jit_matches_interpreter_one_instruction_at_a_time);
   RUN(test_unsupported_at_entry_produces_no_block);
   RUN(test_block_stops_at_unsupported_with_eip_on_it);
   RUN(test_out_of_space_is_refused_not_truncated);
@@ -517,6 +781,11 @@ int main(void) {
          g_guest_insns,
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
+  printf("%lu single-instruction comparison(s)\n", g_single_compares);
+  if (g_single_compares == 0u) {
+    printf("NO single-instruction comparison ran: this suite claims nothing\n");
+    return 1;
+  }
   if (g_programs == 0u || g_state_compares == 0u) {
     printf("REFUSED: the differential compared nothing; these results mean nothing\n");
     return 1;

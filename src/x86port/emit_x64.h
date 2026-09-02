@@ -100,6 +100,8 @@ typedef struct X86pEmit {
   size_t cap;
   size_t len;
   int overflow;
+  unsigned sites_made;  /* forward jumps created */
+  unsigned sites_bound; /* ... and given a destination */
 } X86pEmit;
 
 void x86p_emit_init(X86pEmit *e, void *buf, size_t cap);
@@ -146,6 +148,13 @@ void x86p_emit_alu_r32_r32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
 /* <alu> r32, imm32 */
 void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint32_t imm);
 
+/* <alu> r64, r64 -- 64-bit, for host pointer arithmetic. Guest values are
+   never 64-bit; this is only ever used on addresses. */
+void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src);
+
+/* shl r32, imm8 -- the scale of a guest index operand. */
+void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count);
+
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);
@@ -181,6 +190,40 @@ void x86p_emit_store8_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostR
 /* movzx r32, byte [base + disp] -- a one-byte guest field widened without
    carrying whatever happened to be in the upper bits of the destination. */
 void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
+/*
+ * FORWARD JUMPS, with the destination filled in later.
+ *
+ * CMOVcc covers selecting between two values, which is why conditional
+ * BRANCHES needed no jumps. It cannot cover a guest memory access: a bounds
+ * check that fails must not perform the load, and a conditional move performs
+ * both sides. So this is the first place a real jump is unavoidable.
+ *
+ * A site is returned by value and bound by x86p_emit_bind, which computes the
+ * displacement from where the jump ends to where the label landed. An UNBOUND
+ * site is the failure this interface is shaped to prevent: the emitted jump
+ * would carry whatever displacement was left in the buffer, which is a branch
+ * into the middle of an unrelated instruction. x86p_emit_sites_bound() reports
+ * whether every site created has been bound, and the translator asks before
+ * publishing.
+ */
+typedef struct X86pEmitSite {
+  size_t at;  /* offset of the 4-byte displacement */
+  size_t end; /* offset just past the jump, which the displacement is relative to */
+} X86pEmitSite;
+
+/* jcc rel32, destination unbound. */
+X86pEmitSite x86p_emit_jcc_rel32(X86pEmit *e, unsigned cc);
+
+/* jmp rel32, destination unbound. */
+X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e);
+
+/* Point a site at the current end of the buffer. */
+void x86p_emit_bind(X86pEmit *e, X86pEmitSite site);
+
+/* Were all sites bound? Ask before publishing; an unbound jump is a branch to
+   an arbitrary offset. */
+int x86p_emit_sites_bound(const X86pEmit *e);
 
 /* ---- structure --------------------------------------------------------- */
 

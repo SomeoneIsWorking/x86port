@@ -50,7 +50,15 @@ extern "C" {
 typedef enum X86pJitExit {
   kX86pJitExitBlockEnd = 0, /* every translated instruction ran; eip is the next address */
   kX86pJitExitUnsupported,  /* stopped AT an instruction this build cannot emit */
-  kX86pJitExitCount         /* MUST stay last */
+  /*
+   * A guest memory access was outside the mapping. EIP is left AT the faulting
+   * instruction, not past it, so the caller can deliver the fault or hand the
+   * instruction to the interpreter. Distinct from Unsupported because "this
+   * build cannot translate it" and "the guest did something invalid" want
+   * opposite responses.
+   */
+  kX86pJitExitMemoryFault,
+  kX86pJitExitCount /* MUST stay last */
 } X86pJitExit;
 
 const char *x86p_jit_exit_name(X86pJitExit e);
