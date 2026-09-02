@@ -128,7 +128,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 25u);
+  unsigned pick = (unsigned)(r % 27u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -222,6 +222,22 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0x40u | membase);
     p[2] = memdisp;
     return 3;
+  case 19: /* LEA r32, [base+disp8] -- 8D /r, mod=01 */
+    p[0] = 0x8Du;
+    p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 20: { /* LEA r32, [base+index*scale+disp8] -- SIB, mod=01. An LEA on a
+                WILD base is legal and common: it is arithmetic, not an access,
+                so the wide-open value must produce a result rather than a
+                fault. */
+    unsigned leabase = (unsigned)((r >> 27) & 7u);
+    p[0] = 0x8Du;
+    p[1] = (uint8_t)(0x40u | (dst << 3) | 4u);
+    p[2] = (uint8_t)((((r >> 26) & 3u) << 6) | (((r >> 28) & 7u) << 3) | leabase);
+    p[3] = memdisp;
+    return 4;
+  }
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */

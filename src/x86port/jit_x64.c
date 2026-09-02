@@ -228,6 +228,11 @@ static int can_emit(const X86pInsn *insn) {
                                    (operand_is_imm(&insn->operand[0]) && insn->operand[0].size == 4));
   case kX86pInsnPop:
     return insn->operands == 1 && operand_writable(&insn->operand[0]);
+  case kX86pInsnLea:
+    /* The size of an LEA's memory operand describes an access that never
+       happens, so operand_is_mem32's width rule does not apply -- only that
+       the operand really is a memory reference to compute. */
+    return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   default:
     return 0;
   }
@@ -588,6 +593,20 @@ static void emit_alu_inline(BlockCtx *c,
  *     holding the popped value rather than the adjusted pointer, and a memory
  *     destination is addressed from the ALREADY advanced ESP.
  */
+/*
+ * LEA: the address, never the contents.
+ *
+ * NO BOUNDS CHECK, and that is the whole point of the instruction rather than
+ * an omission. LEA is the one memory-operand form that does not access memory,
+ * so checking it would fault on an address the guest deliberately never
+ * touched -- and guest code really does use it as a three-input adder on values
+ * that are not addresses at all.
+ */
+static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
+  emit_effective_address(c->e, &insn->operand[1]);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(insn->operand[0].reg), EA_REG);
+}
+
 static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *o = &insn->operand[0];
 
@@ -851,6 +870,9 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
       break;
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
+      break;
+    case kX86pInsnLea:
+      emit_lea(&ctx, &insn);
       break;
     case kX86pInsnPush:
       emit_push(&ctx, &insn, pc);
