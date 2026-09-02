@@ -247,7 +247,13 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
      * this framework decoded correctly, and letting it through would hand the
      * engine an operand it would then read four bytes of.
      */
-    if (wide_ok && (out->size == 6 || out->size == 8 || out->size == 10 || out->size == 16)) {
+    /* Each width is named because each corresponds to a real operand kind: 6
+       a far pointer, 8 a double or an MMX register, 10 x87's extended format,
+       16 an XMM register, 28 an FPU environment and 108 a whole FPU state
+       image. A size not on this list is a mis-decode, which is exactly what
+       the gate exists to catch. */
+    if (wide_ok && (out->size == 6 || out->size == 8 || out->size == 10 || out->size == 16 || out->size == 28 ||
+                    out->size == 108)) {
       return 1;
     }
     return 0;
@@ -552,6 +558,8 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     FP(ZYDIS_MNEMONIC_FLDCW, kX86pX87InsnLoadControl);
     FP(ZYDIS_MNEMONIC_FNSTCW, kX86pX87InsnStoreControl);
     FP(ZYDIS_MNEMONIC_FFREE, kX86pX87InsnFree);
+    FP(ZYDIS_MNEMONIC_FNSAVE, kX86pX87InsnSaveState);
+    FP(ZYDIS_MNEMONIC_FRSTOR, kX86pX87InsnRestoreState);
     FP(ZYDIS_MNEMONIC_FNINIT, kX86pX87InsnInit);
     FP(ZYDIS_MNEMONIC_FWAIT, kX86pX87InsnWait);
     FP(ZYDIS_MNEMONIC_FNCLEX, kX86pX87InsnClearExc);
@@ -574,6 +582,25 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
  * and a function selector, because what the decoder has to say about them is
  * identical and only the opcode differs.
  */
+/* The conditional moves. They share one x87 kind and carry an ordinary
+   X86pCond, because the condition they test is an EFLAGS condition -- the
+   whole reason the instruction exists is to act on an FCOMI without a jump. */
+#define FCMOV(m, cc)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = (uint8_t)kX86pInsnX87;                                                                                   \
+    out->x87 = (uint8_t)kX86pX87InsnCmov;                                                                              \
+    out->cond = (uint8_t)(cc);                                                                                         \
+    return
+    FCMOV(ZYDIS_MNEMONIC_FCMOVB, kX86pCondB);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVE, kX86pCondZ);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVBE, kX86pCondBE);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVU, kX86pCondP);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVNB, kX86pCondNB);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVNE, kX86pCondNZ);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVNBE, kX86pCondA);
+    FCMOV(ZYDIS_MNEMONIC_FCMOVNU, kX86pCondNP);
+#undef FCMOV
+
 #define FN(m, k)                                                                                                       \
   case m:                                                                                                              \
     out->op = kX86pInsnX87;                                                                                            \

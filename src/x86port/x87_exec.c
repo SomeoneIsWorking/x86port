@@ -2,6 +2,8 @@
 #include "x87_exec.h"
 
 #include "flags.h"
+#include "cond.h"
+#include "x87_state.h"
 #include "x87_transcendental.h"
 
 #include <math.h>
@@ -455,6 +457,32 @@ static void execute(Ctx *c) {
     return;
   case kX86pX87InsnConstLog102:
     x86p_x87_push(f, 0.301029995663981195213738894724493027L);
+    return;
+
+  case kX86pX87InsnCmov: {
+    /* Reads the INTEGER flags, which is the point of the instruction: it lets
+       an FCOMI result be acted on without a branch. */
+    long double v;
+    if (!x86p_cond((X86pCond)c->insn->cond, &c->cpu->flags)) {
+      return;
+    }
+    if (!x86p_x87_get(f, c->insn->operand[1].reg, &v)) {
+      return; /* x86p_x87_get has already set the stack-fault flags */
+    }
+    (void)x86p_x87_set(f, 0, v);
+    return;
+  }
+
+  case kX86pX87InsnSaveState:
+    if (!x86p_x87_save_state(f, c->mem, c->addr)) {
+      fault(c);
+    }
+    return;
+
+  case kX86pX87InsnRestoreState:
+    if (!x86p_x87_restore_state(f, c->mem, c->addr)) {
+      fault(c);
+    }
     return;
 
   case kX86pX87InsnWait:
