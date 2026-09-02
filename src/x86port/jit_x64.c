@@ -22,6 +22,26 @@
  */
 #define CPU_REG kX64Rbx
 
+/*
+ * Scratch roles in the emitted memory sequence. Named rather than spelled at
+ * each site, because a collision between the host pointer and an operand is
+ * silent: the access simply reads the wrong address.
+ */
+#define EA_REG kX64Rax      /* the guest effective address, 32-bit */
+#define HOSTPTR_REG kX64R11 /* the host address it maps to */
+#define FAULTPC_REG kX64R10 /* guest EIP to report if the access faults */
+/*
+ * ADDR_TMP and CARRY_REG must be DIFFERENT registers, and that is a
+ * correctness constraint rather than a preference. The carry-in bit is computed
+ * before the address -- it reads the OLD flag state, which the operation is
+ * about to overwrite -- but it must not be STORED until the bounds check has
+ * passed, because an access that faults must leave the flag state untouched.
+ * So the bit stays live in CARRY_REG across the whole address computation, and
+ * the address machinery cannot use that register.
+ */
+#define ADDR_TMP kX64Rdi  /* index/offset scratch during address forming */
+#define CARRY_REG kX64Rcx /* the pending carry-in bit, until it is safe to store */
+
 /* Guest instructions per block. A cap so a straight-line run of translatable
    code cannot consume the whole arena in one block, and so a caller always gets
    a chance to invalidate between blocks. */
@@ -31,8 +51,8 @@
    once per instruction rather than after every emit. The margin is generous
    and the emitter's own overflow flag is still the authority -- this only
    decides when to stop trying. */
-#define WORST_CASE_INSN_BYTES 96
-#define EPILOGUE_BYTES 32
+#define WORST_CASE_INSN_BYTES 224
+#define EPILOGUE_BYTES 64 /* normal exit plus the shared memory-fault stub */
 
 const char *x86p_jit_exit_name(X86pJitExit e) {
   switch (e) {
@@ -40,6 +60,8 @@ const char *x86p_jit_exit_name(X86pJitExit e) {
     return "block end";
   case kX86pJitExitUnsupported:
     return "unsupported instruction";
+  case kX86pJitExitMemoryFault:
+    return "guest memory fault";
   case kX86pJitExitCount:
   default:
     return "?";
@@ -135,6 +157,21 @@ static int operand_is_imm(const X86pOperand *o) {
   return o->kind == kX86pOperandImm;
 }
 
+/* A 32-bit memory operand this backend can address. Widths 1 and 2 stay out
+   until their partial-write rules are emitted; a byte load that wrote a whole
+   register would corrupt the three bytes above it. */
+static int operand_is_mem32(const X86pOperand *o) {
+  return o->kind == kX86pOperandMem && o->size == 4;
+}
+
+static int operand_readable(const X86pOperand *o) {
+  return operand_is_reg32(o) || operand_is_imm(o) || operand_is_mem32(o);
+}
+
+static int operand_writable(const X86pOperand *o) {
+  return operand_is_reg32(o) || operand_is_mem32(o);
+}
+
 /*
  * A branch this backend can emit: PC-relative with an immediate displacement.
  *
@@ -159,16 +196,29 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnNop:
     return 1;
   case kX86pInsnMov:
-    return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) &&
-           (operand_is_reg32(&insn->operand[1]) || operand_is_imm(&insn->operand[1]));
+    /* At most ONE memory operand: x86 has no memory-to-memory MOV, and
+       accepting one would emit two host pointers into the same register. */
+    if (operand_is_mem32(&insn->operand[0]) && operand_is_mem32(&insn->operand[1])) {
+      return 0;
+    }
+    return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
   case kX86pInsnAlu:
     /* Shifts and rotates take their count from CL or an immediate and have
        their own flag rules; excluded until they are tested on their own. */
     if (insn->alu > (uint8_t)kX86pAluTest) {
       return 0;
     }
-    return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) &&
-           (operand_is_reg32(&insn->operand[1]) || operand_is_imm(&insn->operand[1]));
+    /* ADC and SBB still call x86p_alu, which takes VALUES -- a memory operand
+       would need the result written back through a pointer the call has
+       clobbered, so they stay register-only for now. */
+    if (insn->alu == (uint8_t)kX86pAluAdc || insn->alu == (uint8_t)kX86pAluSbb) {
+      return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) &&
+             (operand_is_reg32(&insn->operand[1]) || operand_is_imm(&insn->operand[1]));
+    }
+    if (operand_is_mem32(&insn->operand[0]) && operand_is_mem32(&insn->operand[1])) {
+      return 0;
+    }
+    return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
   default:
     return 0;
   }
@@ -181,15 +231,167 @@ static int alu_writes_dest(uint8_t op) {
   return op != (uint8_t)kX86pAluCmp && op != (uint8_t)kX86pAluTest;
 }
 
+/* ---- guest memory -------------------------------------------------------- */
+
+/*
+ * THE MAPPING IS BAKED IN AS CONSTANTS, and that is a contract, not an
+ * oversight.
+ *
+ * A block embeds the host base, guest low address, and size of the X86pMem it
+ * was translated against, so an access is a bounds check and an add rather than
+ * a call. This is what static recompilation does too, and it is why memory
+ * access can be fast at all. The cost is that a block is only valid for the
+ * mapping it was translated against: if the guest memory is remapped, moved, or
+ * resized, every block must be discarded. The block cache's flush is that
+ * mechanism. A caller that remaps without flushing gets a block reading freed
+ * host memory, so this is stated here and in the header rather than left to be
+ * discovered.
+ */
+typedef struct MemPlan {
+  uint64_t host;
+  uint32_t lo;
+  uint32_t size;
+} MemPlan;
+
+/*
+ * Emit: EA_REG = base + index*scale + disp, as the guest computes it.
+ *
+ * 32-bit throughout, so the wrap at 4 GB is the guest's wrap. Widening any part
+ * of this to 64 bits would make an address that the guest wraps address
+ * something real instead.
+ */
+static void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
+  int have_base = (o->base >= 0);
+  if (have_base) {
+    x86p_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
+  } else {
+    x86p_emit_mov_r32_imm32(e, EA_REG, 0u);
+  }
+  if (o->index >= 0) {
+    unsigned shift = 0u;
+    switch (o->scale) {
+    case 2:
+      shift = 1u;
+      break;
+    case 4:
+      shift = 2u;
+      break;
+    case 8:
+      shift = 3u;
+      break;
+    default:
+      shift = 0u;
+      break;
+    }
+    x86p_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
+    if (shift) {
+      x86p_emit_shl_r32_imm8(e, ADDR_TMP, (uint8_t)shift);
+    }
+    x86p_emit_alu_r32_r32(e, kX64Add, EA_REG, ADDR_TMP);
+  }
+  if (o->disp != 0) {
+    x86p_emit_alu_r32_imm32(e, kX64Add, EA_REG, (uint32_t)o->disp);
+  }
+}
+
+/*
+ * Bounds-check EA_REG and leave the host address in HOSTPTR_REG.
+ *
+ * ONE unsigned compare covers both ends: (addr - lo) as unsigned is huge when
+ * addr is below lo, so `ja` catches underflow and overflow together. Writing
+ * two signed comparisons instead is the classic way to let a negative offset
+ * through.
+ *
+ * The check is against size - w, so an access that STARTS inside the mapping
+ * and runs off the end is refused rather than truncated -- the same rule
+ * x86p_mem_read enforces.
+ *
+ * Returns the site to bind to the fault stub.
+ */
+static X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w) {
+  x86p_emit_mov_r32_imm32(e, FAULTPC_REG, insn_eip);
+  x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
+  if (plan->lo != 0u) {
+    x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
+  }
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, ADDR_TMP, plan->size - (uint32_t)w);
+  return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
+}
+
+/* HOSTPTR_REG = host + (EA - lo). ADDR_TMP already holds the offset, and
+   writing a 32-bit register zero-extends, so the 64-bit add gets a clean
+   offset. */
+static void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
+  x86p_emit_mov_r64_imm64(e, HOSTPTR_REG, plan->host);
+  x86p_emit_alu_r64_r64(e, kX64Add, HOSTPTR_REG, ADDR_TMP);
+}
+
 /* ---- emitting ------------------------------------------------------------ */
 
-/* Load a reg-or-immediate operand into a host register. */
-static void emit_operand_value(X86pEmit *e, X86pHostReg dst, const X86pOperand *o) {
-  if (o->kind == kX86pOperandImm) {
-    x86p_emit_mov_r32_imm32(e, dst, o->imm);
-  } else {
-    x86p_emit_load32(e, dst, CPU_REG, reg_off(o->reg));
+/*
+ * Per-block emission state.
+ *
+ * The fault sites are collected rather than bound as they are made, because
+ * they all jump to ONE stub emitted after the normal epilogue. Binding each to
+ * its own copy of the stub would be correct and would also add a dozen bytes
+ * per memory access to every block.
+ */
+typedef struct BlockCtx {
+  X86pEmit *e;
+  MemPlan plan;
+  X86pEmitSite faults[MAX_INSNS * 2];
+  unsigned nfaults;
+} BlockCtx;
+
+static void note_fault(BlockCtx *c, X86pEmitSite site) {
+  if (c->nfaults < sizeof c->faults / sizeof c->faults[0]) {
+    c->faults[c->nfaults++] = site;
+    return;
   }
+  /* More fault sites than the block can hold. The site is real and now cannot
+     be bound, so the buffer is poisoned and the block discarded -- never left
+     with a jump to an arbitrary offset. */
+  c->e->overflow = 1;
+}
+
+/* Leave HOSTPTR_REG pointing at the guest operand, or jump to the fault stub. */
+static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
+  emit_effective_address(c->e, o);
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  emit_host_pointer(c->e, &c->plan);
+}
+
+/*
+ * Load an operand's VALUE into a host register.
+ *
+ * A memory operand prepares its pointer here, so at most one operand per
+ * instruction may be memory -- which x86 guarantees, and can_emit enforces.
+ * A second would overwrite HOSTPTR_REG and the first access would silently
+ * read the second's address.
+ */
+static void emit_read_operand(BlockCtx *c, X86pHostReg dst, const X86pOperand *o, uint32_t insn_eip) {
+  switch (o->kind) {
+  case kX86pOperandImm:
+    x86p_emit_mov_r32_imm32(c->e, dst, o->imm);
+    return;
+  case kX86pOperandMem:
+    emit_mem_prepare(c, o, insn_eip);
+    x86p_emit_load32(c->e, dst, HOSTPTR_REG, 0);
+    return;
+  default:
+    x86p_emit_load32(c->e, dst, CPU_REG, reg_off(o->reg));
+    return;
+  }
+}
+
+/* Write a host register into an operand's destination. Memory destinations
+   must already have been prepared -- HOSTPTR_REG still holds the pointer. */
+static void emit_write_operand(BlockCtx *c, const X86pOperand *o, X86pHostReg src) {
+  if (o->kind == kX86pOperandMem) {
+    x86p_emit_store32(c->e, HOSTPTR_REG, 0, src);
+    return;
+  }
+  x86p_emit_store32(c->e, CPU_REG, reg_off(o->reg), src);
 }
 
 /*
@@ -257,33 +459,31 @@ static int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, 
  * predecessor because this backend does not emit them; they can only arrive
  * through the unknown-predecessor path, which asks the real function.
  */
-static void emit_store_carry_in(X86pEmit *e, int last_kind) {
+static void emit_compute_carry_in(X86pEmit *e, int last_kind) {
   switch (last_kind) {
   case kX86pFlagsNone:
   case kX86pFlagsLogic:
     /* Both give CF == 0 with no computation at all. */
-    x86p_emit_store8_imm(e, CPU_REG, FLAG_CARRY_IN, 0u);
+    x86p_emit_mov_r32_imm32(e, CARRY_REG, 0u);
     return;
   case kX86pFlagsAdd:
     /* CF = r < a, unsigned */
-    x86p_emit_load32(e, kX64Rcx, CPU_REG, FLAG_R);
-    x86p_emit_alu_r32_mem(e, kX64Cmp, kX64Rcx, CPU_REG, FLAG_A);
-    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, kX64Rcx);
-    x86p_emit_store8_reg(e, CPU_REG, FLAG_CARRY_IN, kX64Rcx);
+    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_R);
+    x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_A);
+    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
     return;
   case kX86pFlagsSub:
     /* CF = a < b, unsigned */
-    x86p_emit_load32(e, kX64Rcx, CPU_REG, FLAG_A);
-    x86p_emit_alu_r32_mem(e, kX64Cmp, kX64Rcx, CPU_REG, FLAG_B);
-    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, kX64Rcx);
-    x86p_emit_store8_reg(e, CPU_REG, FLAG_CARRY_IN, kX64Rcx);
+    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_A);
+    x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_B);
+    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
     return;
   default:
     /* Unknown predecessor: ask the one authority. Once per block. */
     x86p_emit_lea64(e, kX64Rdi, CPU_REG, flags_off());
     x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_flag_cf);
     x86p_emit_call_r64(e, kX64Rax);
-    x86p_emit_store8_reg(e, CPU_REG, FLAG_CARRY_IN, kX64Rax);
+    x86p_emit_mov_r32_r32(e, CARRY_REG, kX64Rax);
     return;
   }
 }
@@ -306,27 +506,59 @@ static void emit_store_carry_in(X86pEmit *e, int last_kind) {
  * shifts, ADC/SBB and the flag DERIVATIONS all still live in one place and
  * still go through it. The differential is what keeps that claim honest.
  */
-static void emit_alu_inline(
-    X86pEmit *e, const X86pInsn *insn, X86pHostAlu host, X86pFlagKind kind, int writes_dest, int last_kind) {
+static void emit_alu_inline(BlockCtx *c,
+                            const X86pInsn *insn,
+                            X86pHostAlu host,
+                            X86pFlagKind kind,
+                            int writes_dest,
+                            int last_kind,
+                            uint32_t insn_eip) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
 
-  /* FIRST, while the old flag state is still intact. */
-  emit_store_carry_in(e, last_kind);
+  /*
+   * COMPUTED first, while the old flag state is still intact -- and STORED only
+   * after the memory operand's bounds check, because a refused access must
+   * leave every flag field exactly as it was. Writing carry_in before the check
+   * left the flags half-updated on a fault: a divergence that only appears
+   * three instructions later, when something finally reads CF.
+   */
+  emit_compute_carry_in(c->e, last_kind);
 
-  emit_operand_value(e, kX64Rsi, dst); /* a */
-  emit_operand_value(e, kX64Rdx, src); /* b */
-  x86p_emit_mov_r32_r32(e, kX64Rax, kX64Rsi);
-  x86p_emit_alu_r32_r32(e, host, kX64Rax, kX64Rdx); /* r */
+  /*
+   * The memory operand, whichever side it is on, is prepared ONCE and its
+   * pointer reused for both the read and the write-back. Recomputing the
+   * address for the store would double the cost and, worse, would recompute it
+   * from registers the operation may have just modified -- `ADD [EAX+4], EAX`
+   * must store where it loaded.
+   */
+  if (dst->kind == kX86pOperandMem) {
+    emit_mem_prepare(c, dst, insn_eip);
+    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+    emit_read_operand(c, kX64Rdx, src, insn_eip);
+  } else if (src->kind == kX86pOperandMem) {
+    emit_mem_prepare(c, src, insn_eip);
+    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    x86p_emit_load32(c->e, kX64Rdx, HOSTPTR_REG, 0);
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(dst->reg));
+  } else {
+    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    emit_read_operand(c, kX64Rdx, src, insn_eip);
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(dst->reg));
+  }
 
-  x86p_emit_store32(e, CPU_REG, FLAG_A, kX64Rsi);
-  x86p_emit_store32(e, CPU_REG, FLAG_B, kX64Rdx);
-  x86p_emit_store32(e, CPU_REG, FLAG_R, kX64Rax);
-  x86p_emit_store8_imm(e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-  x86p_emit_store8_imm(e, CPU_REG, FLAG_W, 4u);
+  x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
+  x86p_emit_alu_r32_r32(c->e, host, kX64Rax, kX64Rdx); /* r */
+
+  x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
+  x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
+  x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
+  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
+  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, 4u);
 
   if (writes_dest) {
-    x86p_emit_store32(e, CPU_REG, reg_off(dst->reg), kX64Rax);
+    emit_write_operand(c, dst, kX64Rax);
   }
 }
 
@@ -334,8 +566,13 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
 
-  emit_operand_value(e, kX64Rsi, dst); /* a */
-  emit_operand_value(e, kX64Rdx, src); /* b */
+  /* Register-only: can_emit keeps memory operands away from ADC and SBB. */
+  x86p_emit_load32(e, kX64Rsi, CPU_REG, reg_off(dst->reg)); /* a */
+  if (src->kind == kX86pOperandImm) {
+    x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm); /* b */
+  } else {
+    x86p_emit_load32(e, kX64Rdx, CPU_REG, reg_off(src->reg));
+  }
   x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)insn->alu);
   x86p_emit_mov_r32_imm32(e, kX64Rcx, 4u);
   x86p_emit_lea64(e, kX64R8, CPU_REG, flags_off());
@@ -346,15 +583,30 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   }
 }
 
-static void emit_mov(X86pEmit *e, const X86pInsn *insn) {
+static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
-  if (src->kind == kX86pOperandImm) {
-    x86p_emit_store32_imm(e, CPU_REG, reg_off(dst->reg), src->imm);
+
+  if (dst->kind == kX86pOperandMem) {
+    /* Prepare the destination FIRST, then materialise the value: reading the
+       source cannot disturb HOSTPTR_REG, but computing an address can disturb
+       a value already sitting in a scratch register. */
+    emit_mem_prepare(c, dst, insn_eip);
+    if (src->kind == kX86pOperandImm) {
+      x86p_emit_store32_imm(c->e, HOSTPTR_REG, 0, src->imm);
+      return;
+    }
+    x86p_emit_load32(c->e, kX64Rax, CPU_REG, reg_off(src->reg));
+    x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rax);
     return;
   }
-  x86p_emit_load32(e, kX64Rax, CPU_REG, reg_off(src->reg));
-  x86p_emit_store32(e, CPU_REG, reg_off(dst->reg), kX64Rax);
+
+  if (src->kind == kX86pOperandImm) {
+    x86p_emit_store32_imm(c->e, CPU_REG, reg_off(dst->reg), src->imm);
+    return;
+  }
+  emit_read_operand(c, kX64Rax, src, insn_eip);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(dst->reg), kX64Rax);
 }
 
 /*
@@ -419,6 +671,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  char *reason,
                                  unsigned reason_len) {
   X86pEmit e;
+  BlockCtx ctx;
   uint32_t pc = eip;
   uint32_t count = 0;
   X86pJitExit exit = kX86pJitExitBlockEnd;
@@ -440,6 +693,17 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   }
 
   x86p_emit_init(&e, code, code_cap);
+  memset(&ctx, 0, sizeof ctx);
+  ctx.e = &e;
+  ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
+  ctx.plan.lo = mem->lo;
+  ctx.plan.size = mem->size;
+  if (mem->size < 4u) {
+    /* The bounds check computes size - 4; a mapping smaller than one dword
+       would underflow it into an enormous limit that admits everything. */
+    say(reason, reason_len, "guest mapping of %u byte(s) is too small to address", mem->size);
+    return kX86pJitOutOfSpace;
+  }
   emit_prologue(&e);
 
   for (;;) {
@@ -518,14 +782,14 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     case kX86pInsnNop:
       break;
     case kX86pInsnMov:
-      emit_mov(&e, &insn);
+      emit_mov(&ctx, &insn, pc);
       break;
     case kX86pInsnAlu: {
       X86pHostAlu host;
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        emit_alu_inline(&e, &insn, host, kind, writes_dest, last_kind);
+        emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, pc);
         last_kind = (int)kind;
       } else {
         emit_alu(&e, &insn);
@@ -549,6 +813,31 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
 
   if (!terminated) {
     emit_epilogue(&e, pc, exit);
+  }
+
+  /*
+   * The shared fault stub, AFTER the normal return so it is never fallen into.
+   * FAULTPC_REG holds the guest EIP of whichever access failed, set immediately
+   * before each bounds check -- so EIP lands ON the faulting instruction rather
+   * than past it, and a caller can deliver the fault or hand that one
+   * instruction to the interpreter.
+   */
+  if (ctx.nfaults) {
+    unsigned f;
+    for (f = 0; f < ctx.nfaults; f++) {
+      x86p_emit_bind(&e, ctx.faults[f]);
+    }
+    x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
+    x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitMemoryFault);
+    x86p_emit_pop_r64(&e, CPU_REG);
+    x86p_emit_ret(&e);
+  }
+
+  if (!x86p_emit_sites_bound(&e)) {
+    /* An unbound forward jump carries whatever displacement the buffer held --
+       a branch into the middle of an unrelated instruction. Refuse. */
+    say(reason, reason_len, "internal: %u jump site(s) left unbound at %08X", e.sites_made - e.sites_bound, eip);
+    return kX86pJitOutOfSpace;
   }
 
   if (!x86p_emit_ok(&e)) {

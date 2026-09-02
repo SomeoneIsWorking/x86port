@@ -10,6 +10,8 @@ void x86p_emit_init(X86pEmit *e, void *buf, size_t cap) {
   e->buf = (uint8_t *)buf;
   e->cap = buf ? cap : 0u;
   e->len = 0u;
+  e->sites_made = 0u;
+  e->sites_bound = 0u;
   /* A null buffer is overflowed from the start rather than a special case
      every emit has to remember to test. */
   e->overflow = buf ? 0 : 1;
@@ -171,6 +173,19 @@ void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint3
   put32(e, imm);
 }
 
+void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src) {
+  rex(e, 1, src, dst);
+  put(e, (uint8_t)(((unsigned)op << 3) | 1u));
+  modrm_reg(e, src, dst);
+}
+
+void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count) {
+  rex(e, 0, kX64Rax, dst);
+  put(e, 0xC1u);
+  put(e, (uint8_t)(0xE0u | ((unsigned)dst & 7u))); /* /4 */
+  put(e, count);
+}
+
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
   rex(e, 0, b, a);
   put(e, 0x85u);
@@ -220,6 +235,48 @@ void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t 
   put(e, 0x0Fu);
   put(e, 0xB6u);
   modrm_mem(e, dst, base, disp);
+}
+
+static X86pEmitSite make_site(X86pEmit *e) {
+  X86pEmitSite s;
+  s.at = e->len;
+  put32(e, 0u); /* placeholder */
+  s.end = e->len;
+  e->sites_made++;
+  return s;
+}
+
+X86pEmitSite x86p_emit_jcc_rel32(X86pEmit *e, unsigned cc) {
+  put(e, 0x0Fu);
+  put(e, (uint8_t)(0x80u + (cc & 0xFu)));
+  return make_site(e);
+}
+
+X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e) {
+  put(e, 0xE9u);
+  return make_site(e);
+}
+
+void x86p_emit_bind(X86pEmit *e, X86pEmitSite site) {
+  long long rel;
+  if (!e) {
+    return;
+  }
+  e->sites_bound++;
+  if (e->overflow || site.at + 4u > e->len) {
+    /* The jump itself did not fit, so there is nothing to patch. The buffer is
+       already marked overflowed and the block will be discarded. */
+    return;
+  }
+  rel = (long long)e->len - (long long)site.end;
+  e->buf[site.at + 0u] = (uint8_t)((unsigned long long)rel & 0xFFu);
+  e->buf[site.at + 1u] = (uint8_t)(((unsigned long long)rel >> 8) & 0xFFu);
+  e->buf[site.at + 2u] = (uint8_t)(((unsigned long long)rel >> 16) & 0xFFu);
+  e->buf[site.at + 3u] = (uint8_t)(((unsigned long long)rel >> 24) & 0xFFu);
+}
+
+int x86p_emit_sites_bound(const X86pEmit *e) {
+  return e && e->sites_made == e->sites_bound;
 }
 
 /* ---- structure --------------------------------------------------------- */
