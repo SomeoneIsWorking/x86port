@@ -128,7 +128,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 27u);
+  unsigned pick = (unsigned)(r % 30u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -238,6 +238,20 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[3] = memdisp;
     return 4;
   }
+  case 21: /* CALL rel32 -- E8 cd. Ends the block by transferring control, and
+              the displacement is deliberately wild: nothing here executes the
+              target, and folding the wrong one in is what this compares. */
+    p[0] = 0xE8u;
+    put_u32(p + 1, interesting(r));
+    return 5;
+  case 22: /* RET -- C3 */
+    p[0] = 0xC3u;
+    return 1;
+  case 23: /* RET imm16 -- C2 iw, which also releases the caller's arguments */
+    p[0] = 0xC2u;
+    p[1] = (uint8_t)((r >> 22) & 0xFFu);
+    p[2] = 0u;
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -388,13 +402,32 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
 }
 
 /* Run the interpreter until it has executed `n` instructions or stopped. */
-static void run_interp(X86pCpu *cpu, const X86pMem *mem, uint32_t n) {
+/* Returns the interpreter's own reason for stopping, which is what the JIT's
+   exit code is checked against. Comparing only the register file lets a block
+   that stops for the WRONG REASON pass: a RET that reports "unsupported" leaves
+   identical state and still forces the caller back to the interpreter for an
+   instruction the backend just executed. */
+static X86pStepStatus run_interp(X86pCpu *cpu, const X86pMem *mem, uint32_t n) {
   uint32_t i;
   for (i = 0; i < n; i++) {
-    if (x86p_step(cpu, mem, NULL) != kX86pStepOk) {
-      return;
+    X86pStepStatus st = x86p_step(cpu, mem, NULL);
+    if (st != kX86pStepOk) {
+      return st;
     }
   }
+  return kX86pStepOk;
+}
+
+/* The exit a block that ran `n` instructions must report, given how the
+   interpreter stopped and whether the translation had a stopper. */
+static int exit_agrees(X86pJitExit got, X86pStepStatus interp, const char *stopper) {
+  if (interp == kX86pStepMemoryFault) {
+    return got == kX86pJitExitMemoryFault;
+  }
+  if (stopper != NULL) {
+    return got == kX86pJitExitUnsupported;
+  }
+  return got == kX86pJitExitBlockEnd;
 }
 
 /* ---- the differential ---------------------------------------------------- */
@@ -416,6 +449,8 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     X86pJitBlock blk;
     char reason[192];
     X86pJitStatus st;
+    X86pStepStatus interp_st;
+    X86pJitExit jit_exit;
     Prog pr;
     uint64_t seed;
 
@@ -508,10 +543,19 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      * than a difference it happens not to look at.
      */
     memcpy(g_before, g_guest, sizeof g_guest);
-    run_interp(&ci, &mem, blk.insns);
+    interp_st = run_interp(&ci, &mem, blk.insns);
     memcpy(g_after_interp, g_guest, sizeof g_guest);
     memcpy(g_guest, g_before, sizeof g_guest);
-    (void)x86p_jit_enter(&blk, &cj);
+    jit_exit = x86p_jit_enter(&blk, &cj);
+    g_checks++;
+    if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {
+      g_failed++;
+      printf("    FAIL round %d: exit %d disagrees with the interpreter (step %d, stopper %s)\n",
+             round,
+             (int)jit_exit,
+             (int)interp_st,
+             blk.stopper ? blk.stopper : "none");
+    }
     if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0) {
       unsigned d = 0;
       size_t bi;
@@ -610,6 +654,8 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     X86pJitBlock blk;
     char reason[192];
     X86pJitStatus st;
+    X86pStepStatus interp_st;
+    X86pJitExit jit_exit;
     uint64_t seed;
     uint32_t len;
     uint32_t want;
@@ -676,11 +722,20 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     want = blk.insns;
 
     memcpy(g_before, g_guest, sizeof g_guest);
-    run_interp(&ci, &mem, want);
+    interp_st = run_interp(&ci, &mem, want);
     memcpy(g_after_interp, g_guest, sizeof g_guest);
     memcpy(g_guest, g_before, sizeof g_guest);
-    (void)x86p_jit_enter(&blk, &cj);
+    jit_exit = x86p_jit_enter(&blk, &cj);
     g_single_compares++;
+    g_checks++;
+    if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {
+      g_failed++;
+      printf("    FAIL single round %d: exit %d disagrees with the interpreter (step %d, stopper %s)\n",
+             round,
+             (int)jit_exit,
+             (int)interp_st,
+             blk.stopper ? blk.stopper : "none");
+    }
 
     if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0 || !same_state(&ci, &cj, "single instruction")) {
       uint32_t o = 0;
