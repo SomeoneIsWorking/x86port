@@ -24,6 +24,7 @@
 #ifndef X86PORT_CPU_H
 #define X86PORT_CPU_H
 
+#include "decode.h"
 #include "flags.h"
 #include "x87.h"
 
@@ -82,6 +83,27 @@ typedef struct X86pCpu {
    * two places the two representations meet, and they say so.
    */
   uint8_t df;
+  /*
+   * The segment registers, as SELECTORS. Guest code loads and stores these
+   * (MOV Sreg, r/m16), pushes them, and compares them; nothing here interprets
+   * a selector, because in a flat user-mode process nothing needs to.
+   */
+  uint16_t seg[kX86pSegRegCount];
+  /*
+   * The two segments that have a base.
+   *
+   * ES, CS, SS and DS are flat in every 32-bit Win32 process, so they have no
+   * base to store and no address here adds one. FS points at the thread
+   * environment block and GS is used by some runtimes; the HOST sets these,
+   * because which address the TEB lives at is a property of the process the
+   * port builds, not of the CPU.
+   *
+   * Two named fields rather than an array of six: an array would invite an
+   * engine to set a base this framework does not honour everywhere, and the
+   * disagreement would surface as one address in a million being wrong.
+   */
+  uint32_t fs_base;
+  uint32_t gs_base;
 } X86pCpu;
 
 /*

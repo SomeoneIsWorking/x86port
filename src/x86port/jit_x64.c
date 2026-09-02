@@ -350,7 +350,16 @@ typedef struct MemPlan {
  * of this to 64 bits would make an address that the guest wraps address
  * something real instead.
  */
-static void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
+/*
+ * base + index*scale + disp, WITHOUT the segment base.
+ *
+ * Separate from emit_effective_address because LEA computes exactly this and
+ * no more: it produces the OFFSET, not the linear address, so a LEA that added
+ * the FS base would hand the guest a pointer it never asked for. Two named
+ * functions rather than a flag, because a flag at a call site is a thing to
+ * get the wrong way round.
+ */
+static void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
   int have_base = (o->base >= 0);
   if (have_base) {
     x86p_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
@@ -381,6 +390,23 @@ static void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
   }
   if (o->disp != 0) {
     x86p_emit_alu_r32_imm32(e, kX64Add, EA_REG, (uint32_t)o->disp);
+  }
+}
+
+/*
+ * The linear address an ACCESS uses: the offset plus the segment base.
+ *
+ * Only FS and GS have one -- see cpu.h on why the flat model is a contract --
+ * and which segment an operand uses is resolved by the decoder, so this costs
+ * nothing at all for the other four rather than a load and an add on every
+ * memory access in the program.
+ */
+static void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
+  emit_address_parts(e, o);
+  if (o->seg == (uint8_t)kX86pSegFs) {
+    x86p_emit_alu_r32_mem(e, kX64Add, EA_REG, CPU_REG, (int32_t)offsetof(X86pCpu, fs_base));
+  } else if (o->seg == (uint8_t)kX86pSegGs) {
+    x86p_emit_alu_r32_mem(e, kX64Add, EA_REG, CPU_REG, (int32_t)offsetof(X86pCpu, gs_base));
   }
 }
 
@@ -776,7 +802,7 @@ static void emit_alu_inline(BlockCtx *c,
  * that are not addresses at all.
  */
 static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
-  emit_effective_address(c->e, &insn->operand[1]);
+  emit_address_parts(c->e, &insn->operand[1]);
   x86p_emit_store32(c->e, CPU_REG, reg_off(insn->operand[0].reg), EA_REG);
 }
 

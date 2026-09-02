@@ -75,6 +75,40 @@ const char *x86p_insn_op_name(int op) {
  * control, debug, x87, MMX, SSE -- so the caller refuses by name instead of
  * silently executing against register 0, which is EAX.
  */
+/*
+ * A Zydis segment register to this framework's own number.
+ *
+ * Refuses anything outside the six rather than defaulting to DS: an unknown
+ * segment silently read as DS is an address computed against the wrong base,
+ * which is exactly the class of bug a flat model makes invisible until the one
+ * process where it is not flat.
+ */
+static int map_segment(ZydisRegister r, uint8_t *out) {
+  switch (r) {
+  case ZYDIS_REGISTER_ES:
+    *out = (uint8_t)kX86pSegEs;
+    return 1;
+  case ZYDIS_REGISTER_CS:
+    *out = (uint8_t)kX86pSegCs;
+    return 1;
+  case ZYDIS_REGISTER_SS:
+    *out = (uint8_t)kX86pSegSs;
+    return 1;
+  case ZYDIS_REGISTER_DS:
+  case ZYDIS_REGISTER_NONE:
+    *out = (uint8_t)kX86pSegDs;
+    return 1;
+  case ZYDIS_REGISTER_FS:
+    *out = (uint8_t)kX86pSegFs;
+    return 1;
+  case ZYDIS_REGISTER_GS:
+    *out = (uint8_t)kX86pSegGs;
+    return 1;
+  default:
+    return 0;
+  }
+}
+
 static int map_register(ZydisRegister r, int8_t *index, uint8_t *size) {
   ZydisRegisterClass cls = ZydisRegisterGetClass(r);
   ZyanI8 id = ZydisRegisterGetId(r);
@@ -105,6 +139,7 @@ static int map_register(ZydisRegister r, int8_t *index, uint8_t *size) {
    register that was never there. */
 static int
 map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out, int is_x87) {
+  (void)insn; /* the segment now comes from the operand, not the prefix set */
   memset(out, 0, sizeof *out);
   out->reg = -1;
   out->base = -1;
@@ -126,6 +161,19 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
       out->size = 10;
       return 1;
     }
+    if (ZydisRegisterGetClass(o->reg.value) == ZYDIS_REGCLASS_SEGMENT) {
+      uint8_t sreg = 0;
+      if (!map_segment(o->reg.value, &sreg)) {
+        return 0;
+      }
+      out->kind = kX86pOperandSeg;
+      out->reg = (int8_t)sreg;
+      /* A selector is sixteen bits wide wherever it appears. MOV r32, Sreg
+         zero-extends into the destination, and recording the operand as four
+         bytes would make the write look like a full-width move. */
+      out->size = 2;
+      return 1;
+    }
     if (!map_register(o->reg.value, &out->reg, &size)) {
       return 0;
     }
@@ -134,12 +182,11 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
     return 1;
   }
   case ZYDIS_OPERAND_TYPE_MEMORY: {
-    /* A segment override is not modelled: the guest is a flat-model Win32
-       process, so FS and GS are the only meaningful ones and they are a
-       different mechanism (the TEB), not a base to fold into an address. An
-       instruction carrying one is refused by name rather than executed as
-       though the override were absent. */
-    if (insn->attributes & (ZYDIS_ATTRIB_HAS_SEGMENT_FS | ZYDIS_ATTRIB_HAS_SEGMENT_GS)) {
+    /* Which segment the address is relative to. Recorded rather than refused:
+       FS-relative accesses are how a Win32 guest reaches its TEB, and there
+       are 3,350 of them in X-Men Legends II alone. Only FS and GS have a base
+       to add -- see cpu.h on why that is a contract and not an assumption. */
+    if (!map_segment(o->mem.segment, &out->seg)) {
       return 0;
     }
     if (o->mem.base != ZYDIS_REGISTER_NONE) {
