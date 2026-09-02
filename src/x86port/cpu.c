@@ -18,12 +18,32 @@ void x86p_cpu_reset(X86pCpu *cpu) {
 
 /* ---- memory ------------------------------------------------------------- */
 
+/*
+ * The host address of a guest address, as INTEGER arithmetic.
+ *
+ * `host` is the host address of guest address `lo`, and a consumer that maps
+ * the guest at the host's own low addresses has a host of 0 for guest 0 --
+ * pc/xmen2 does exactly that when the platform lets it map the low 4 GB, so
+ * the identity mapping is a real configuration and not a mistake. Adding an
+ * offset to a null pointer is undefined behaviour even when the arithmetic is
+ * obvious, so the addition happens on uintptr_t and the result is converted
+ * once.
+ *
+ * This is also why "is this mapping configured" is asked as `size == 0` rather
+ * than as a null host: a null host with a real size is a legitimate identity
+ * mapping, and refusing it would make every access to a correctly configured
+ * guest fail as a fault.
+ */
+static uint8_t *x86p_mem_at(const X86pMem *m, uint32_t addr) {
+  return (uint8_t *)((uintptr_t)m->host + (uintptr_t)(addr - m->lo));
+}
+
 /* The bounds question alone, for any span. Separated from x86p_mem_ok so that
    the width restriction there -- 1, 2 or 4, which is what an integer operand
    can be -- stays a statement about operands and not about the mapping. */
 static int span_ok(const X86pMem *m, uint32_t addr, uint32_t n) {
   uint32_t off;
-  if (!m || !m->host || n == 0) {
+  if (!m || m->size == 0 || n == 0) {
     return 0;
   }
   if (addr < m->lo) {
@@ -50,7 +70,7 @@ int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n) 
   if (!dst || !span_ok(m, addr, n)) {
     return 0;
   }
-  memcpy(dst, m->host + (addr - m->lo), n);
+  memcpy(dst, x86p_mem_at(m, addr), n);
   return 1;
 }
 
@@ -58,13 +78,13 @@ int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint3
   if (!src || !span_ok(m, addr, n)) {
     return 0;
   }
-  memcpy(m->host + (addr - m->lo), src, n);
+  memcpy(x86p_mem_at(m, addr), src, n);
   return 1;
 }
 
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w) {
   uint32_t off;
-  if (!m || !m->host || (w != 1 && w != 2 && w != 4)) {
+  if (!m || m->size == 0 || (w != 1 && w != 2 && w != 4)) {
     return 0;
   }
   if (addr < m->lo) {
@@ -94,7 +114,7 @@ int x86p_mem_read(const X86pMem *m, uint32_t addr, int w, uint32_t *out) {
   if (!out || !x86p_mem_ok(m, addr, w)) {
     return 0;
   }
-  p = m->host + (addr - m->lo);
+  p = x86p_mem_at(m, addr);
   /* Assembled explicitly, little-endian. A cast through a host pointer happens
      to be right on x86 and is a bug waiting for the ARM64 host S042 plans
      for -- and it would also be an unaligned access the guest is allowed to
@@ -112,7 +132,7 @@ int x86p_mem_write(const X86pMem *m, uint32_t addr, int w, uint32_t value) {
   if (!x86p_mem_ok(m, addr, w)) {
     return 0;
   }
-  p = m->host + (addr - m->lo);
+  p = x86p_mem_at(m, addr);
   for (i = 0; i < w; i++) {
     p[i] = (uint8_t)(value & 0xFFu);
     value >>= 8;

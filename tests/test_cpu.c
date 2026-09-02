@@ -299,6 +299,45 @@ static void test_faulting_push_leaves_esp_alone(void) {
   CHECK_EQ_U(cpu.reg[kX86pEsp], 0x1000u + sizeof g_arena);
 }
 
+/*
+ * A consumer that maps the guest at the HOST's own addresses has host == 0 for
+ * guest 0, and that is a real configuration: pc/xmen2 reserves the low 4 GB and
+ * resolves a guest address to itself. It used to be refused, because "is this
+ * mapping configured" was asked as "is host null" -- so every access to a
+ * correctly configured identity mapping came back a fault, and the port's first
+ * interpreted instruction reported a fetch fault at a page it had just written.
+ *
+ * The unconfigured case is checked in the same test, because a guard that
+ * accepts everything is no better than one that accepts nothing: an X86pMem
+ * with no size is still refused.
+ */
+static void test_identity_mapping_is_not_an_unconfigured_one(void) {
+  /* An identity mapping over a range this test can actually touch: `host` is
+     the host address of guest `lo`, so a mapping whose host address happens to
+     equal its guest address is the identity, and g_arena is at some real
+     address that stands in for one. */
+  X86pMem identity;
+  X86pMem unconfigured;
+  uint32_t v = 0;
+
+  identity.host = g_arena;
+  identity.lo = (uint32_t)(uintptr_t)g_arena;
+  identity.size = (uint32_t)sizeof g_arena;
+  CHECK(x86p_mem_ok(&identity, identity.lo, 4));
+  CHECK(x86p_mem_write(&identity, identity.lo, 4, 0x12345678u));
+  CHECK(x86p_mem_read(&identity, identity.lo, 4, &v));
+  CHECK_EQ_U(v, 0x12345678u);
+
+  /* And the negative the guard exists for. */
+  unconfigured.host = NULL;
+  unconfigured.lo = 0;
+  unconfigured.size = 0;
+  CHECK(!x86p_mem_ok(&unconfigured, 0, 4));
+  CHECK(!x86p_mem_read(&unconfigured, 0, 4, &v));
+  CHECK(!x86p_mem_write(&unconfigured, 0, 4, 1u));
+  CHECK_EQ_U(v, 0x12345678u); /* untouched by the refused read */
+}
+
 int main(void) {
   RUN(test_register_order_is_the_encoding_order);
   RUN(test_byte_registers_alias_high_bytes);
@@ -310,6 +349,7 @@ int main(void) {
   RUN(test_the_last_byte_is_usable);
   RUN(test_push_and_pop);
   RUN(test_faulting_push_leaves_esp_alone);
+  RUN(test_identity_mapping_is_not_an_unconfigured_one);
   printf("%d check(s), %d failed, %d failing test(s)\n", g_checks, g_failed, g_test_failed);
   return g_test_failed ? 1 : 0;
 }

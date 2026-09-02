@@ -68,6 +68,14 @@ target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PUBLIC jitcommon PRIVATE Zydis m)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
 
+# Tests and tools belong to THIS project, not to whoever consumes it. A port
+# that pulls x86port in with add_subdirectory would otherwise inherit every
+# test here into its own ctest run, where a failure says nothing about the
+# port. Same reasoning, and same mechanism, as jit-common's own guard.
+if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  return()
+endif()
+
 # The differential instrument. Not a test: it needs a title's Ghidra export,
 # which is not in this repo and never will be.
 add_executable(x86p_decode_diff tools/decode_diff.c)
