@@ -38,6 +38,7 @@
 #define X86PORT_JIT_X64_H
 
 #include "cpu.h"
+#include "decode.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -158,6 +159,16 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
    rather than assumed: on a host with no backend, translate() refuses instead
    of emitting bytes that are not instructions here. */
 int x86p_jit_available(void);
+
+/*
+ * Would this instruction be translated, if a block reached it?
+ *
+ * Exported so a corpus tool can count what remains WITHOUT running the
+ * translator. The ranked list of block ENDERS undercounts: everything after
+ * the first refusal in a function is never looked at, so an instruction that
+ * only ever appears late looks free. This gives the honest denominator.
+ */
+int x86p_jit_can_translate(const X86pInsn *insn);
 
 #ifdef __cplusplus
 } /* extern "C" */
