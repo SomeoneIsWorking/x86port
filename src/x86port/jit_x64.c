@@ -166,10 +166,6 @@ static int operand_is_mem32(const X86pOperand *o) {
   return o->kind == kX86pOperandMem && o->size == 4;
 }
 
-static int operand_readable(const X86pOperand *o) {
-  return operand_is_reg32(o) || operand_is_imm(o) || operand_is_mem32(o);
-}
-
 static int operand_writable(const X86pOperand *o) {
   return operand_is_reg32(o) || operand_is_mem32(o);
 }
@@ -264,13 +260,11 @@ static int can_emit(const X86pInsn *insn) {
        would need the result written back through a pointer the call has
        clobbered, so they stay register-only for now. */
     if (insn->alu == (uint8_t)kX86pAluAdc || insn->alu == (uint8_t)kX86pAluSbb) {
-      return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) &&
-             (operand_is_reg32(&insn->operand[1]) || operand_is_imm(&insn->operand[1]));
+      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
+             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) && insn->operand[1].kind != kX86pOperandMem &&
+             mov_operand_ok(&insn->operand[1], insn->operand[0].size, 0);
     }
-    if (operand_is_mem32(&insn->operand[0]) && operand_is_mem32(&insn->operand[1])) {
-      return 0;
-    }
-    return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
+    return mov_is_emittable(insn);
   case kX86pInsnPush:
     /* A narrow immediate is sign-extended, by x86p_sign_extend -- the
        interpreter's own rule, called here at translation time so the constant
@@ -440,36 +434,59 @@ static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_ei
 }
 
 /*
- * Load an operand's VALUE into a host register.
+ * Where a guest register operand of width `w` lives, as a byte offset.
  *
- * A memory operand prepares its pointer here, so at most one operand per
- * instruction may be memory -- which x86 guarantees, and can_emit enforces.
- * A second would overwrite HOSTPTR_REG and the first access would silently
- * read the second's address.
+ * The host is little-endian and the guest slot is a dword, so the low byte of a
+ * register is the slot's first byte and a HIGH byte register (AH, CH, DH, BH)
+ * is its second. That means narrow writes need no read-modify-write at all: a
+ * one-byte store to the right offset preserves the other 24 bits by
+ * construction, which is exactly the rule x86p_reg_write states.
+ *
+ * x86p_byte_reg owns which register an index names -- indices 4..7 are the
+ * SECOND byte of EAX..EBX, not four different registers -- so this does not
+ * restate it.
  */
-static void emit_read_operand(BlockCtx *c, X86pHostReg dst, const X86pOperand *o, uint32_t insn_eip) {
-  switch (o->kind) {
-  case kX86pOperandImm:
-    x86p_emit_mov_r32_imm32(c->e, dst, o->imm);
-    return;
-  case kX86pOperandMem:
-    emit_mem_prepare(c, o, insn_eip);
-    x86p_emit_load32(c->e, dst, HOSTPTR_REG, 0);
-    return;
-  default:
-    x86p_emit_load32(c->e, dst, CPU_REG, reg_off(o->reg));
-    return;
+static int32_t reg_off_w(int index, int w) {
+  if (w == 1) {
+    int shift = 0;
+    int r = x86p_byte_reg(index, &shift);
+    return reg_off(r) + shift / 8;
+  }
+  return reg_off(index);
+}
+
+/* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
+   cleared rather than left alone because the value is about to be stored back
+   at that width, and stale high bits would be written into the neighbouring
+   part of a register the guest still owns. */
+static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
+  if (w == 1) {
+    x86p_emit_load8_zx(e, dst, base, disp);
+  } else if (w == 2) {
+    x86p_emit_load16_zx(e, dst, base, disp);
+  } else {
+    x86p_emit_load32(e, dst, base, disp);
   }
 }
 
-/* Write a host register into an operand's destination. Memory destinations
-   must already have been prepared -- HOSTPTR_REG still holds the pointer. */
-static void emit_write_operand(BlockCtx *c, const X86pOperand *o, X86pHostReg src) {
-  if (o->kind == kX86pOperandMem) {
-    x86p_emit_store32(c->e, HOSTPTR_REG, 0, src);
-    return;
+static void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
+  if (w == 1) {
+    x86p_emit_store8_reg(e, base, disp, src);
+  } else if (w == 2) {
+    x86p_emit_store16_reg(e, base, disp, src);
+  } else {
+    x86p_emit_store32(e, base, disp, src);
   }
-  x86p_emit_store32(c->e, CPU_REG, reg_off(o->reg), src);
+}
+
+static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
+  if (w == 1) {
+    x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
+  } else if (w == 2) {
+    x86p_emit_store16_imm(e, base, disp, (uint16_t)(imm & 0xFFFFu));
+  } else {
+    x86p_emit_store32_imm(e, base, disp, imm);
+  }
 }
 
 /*
@@ -584,6 +601,22 @@ static void emit_compute_carry_in(X86pEmit *e, int last_kind) {
  * shifts, ADC/SBB and the flag DERIVATIONS all still live in one place and
  * still go through it. The differential is what keeps that claim honest.
  */
+static uint32_t width_mask(int w) {
+  return (w == 1) ? 0xFFu : ((w == 2) ? 0xFFFFu : 0xFFFFFFFFu);
+}
+
+/* The non-memory side of an ALU operand, at width `w`. An immediate is masked
+   HERE, at translation time, because x86p_alu masks its `b` and the tuple has
+   to match: `83 /r` sign-extends an imm8 to a dword that the operation then
+   narrows again. */
+static void emit_read_alu_src(BlockCtx *c, X86pHostReg dst, const X86pOperand *o, int w) {
+  if (o->kind == kX86pOperandImm) {
+    x86p_emit_mov_r32_imm32(c->e, dst, o->imm & width_mask(w));
+    return;
+  }
+  emit_load_w(c->e, dst, CPU_REG, reg_off_w(o->reg, w), w);
+}
+
 static void emit_alu_inline(BlockCtx *c,
                             const X86pInsn *insn,
                             X86pHostAlu host,
@@ -610,33 +643,50 @@ static void emit_alu_inline(BlockCtx *c,
    * from registers the operation may have just modified -- `ADD [EAX+4], EAX`
    * must store where it loaded.
    */
+  const int w = dst->size;
+
   if (dst->kind == kX86pOperandMem) {
-    emit_mem_prepare(c, dst, insn_eip);
+    emit_mem_prepare_w(c, dst, insn_eip, w);
     x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
-    emit_read_operand(c, kX64Rdx, src, insn_eip);
+    emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
+    emit_read_alu_src(c, kX64Rdx, src, w);
   } else if (src->kind == kX86pOperandMem) {
-    emit_mem_prepare(c, src, insn_eip);
+    emit_mem_prepare_w(c, src, insn_eip, w);
     x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    x86p_emit_load32(c->e, kX64Rdx, HOSTPTR_REG, 0);
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(dst->reg));
+    emit_load_w(c->e, kX64Rdx, HOSTPTR_REG, 0, w);
+    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
   } else {
     x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    emit_read_operand(c, kX64Rdx, src, insn_eip);
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(dst->reg));
+    emit_read_alu_src(c, kX64Rdx, src, w);
+    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
   }
 
   x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
   x86p_emit_alu_r32_r32(c->e, host, kX64Rax, kX64Rdx); /* r */
+  if (w != 4) {
+    /*
+     * The tuple must hold the values x86p_alu would have stored, and it masks
+     * a, b and r to the operand width. `a` and `b` arrive masked because they
+     * were loaded zero-extended; `r` is the 32-bit result of a 32-bit host
+     * operation and is not. Every DERIVED flag masks by w and would agree
+     * either way -- it is the raw tuple that would differ, which is exactly
+     * the field a caller inspecting flag state reads.
+     */
+    x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
+  }
 
   x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
   x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
   x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
   x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, 4u);
+  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
 
   if (writes_dest) {
-    emit_write_operand(c, dst, kX64Rax);
+    if (dst->kind == kX86pOperandMem) {
+      emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
+    } else {
+      emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+    }
   }
 }
 
@@ -725,75 +775,20 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   const X86pOperand *src = &insn->operand[1];
 
   /* Register-only: can_emit keeps memory operands away from ADC and SBB. */
-  x86p_emit_load32(e, kX64Rsi, CPU_REG, reg_off(dst->reg)); /* a */
+  const int w = dst->size;
+  emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
   if (src->kind == kX86pOperandImm) {
-    x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm); /* b */
+    x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm & width_mask(w)); /* b */
   } else {
-    x86p_emit_load32(e, kX64Rdx, CPU_REG, reg_off(src->reg));
+    emit_load_w(e, kX64Rdx, CPU_REG, reg_off_w(src->reg, w), w);
   }
   x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)insn->alu);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, 4u);
+  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)w);
   x86p_emit_lea64(e, kX64R8, CPU_REG, flags_off());
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_alu);
   x86p_emit_call_r64(e, kX64Rax);
   if (alu_writes_dest(insn->alu)) {
-    x86p_emit_store32(e, CPU_REG, reg_off(dst->reg), kX64Rax);
-  }
-}
-
-/*
- * Where a guest register operand of width `w` lives, as a byte offset.
- *
- * The host is little-endian and the guest slot is a dword, so the low byte of a
- * register is the slot's first byte and a HIGH byte register (AH, CH, DH, BH)
- * is its second. That means narrow writes need no read-modify-write at all: a
- * one-byte store to the right offset preserves the other 24 bits by
- * construction, which is exactly the rule x86p_reg_write states.
- *
- * x86p_byte_reg owns which register an index names -- indices 4..7 are the
- * SECOND byte of EAX..EBX, not four different registers -- so this does not
- * restate it.
- */
-static int32_t reg_off_w(int index, int w) {
-  if (w == 1) {
-    int shift = 0;
-    int r = x86p_byte_reg(index, &shift);
-    return reg_off(r) + shift / 8;
-  }
-  return reg_off(index);
-}
-
-/* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
-   cleared rather than left alone because the value is about to be stored back
-   at that width, and stale high bits would be written into the neighbouring
-   part of a register the guest still owns. */
-static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
-  if (w == 1) {
-    x86p_emit_load8_zx(e, dst, base, disp);
-  } else if (w == 2) {
-    x86p_emit_load16_zx(e, dst, base, disp);
-  } else {
-    x86p_emit_load32(e, dst, base, disp);
-  }
-}
-
-static void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
-  if (w == 1) {
-    x86p_emit_store8_reg(e, base, disp, src);
-  } else if (w == 2) {
-    x86p_emit_store16_reg(e, base, disp, src);
-  } else {
-    x86p_emit_store32(e, base, disp, src);
-  }
-}
-
-static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
-  if (w == 1) {
-    x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
-  } else if (w == 2) {
-    x86p_emit_store16_imm(e, base, disp, (uint16_t)(imm & 0xFFFFu));
-  } else {
-    x86p_emit_store32_imm(e, base, disp, imm);
+    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
   }
 }
 

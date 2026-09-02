@@ -214,6 +214,10 @@ static void seed(X86pCpu *cpu) {
  */
 static X86pCpu g_cpu; /* alignment now comes from the type itself */
 
+/* Repetitions per column. Enough that a single scheduling hiccup cannot be the
+   reported number, few enough that the tool stays usable in a loop. */
+#define REPS 5
+
 int main(int argc, char **argv) {
   X86pMem mem;
   X86pCpu *cpup = &g_cpu;
@@ -224,12 +228,16 @@ int main(int argc, char **argv) {
   uint32_t kernel_insns;
   unsigned long iters = 200000ul;
   double t0;
-  double t_interp;
-  double t_jit;
-  double t_native;
-  double t_native_flags;
+  double t_interp = 1e30;
+  double t_jit = 1e30;
+  double t_native = 1e30;
+  double t_native_flags = 1e30;
+  double w_interp = 0.0;
+  double w_jit = 0.0;
+  double w_native_flags = 0.0;
   unsigned long total;
   unsigned long i;
+  int rep;
 
   if (argc > 1) {
     iters = strtoul(argv[1], NULL, 10);
@@ -274,56 +282,96 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  /* ---- interpreter ---- */
-  seed(cpup);
-  t0 = now_s();
-  for (i = 0; i < iters; i++) {
-    uint32_t k;
-    cpup->eip = GUEST_BASE;
-    for (k = 0; k < kernel_insns; k++) {
-      if (x86p_step(cpup, &mem, NULL) != kX86pStepOk) {
-        printf("REFUSED: interpreter stopped mid-kernel\n");
-        return 1;
+  /*
+   * EVERY COLUMN IS THE BEST OF SEVERAL REPETITIONS, AND THE SPREAD IS PRINTED.
+   *
+   * A single timed run of this shape varies by a third on an ordinary desktop:
+   * measured, the same binary reported anywhere from 1.33x to 1.79x on
+   * consecutive runs. Quoting one of those to two decimal places is a precision
+   * the instrument does not have, and a change that moved the number inside
+   * that band would read as a regression or an improvement at random.
+   *
+   * The minimum is the right estimator for a microbenchmark: interference from
+   * other processes, migration and frequency scaling can only ADD time, so the
+   * fastest observed run is the closest to the cost being measured. The spread
+   * is printed beside it so a reader can see when the machine was too busy for
+   * the number to mean anything.
+   */
+  for (rep = 0; rep < REPS; rep++) {
+    double t;
+
+    /* ---- interpreter ---- */
+    seed(cpup);
+    t0 = now_s();
+    for (i = 0; i < iters; i++) {
+      uint32_t k;
+      cpup->eip = GUEST_BASE;
+      for (k = 0; k < kernel_insns; k++) {
+        if (x86p_step(cpup, &mem, NULL) != kX86pStepOk) {
+          printf("REFUSED: interpreter stopped mid-kernel\n");
+          return 1;
+        }
       }
     }
-  }
-  t_interp = now_s() - t0;
+    t = now_s() - t0;
+    if (t < t_interp) {
+      t_interp = t;
+    }
+    if (t > w_interp) {
+      w_interp = t;
+    }
 
-  /* ---- jit ---- */
-  seed(cpup);
-  t0 = now_s();
-  for (i = 0; i < iters; i++) {
-    cpup->eip = GUEST_BASE;
-    (void)x86p_jit_enter(&blk, cpup);
-  }
-  t_jit = now_s() - t0;
-
-  /* ---- native ---- */
-  {
-    X86pCpu nc;
-    seed(&nc);
+    /* ---- jit ---- */
+    seed(cpup);
     t0 = now_s();
     for (i = 0; i < iters; i++) {
-      native_kernel(nc.reg);
+      cpup->eip = GUEST_BASE;
+      (void)x86p_jit_enter(&blk, cpup);
     }
-    t_native = now_s() - t0;
-    /* Consume the result so the loop cannot be optimised away entirely. */
-    if (nc.reg[0] == 0xDEADBEEFu) {
-      printf("(unreachable)\n");
+    t = now_s() - t0;
+    if (t < t_jit) {
+      t_jit = t;
     }
-  }
+    if (t > w_jit) {
+      w_jit = t;
+    }
 
-  /* ---- native with guest flags: the realistic static-recomp baseline ---- */
-  {
-    X86pCpu nc;
-    seed(&nc);
-    t0 = now_s();
-    for (i = 0; i < iters; i++) {
-      native_kernel_flags(&nc);
+    /* ---- native ---- */
+    {
+      X86pCpu nc;
+      seed(&nc);
+      t0 = now_s();
+      for (i = 0; i < iters; i++) {
+        native_kernel(nc.reg);
+      }
+      t = now_s() - t0;
+      if (t < t_native) {
+        t_native = t;
+      }
+      /* Consume the result so the loop cannot be optimised away entirely. */
+      if (nc.reg[0] == 0xDEADBEEFu) {
+        printf("(unreachable)\n");
+      }
     }
-    t_native_flags = now_s() - t0;
-    if (nc.reg[0] == 0xDEADBEEFu) {
-      printf("(unreachable)\n");
+
+    /* ---- native with guest flags: the realistic static-recomp baseline ---- */
+    {
+      X86pCpu nc;
+      seed(&nc);
+      t0 = now_s();
+      for (i = 0; i < iters; i++) {
+        native_kernel_flags(&nc);
+      }
+      t = now_s() - t0;
+      if (t < t_native_flags) {
+        t_native_flags = t;
+      }
+      if (t > w_native_flags) {
+        w_native_flags = t;
+      }
+      if (nc.reg[0] == 0xDEADBEEFu) {
+        printf("(unreachable)\n");
+      }
     }
   }
 
@@ -346,6 +394,10 @@ int main(int argc, char **argv) {
          t_interp,
          t_interp / total * 1e9,
          t_interp / t_native);
+  printf("\n  best of %d repetition(s); slowest run was %.0f%% (jit) and %.0f%% (native+flags) above the best\n",
+         REPS,
+         100.0 * (w_jit / t_jit - 1.0),
+         100.0 * (w_native_flags / t_native_flags - 1.0));
   printf("\n  jit is %.2fx faster than the interpreter\n", t_interp / t_jit);
   printf("  jit is %.2fx the cost of native+flags  <-- THE SCORE (1.00 would match static recomp)\n",
          t_jit / t_native_flags);

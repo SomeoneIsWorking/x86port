@@ -166,7 +166,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 41u);
+  unsigned pick = (unsigned)(r % 47u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -347,6 +347,38 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
     p[3] = memdisp;
     return 4;
+  case 35: /* <alu> r/m8, r8 -- (op*8+0) /r, mod=11. Byte-register indices run
+              0..7, so the HIGH byte registers take part in the arithmetic and
+              in the partial write-back. */
+    p[0] = (uint8_t)(aluop << 3);
+    p[1] = (uint8_t)(0xC0u | (src << 3) | dst);
+    return 2;
+  case 36: /* <alu> r8, r/m8 -- (op*8+2) /r, mod=11 */
+    p[0] = (uint8_t)((aluop << 3) | 2u);
+    p[1] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 2;
+  case 37: /* <alu> r/m8, imm8 -- 80 /op, mod=11 */
+    p[0] = 0x80u;
+    p[1] = (uint8_t)(0xC0u | (aluop << 3) | dst);
+    p[2] = (uint8_t)((r >> 22) & 0xFFu);
+    return 3;
+  case 38: /* <alu> r/m16, r16 -- 66 (op*8+1) /r, mod=11 */
+    p[0] = 0x66u;
+    p[1] = (uint8_t)((aluop << 3) | 1u);
+    p[2] = (uint8_t)(0xC0u | (src << 3) | dst);
+    return 3;
+  case 39: /* <alu> r/m16, imm16 -- 66 81 /op, mod=11 */
+    p[0] = 0x66u;
+    p[1] = 0x81u;
+    p[2] = (uint8_t)(0xC0u | (aluop << 3) | dst);
+    p[3] = (uint8_t)((r >> 22) & 0xFFu);
+    p[4] = (uint8_t)((r >> 30) & 0xFFu);
+    return 5;
+  case 40: /* <alu> r8, [base+disp8] -- (op*8+2) /r, mod=01 */
+    p[0] = (uint8_t)((aluop << 3) | 2u);
+    p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
