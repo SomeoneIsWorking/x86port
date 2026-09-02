@@ -127,6 +127,26 @@ void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg 
   modrm_mem(e, src, base, disp);
 }
 
+void x86p_emit_mov_r64_imm64(X86pEmit *e, X86pHostReg dst, uint64_t imm) {
+  rex(e, 1, kX64Rax, dst);
+  put(e, (uint8_t)(0xB8u + ((unsigned)dst & 7u)));
+  put32(e, (uint32_t)(imm & 0xFFFFFFFFu));
+  put32(e, (uint32_t)(imm >> 32));
+}
+
+void x86p_emit_lea64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  rex(e, 1, dst, base);
+  put(e, 0x8Du);
+  modrm_mem(e, dst, base, disp);
+}
+
+void x86p_emit_store32_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm) {
+  rex(e, 0, kX64Rax, base);
+  put(e, 0xC7u);
+  modrm_mem(e, kX64Rax, base, disp); /* /0 */
+  put32(e, imm);
+}
+
 void x86p_emit_store8_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint8_t imm) {
   rex(e, 0, kX64Rax, base);
   put(e, 0xC6u);
@@ -171,6 +191,16 @@ void x86p_emit_pop_r64(X86pEmit *e, X86pHostReg r) {
 
 void x86p_emit_ret(X86pEmit *e) {
   put(e, 0xC3u);
+}
+
+void x86p_emit_call_r64(X86pEmit *e, X86pHostReg target) {
+  /* No REX.W: CALL r/m64 is already 64-bit in long mode, but a high register
+     still needs REX.B. */
+  if ((unsigned)target >= 8u) {
+    put(e, 0x41u);
+  }
+  put(e, 0xFFu);
+  put(e, (uint8_t)(0xD0u | ((unsigned)target & 7u))); /* /2 */
 }
 
 void x86p_emit_byte(X86pEmit *e, uint8_t b) {
