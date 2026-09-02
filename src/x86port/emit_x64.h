@@ -146,6 +146,22 @@ void x86p_emit_alu_r32_r32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
 /* <alu> r32, imm32 */
 void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint32_t imm);
 
+/* test r32, r32 -- sets flags, writes no result. The idiom for "is this
+   register zero", which is how a helper's int return is branched on. */
+void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);
+
+/*
+ * cmovcc r32, r32 -- conditional move, using the HOST's condition codes.
+ *
+ * This is how a guest conditional branch is emitted without a forward jump and
+ * therefore without any label patching: compute both candidate addresses, then
+ * select. A patched jump needs a fixup list, and a fixup list that is not
+ * applied leaves a branch pointing at whatever followed it -- a whole class of
+ * bug this avoids rather than manages. `cc` is the host encoding's condition
+ * number, which is the same numbering X86pCond uses.
+ */
+void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHostReg src);
+
 /* ---- structure --------------------------------------------------------- */
 
 void x86p_emit_push_r64(X86pEmit *e, X86pHostReg r);

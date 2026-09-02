@@ -2,6 +2,7 @@
 #include "jit_x64.h"
 
 #include "alu.h"
+#include "cond.h"
 #include "decode.h"
 #include "emit_x64.h"
 
@@ -122,7 +123,26 @@ static int operand_is_imm(const X86pOperand *o) {
   return o->kind == kX86pOperandImm;
 }
 
+/*
+ * A branch this backend can emit: PC-relative with an immediate displacement.
+ *
+ * An indirect jump (through a register or memory) is excluded, and that is not
+ * a temporary gap -- its target is not known until the block runs, so it needs
+ * the block cache to resolve at run time rather than a constant folded in here.
+ * Treating one as translatable would fold in whatever the operand decoded to
+ * and jump somewhere fixed and wrong.
+ */
+static int is_relative_branch(const X86pInsn *insn) {
+  if (insn->op != (uint8_t)kX86pInsnJmp && insn->op != (uint8_t)kX86pInsnJcc) {
+    return 0;
+  }
+  return insn->operands >= 1 && insn->operand[0].kind == kX86pOperandImm && insn->operand[0].relative;
+}
+
 static int can_emit(const X86pInsn *insn) {
+  if (is_relative_branch(insn)) {
+    return 1;
+  }
   switch (insn->op) {
   case kX86pInsnNop:
     return 1;
@@ -216,6 +236,36 @@ static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
   x86p_emit_ret(e);
 }
 
+/* The same exit, but with the guest EIP already computed into a register --
+   which is what a conditional branch produces. */
+static void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit) {
+  x86p_emit_store32(e, CPU_REG, eip_off(), eip_reg);
+  x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
+  x86p_emit_pop_r64(e, CPU_REG);
+  x86p_emit_ret(e);
+}
+
+/*
+ * A conditional branch, emitted WITHOUT a forward jump.
+ *
+ * x86p_cond(cc, &cpu->flags) is the interpreter's own condition evaluator --
+ * the same reason arithmetic calls x86p_alu. Both candidate addresses are then
+ * materialised and CMOVcc selects between them, so there is no branch to patch
+ * and no fixup list to forget to apply. `mov` does not disturb flags, so the
+ * ZF that TEST set is still live at the CMOV.
+ */
+static void emit_jcc(X86pEmit *e, uint8_t cond, uint32_t target, uint32_t fallthrough) {
+  x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)cond);
+  x86p_emit_lea64(e, kX64Rsi, CPU_REG, flags_off());
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cond);
+  x86p_emit_call_r64(e, kX64Rax);
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  x86p_emit_mov_r32_imm32(e, kX64Rax, fallthrough);
+  x86p_emit_mov_r32_imm32(e, kX64Rcx, target);
+  x86p_emit_cmovcc_r32_r32(e, (unsigned)kX86pCondNZ, kX64Rax, kX64Rcx);
+  emit_epilogue_from(e, kX64Rax, kX86pJitExitBlockEnd);
+}
+
 /* ---- translation --------------------------------------------------------- */
 
 X86pJitStatus x86p_jit_translate(const X86pMem *mem,
@@ -230,6 +280,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   uint32_t count = 0;
   X86pJitExit exit = kX86pJitExitBlockEnd;
   const char *stopper = NULL;
+  int terminated = 0; /* a branch already emitted the exit */
 
   if (!mem || !out || !code) {
     say(reason, reason_len, "null argument");
@@ -300,6 +351,23 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
       break;
     }
 
+    if (is_relative_branch(&insn)) {
+      /* A branch ENDS the block -- that is what makes it a basic block. The
+         target is relative to the NEXT instruction, and the addition wraps at
+         32 bits exactly as the guest's does. */
+      uint32_t next = pc + insn.length;
+      uint32_t target = next + insn.operand[0].imm;
+      if (insn.op == (uint8_t)kX86pInsnJmp) {
+        emit_epilogue(&e, target, kX86pJitExitBlockEnd);
+      } else {
+        emit_jcc(&e, insn.cond, target, next);
+      }
+      pc = next;
+      count++;
+      terminated = 1;
+      break;
+    }
+
     switch (insn.op) {
     case kX86pInsnNop:
       break;
@@ -321,7 +389,9 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     count++;
   }
 
-  emit_epilogue(&e, pc, exit);
+  if (!terminated) {
+    emit_epilogue(&e, pc, exit);
+  }
 
   if (!x86p_emit_ok(&e)) {
     say(reason, reason_len, "code buffer of %zu byte(s) too small for the block at %08X", code_cap, eip);
@@ -341,6 +411,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   out->insns = count;
   out->host_bytes = e.len;
   out->stopper = stopper;
+  out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
 

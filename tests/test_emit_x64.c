@@ -336,6 +336,73 @@ static void test_alu_r32_imm32_every_op(void) {
   }
 }
 
+static void test_test_r32_r32(void) {
+  int a;
+  for (a = 0; a < kX64RegCount; a++) {
+    uint8_t buf[16];
+    X86pEmit e;
+    Decoded d;
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_test_r32_r32(&e, (X86pHostReg)a, (X86pHostReg)a);
+    d = emit_and_decode(&e);
+    if (!d.ok) {
+      continue;
+    }
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_TEST);
+    CHECK(reg_id(d.ops[0].reg.value) == a);
+    CHECK(reg_id(d.ops[1].reg.value) == a);
+    CHECK(ZydisRegisterGetClass(d.ops[0].reg.value) == ZYDIS_REGCLASS_GPR32);
+  }
+}
+
+/*
+ * All sixteen conditions, decoded.
+ *
+ * The condition number is added straight to a base opcode, so an off-by-one
+ * here emits a DIFFERENT, perfectly valid conditional move -- CMOVB where
+ * CMOVBE was meant. That never faults and never looks wrong in a register
+ * dump; it just takes the wrong branch on some inputs and not others. Only
+ * decoding each of the sixteen catches it.
+ */
+static void test_cmovcc_every_condition(void) {
+  static const ZydisMnemonic want[16] = {ZYDIS_MNEMONIC_CMOVO,
+                                         ZYDIS_MNEMONIC_CMOVNO,
+                                         ZYDIS_MNEMONIC_CMOVB,
+                                         ZYDIS_MNEMONIC_CMOVNB,
+                                         ZYDIS_MNEMONIC_CMOVZ,
+                                         ZYDIS_MNEMONIC_CMOVNZ,
+                                         ZYDIS_MNEMONIC_CMOVBE,
+                                         ZYDIS_MNEMONIC_CMOVNBE,
+                                         ZYDIS_MNEMONIC_CMOVS,
+                                         ZYDIS_MNEMONIC_CMOVNS,
+                                         ZYDIS_MNEMONIC_CMOVP,
+                                         ZYDIS_MNEMONIC_CMOVNP,
+                                         ZYDIS_MNEMONIC_CMOVL,
+                                         ZYDIS_MNEMONIC_CMOVNL,
+                                         ZYDIS_MNEMONIC_CMOVLE,
+                                         ZYDIS_MNEMONIC_CMOVNLE};
+  unsigned cc;
+  int dst;
+  for (cc = 0; cc < 16u; cc++) {
+    for (dst = 0; dst < kX64RegCount; dst++) {
+      uint8_t buf[16];
+      X86pEmit e;
+      Decoded d;
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_emit_cmovcc_r32_r32(&e, cc, (X86pHostReg)dst, kX64R10);
+      d = emit_and_decode(&e);
+      if (!d.ok) {
+        continue;
+      }
+      CHECK(d.insn.mnemonic == want[cc]);
+      /* Destination is the REG field and source the RM field. Swapping them
+         decodes to a valid CMOV in the wrong direction. */
+      CHECK(reg_id(d.ops[0].reg.value) == dst);
+      CHECK(reg_id(d.ops[1].reg.value) == kX64R10);
+    }
+  }
+}
+
 /* ---- structure ---------------------------------------------------------- */
 
 static void test_push_pop_every_register(void) {
@@ -422,6 +489,8 @@ int main(void) {
   RUN(test_store8_imm_is_a_byte_store);
   RUN(test_alu_r32_r32_every_op);
   RUN(test_alu_r32_imm32_every_op);
+  RUN(test_test_r32_r32);
+  RUN(test_cmovcc_every_condition);
   RUN(test_push_pop_every_register);
   RUN(test_ret);
   RUN(test_overflow_is_sticky_and_never_writes_past_the_end);

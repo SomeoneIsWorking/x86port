@@ -25,6 +25,7 @@
  */
 #include "alu.h"
 #include "cpu.h"
+#include "decode.h"
 #include "exec.h"
 #include "jit_x64.h"
 
@@ -63,6 +64,7 @@ static int g_test_failed;
 static unsigned long g_programs;
 static unsigned long g_guest_insns;
 static unsigned long g_state_compares;
+static unsigned long g_branch_blocks;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -123,7 +125,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 5u);
+  unsigned pick = (unsigned)(r % 20u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -147,8 +149,28 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0xC0u | (aluop << 3) | dst);
     put_u32(p + 2, interesting(r));
     return 6;
-  default: /* TEST r/m32, r32 -- 85 /r. Writes flags and NO result. */
+  case 4: /* TEST r/m32, r32 -- 85 /r. Writes flags and NO result. */
     p[0] = 0x85u;
+    p[1] = (uint8_t)(0xC0u | (src << 3) | dst);
+    return 2;
+  case 5: /* Jcc rel8 -- 70+cc. Reads the flags the PREVIOUS instruction set,
+             which is the interaction a per-instruction test cannot reach. */
+    p[0] = (uint8_t)(0x70u | ((r >> 12) & 0xFu));
+    p[1] = (uint8_t)((r >> 20) & 0x1Fu);
+    return 2;
+  case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
+             a backend that read the displacement at the wrong width would pass
+             the rel8 cases and fail only here. */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0x80u | ((r >> 12) & 0xFu));
+    put_u32(p + 2, (uint32_t)(int32_t)(int8_t)((r >> 20) & 0xFFu));
+    return 6;
+  case 8: /* JMP rel8 -- EB */
+    p[0] = 0xEBu;
+    p[1] = (uint8_t)((r >> 20) & 0x1Fu);
+    return 2;
+  default: /* ALU again, so branches stay a minority and blocks have length */
+    p[0] = (uint8_t)((aluop << 3) | 1u);
     p[1] = (uint8_t)(0xC0u | (src << 3) | dst);
     return 2;
   }
@@ -264,7 +286,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     return;
   }
 
-  for (round = 0; round < 400; round++) {
+  for (round = 0; round < 1500; round++) {
     X86pMem mem = guest_mem();
     X86pCpu ci;
     X86pCpu cj;
@@ -299,11 +321,59 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
        reported Ok would make no progress and every counter would look fine. */
     CHECK(blk.insns > 0u);
 
+    /*
+     * guest_len must be exactly the bytes the translated instructions occupy,
+     * computed here by an INDEPENDENT walk rather than taken from the block.
+     *
+     * This is the field range invalidation uses to decide whether a write to
+     * guest memory stales a block. Nothing else in this suite reads it, so a
+     * backend that set it from the branch TARGET instead of the fall-through
+     * would pass every state comparison and leave the cache unable to
+     * invalidate correctly -- found by mutation, which is why it is checked.
+     */
+    {
+      uint32_t span = 0u;
+      uint32_t k;
+      int walked = 1;
+      for (k = 0; k < blk.insns; k++) {
+        uint8_t ib[X86P_MAX_INSN_LEN];
+        X86pInsn di;
+        uint32_t j;
+        for (j = 0; j < (uint32_t)X86P_MAX_INSN_LEN; j++) {
+          uint32_t byte;
+          if (!x86p_mem_read(&mem, GUEST_BASE + span + j, 1, &byte)) {
+            break;
+          }
+          ib[j] = (uint8_t)byte;
+        }
+        if (!x86p_decode(ib, X86P_MAX_INSN_LEN, &di)) {
+          walked = 0;
+          break;
+        }
+        span += di.length;
+      }
+      g_checks++;
+      if (!walked) {
+        g_failed++;
+        printf("    FAIL round %d: could not re-walk the block\n", round);
+      } else if (span != blk.guest_len) {
+        g_failed++;
+        printf("    FAIL round %d: guest_len=%u but %u instruction(s) span %u byte(s)\n",
+               round,
+               blk.guest_len,
+               blk.insns,
+               span);
+      }
+    }
+
     run_interp(&ci, &mem, blk.insns);
     (void)x86p_jit_enter(&blk, &cj);
 
     g_programs++;
     g_guest_insns += blk.insns;
+    if (blk.ends_in_branch) {
+      g_branch_blocks++;
+    }
 
     if (!same_state(&ci, &cj, "generated program")) {
       printf("      round %d, seed %llu, %u guest insn(s), %zu host byte(s)\n",
@@ -446,8 +516,16 @@ int main(void) {
          g_programs,
          g_guest_insns,
          g_state_compares);
+  printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
   if (g_programs == 0u || g_state_compares == 0u) {
     printf("REFUSED: the differential compared nothing; these results mean nothing\n");
+    return 1;
+  }
+  if (g_branch_blocks == 0u) {
+    /* The generator emits branches; zero here means it stopped, or that every
+       branch was refused before emission. Either way the branch path was never
+       executed and a clean run would be claiming coverage it does not have. */
+    printf("REFUSED: no block ended in a branch; the branch path was never exercised\n");
     return 1;
   }
   return g_failed ? 1 : 0;
