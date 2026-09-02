@@ -405,7 +405,53 @@ int main(int argc, char **argv) {
               memcmp(ci.x87.reg, cj.x87.reg, sizeof ci.x87.reg) != 0) {
             diverged++;
             if (diverged <= 5) {
-              printf("DIVERGENCE at %08X after %u insn(s)\n", entry + walked, blk.insns);
+              unsigned q;
+              uint32_t at = entry + walked;
+              printf("DIVERGENCE at %08X after %u insn(s)\n", at, blk.insns);
+              /* WHICH field, and over WHICH instructions. An address alone
+                 says a block disagreed and leaves the reader to rediscover
+                 everything the tool already knew. */
+              for (q = 0; q < 8u; q++) {
+                if (ci.reg[q] != cj.reg[q]) {
+                  printf("    r%u: interp=%08X jit=%08X\n", q, ci.reg[q], cj.reg[q]);
+                }
+              }
+              if (ci.eip != cj.eip) {
+                printf("    eip: interp=%08X jit=%08X\n", ci.eip, cj.eip);
+              }
+              if (ci.flags.kind != cj.flags.kind || ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b ||
+                  ci.flags.r != cj.flags.r || ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
+                printf("    flags: interp kind=%d a=%08X b=%08X r=%08X w=%d cin=%u | jit kind=%d a=%08X b=%08X "
+                       "r=%08X w=%d cin=%u\n",
+                       (int)ci.flags.kind, ci.flags.a, ci.flags.b, ci.flags.r, ci.flags.w,
+                       (unsigned)ci.flags.carry_in, (int)cj.flags.kind, cj.flags.a, cj.flags.b, cj.flags.r,
+                       cj.flags.w, (unsigned)cj.flags.carry_in);
+              }
+              if (ci.x87.top != cj.x87.top) {
+                printf("    x87 top: interp=%u jit=%u\n", ci.x87.top, cj.x87.top);
+              }
+              {
+                uint32_t pc2 = at;
+                for (q = 0; q < blk.insns; q++) {
+                  X86pInsn di;
+                  uint8_t bb[X86P_MAX_INSN_LEN];
+                  uint32_t avail = 0, z;
+                  for (z = 0; z < X86P_MAX_INSN_LEN; z++) {
+                    uint32_t bv;
+                    if (!x86p_mem_read(&sub, pc2 + z, 1, &bv)) {
+                      break;
+                    }
+                    bb[z] = (uint8_t)bv;
+                    avail++;
+                  }
+                  memset(&di, 0, sizeof di);
+                  if (!avail || x86p_decode(bb, avail, &di) == 0u) {
+                    break;
+                  }
+                  printf("      %08X  %s\n", pc2, di.mnemonic ? di.mnemonic : "?");
+                  pc2 += di.length;
+                }
+              }
             }
           }
         }

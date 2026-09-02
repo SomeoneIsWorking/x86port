@@ -1,6 +1,8 @@
 /* exec.c -- see exec.h for why every outcome is named. */
 #include "exec.h"
 
+#include "bcd.h"
+#include "bit_ops.h"
 #include "simd.h"
 #include "string_ops.h"
 
@@ -543,6 +545,286 @@ static void execute(Ctx *c) {
     cpu->df = (v & X86P_DF) ? 1u : 0u;
     return;
   }
+
+    /* ---- the decimal adjustments, the bit tests, and the rest of the integer
+       tail. Everything below is exact and specified; where the SDM says a flag
+       is undefined the behaviour is measured against the host, not invented. */
+
+  case kX86pInsnBcd: {
+    uint16_t ax = (uint16_t)x86p_reg_read(cpu, kX86pEax, 2);
+    uint32_t f = x86p_eflags(&cpu->flags);
+    /* AAM and AAD carry the base as an immediate; the others have no operand
+       and read whatever this is, which is why it defaults to ten rather than
+       to zero -- AAM with a base of zero is a divide error, and inventing one
+       for DAA would turn a correct instruction into a fault. */
+    const uint8_t imm = (in->operands > 0 && o0->kind == kX86pOperandImm) ? (uint8_t)o0->imm : 10u;
+    if (!x86p_bcd_apply((X86pBcdOp)in->bcd, &ax, &f, imm)) {
+      c->fault = kX86pStepDivideError;
+      return;
+    }
+    x86p_reg_write(cpu, kX86pEax, 2, ax);
+    x86p_flags_set_explicit(&cpu->flags, f);
+    return;
+  }
+
+  case kX86pInsnBit: {
+    uint32_t f = x86p_eflags(&cpu->flags);
+    uint32_t value, updated;
+    unsigned bit;
+    const int w = o0->size;
+
+    if (o1->kind == kX86pOperandImm) {
+      /* An immediate offset is taken modulo the operand width and never
+         leaves the operand. */
+      bit = (unsigned)o1->imm & (unsigned)(w * 8 - 1);
+      value = read_operand(c, o0);
+      if (c->fault) {
+        return;
+      }
+      updated = x86p_bit_apply((X86pBitOp)in->bit, value, bit, &f);
+      if (in->bit != (uint8_t)kX86pBitTest) {
+        write_operand(c, o0, updated);
+      }
+    } else if (o0->kind == kX86pOperandMem) {
+      /*
+       * BIT-STRING ADDRESSING. With a register offset and a memory operand the
+       * offset is SIGNED and unbounded: the instruction addresses a bit in a
+       * string that may start whole operands before or after the address the
+       * modrm computed. A model that masked the offset to the operand width
+       * instead -- the obvious simplification -- reads the right bit only for
+       * offsets under 32, and a guest walking a bitmap with BT [base], eax is
+       * exactly the code that exceeds that.
+       */
+      const int32_t off = (int32_t)read_operand(c, o1);
+      const int32_t stride = (int32_t)(int)w * 8;
+      int32_t unit = off / stride;
+      int32_t rem = off % stride;
+      X86pOperand adjusted;
+      if (rem < 0) { /* C truncates toward zero; the bit index must not go negative */
+        unit -= 1;
+        rem += stride;
+      }
+      adjusted = *o0;
+      adjusted.disp = (int32_t)((uint32_t)o0->disp + (uint32_t)(unit * (int32_t)w));
+      bit = (unsigned)rem;
+      value = read_operand(c, &adjusted);
+      if (c->fault) {
+        return;
+      }
+      updated = x86p_bit_apply((X86pBitOp)in->bit, value, bit, &f);
+      if (in->bit != (uint8_t)kX86pBitTest) {
+        write_operand(c, &adjusted, updated);
+      }
+    } else {
+      bit = (unsigned)read_operand(c, o1) & (unsigned)(w * 8 - 1);
+      value = read_operand(c, o0);
+      updated = x86p_bit_apply((X86pBitOp)in->bit, value, bit, &f);
+      if (in->bit != (uint8_t)kX86pBitTest) {
+        write_operand(c, o0, updated);
+      }
+    }
+    if (c->fault) {
+      return;
+    }
+    x86p_flags_set_explicit(&cpu->flags, f);
+    return;
+  }
+
+  case kX86pInsnShld:
+  case kX86pInsnShrd: {
+    const X86pOperand *o2 = &in->operand[2];
+    uint32_t f = x86p_eflags(&cpu->flags);
+    uint32_t dst = read_operand(c, o0);
+    uint32_t src = read_operand(c, o1);
+    uint32_t r = 0;
+    unsigned count;
+    int defined = 0;
+    if (c->fault) {
+      return;
+    }
+    count = (unsigned)read_operand(c, o2);
+    if (c->fault) {
+      return;
+    }
+    if (!x86p_double_shift(in->op == (uint8_t)kX86pInsnShld, dst, src, count, o0->size, &r, &f, &defined)) {
+      /* Either a masked count of zero -- which writes nothing at all, flags
+         included -- or a count past the operand width, which the SDM leaves
+         undefined. Neither writes a result here; refusing to invent one is
+         the point of x86p_double_shift's `defined` output. */
+      if (!defined) {
+        c->fault = kX86pStepUnsupported;
+      }
+      return;
+    }
+    write_operand(c, o0, r);
+    if (c->fault) {
+      return;
+    }
+    x86p_flags_set_explicit(&cpu->flags, f);
+    return;
+  }
+
+  case kX86pInsnSahf: {
+    /* Only the low byte, and only five of its bits: bit 1 reads as one, bits
+       3 and 5 as zero, on every x86 that has ever shipped. */
+    const uint32_t ah = x86p_reg_read(cpu, kX86pEax, 2) >> 8;
+    const uint32_t keep = x86p_eflags(&cpu->flags) & ~(uint32_t)0xFFu;
+    x86p_flags_set_explicit(&cpu->flags, keep | ((ah & 0xD5u) | 0x02u));
+    return;
+  }
+
+  case kX86pInsnLahf: {
+    const uint32_t f = x86p_eflags(&cpu->flags);
+    const uint32_t ax = x86p_reg_read(cpu, kX86pEax, 2);
+    x86p_reg_write(cpu, kX86pEax, 2, (ax & 0xFFu) | (((f & 0xD5u) | 0x02u) << 8));
+    return;
+  }
+
+  case kX86pInsnStc:
+    x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) | X86P_CF);
+    return;
+
+  case kX86pInsnClc:
+    x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) & ~(uint32_t)X86P_CF);
+    return;
+
+  case kX86pInsnCmc:
+    x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) ^ X86P_CF);
+    return;
+
+  case kX86pInsnSalc:
+    /* Undocumented in the SDM and present on every x86: "set AL from carry".
+       Modelled because it decodes, and an instruction that decodes will be
+       reached by something eventually. */
+    x86p_reg_write(cpu, kX86pEax, 1, x86p_flag_cf(&cpu->flags) ? 0xFFu : 0x00u);
+    return;
+
+  case kX86pInsnXlat: {
+    const uint32_t al = x86p_reg_read(cpu, kX86pEax, 1);
+    uint32_t addr = cpu->reg[kX86pEbx] + al;
+    uint32_t v = 0;
+    /* The segment is whatever prefix the encoding carried; Zydis reports it on
+       the implicit memory operand, which is the only place it exists. */
+    if (in->operands > 0 && o0->kind == kX86pOperandMem) {
+      if (o0->seg == (uint8_t)kX86pSegFs) {
+        addr += cpu->fs_base;
+      } else if (o0->seg == (uint8_t)kX86pSegGs) {
+        addr += cpu->gs_base;
+      }
+    }
+    if (!x86p_mem_read(c->mem, addr, 1, &v)) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = addr;
+      return;
+    }
+    x86p_reg_write(cpu, kX86pEax, 1, v);
+    return;
+  }
+
+  case kX86pInsnPushad: {
+    /* ESP is pushed as it was BEFORE the instruction, so the saved value is
+       the frame the guest had, not the one four bytes into this push. */
+    static const int kOrder[] = {kX86pEax, kX86pEcx, kX86pEdx, kX86pEbx, -1, kX86pEbp, kX86pEsi, kX86pEdi};
+    const uint32_t esp0 = cpu->reg[kX86pEsp];
+    unsigned i;
+    for (i = 0; i < 8u; i++) {
+      const uint32_t v = (kOrder[i] < 0) ? esp0 : cpu->reg[kOrder[i]];
+      if (!x86p_push32(cpu, c->mem, v)) {
+        c->fault = kX86pStepMemoryFault;
+        c->fault_addr = cpu->reg[kX86pEsp] - 4u;
+        return;
+      }
+    }
+    return;
+  }
+
+  case kX86pInsnPopad: {
+    /* The reverse order, and the saved ESP is DISCARDED rather than loaded --
+       loading it would undo the eight pops this instruction just performed. */
+    static const int kOrder[] = {kX86pEdi, kX86pEsi, kX86pEbp, -1, kX86pEbx, kX86pEdx, kX86pEcx, kX86pEax};
+    unsigned i;
+    for (i = 0; i < 8u; i++) {
+      uint32_t v;
+      if (!x86p_pop32(cpu, c->mem, &v)) {
+        c->fault = kX86pStepMemoryFault;
+        c->fault_addr = cpu->reg[kX86pEsp];
+        return;
+      }
+      if (kOrder[i] >= 0) {
+        cpu->reg[kOrder[i]] = v;
+      }
+    }
+    return;
+  }
+
+  case kX86pInsnEnter: {
+    const uint32_t alloc = (uint32_t)o0->imm & 0xFFFFu;
+    const unsigned level = (unsigned)o1->imm & 0x1Fu;
+    uint32_t frame;
+    unsigned i;
+    if (!x86p_push32(cpu, c->mem, cpu->reg[kX86pEbp])) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = cpu->reg[kX86pEsp] - 4u;
+      return;
+    }
+    frame = cpu->reg[kX86pEsp];
+    /* The nesting level copies the enclosing frames' pointers into the new
+       frame. No C compiler emits a non-zero level, but the instruction has
+       one and a decoder that reaches ENTER can reach ENTER 8,3. */
+    for (i = 1; i < level; i++) {
+      uint32_t v;
+      cpu->reg[kX86pEbp] -= 4u;
+      if (!x86p_mem_read(c->mem, cpu->reg[kX86pEbp], 4, &v) || !x86p_push32(cpu, c->mem, v)) {
+        c->fault = kX86pStepMemoryFault;
+        c->fault_addr = cpu->reg[kX86pEbp];
+        return;
+      }
+    }
+    if (level > 0u && !x86p_push32(cpu, c->mem, frame)) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = cpu->reg[kX86pEsp] - 4u;
+      return;
+    }
+    cpu->reg[kX86pEbp] = frame;
+    cpu->reg[kX86pEsp] -= alloc;
+    return;
+  }
+
+  case kX86pInsnLoop:
+  case kX86pInsnLoope:
+  case kX86pInsnLoopne: {
+    /* ECX is decremented FIRST and the condition read after, so a loop entered
+       with ECX = 0 runs 2^32 times rather than none -- the opposite of REP,
+       which tests before. The two are easy to conflate and behave inversely. */
+    const uint32_t ecx = cpu->reg[kX86pEcx] - 1u;
+    int take;
+    cpu->reg[kX86pEcx] = ecx;
+    if (in->op == (uint8_t)kX86pInsnLoope) {
+      take = ecx != 0u && x86p_flag_zf(&cpu->flags);
+    } else if (in->op == (uint8_t)kX86pInsnLoopne) {
+      take = ecx != 0u && !x86p_flag_zf(&cpu->flags);
+    } else {
+      take = ecx != 0u;
+    }
+    if (take) {
+      const uint32_t t = branch_target(c, o0);
+      if (c->fault) {
+        return;
+      }
+      c->next_eip = t;
+    }
+    return;
+  }
+
+  case kX86pInsnJecxz:
+    if (cpu->reg[kX86pEcx] == 0u) {
+      const uint32_t t = branch_target(c, o0);
+      if (c->fault) {
+        return;
+      }
+      c->next_eip = t;
+    }
+    return;
 
   case kX86pInsnUnsupported:
   case kX86pInsnOpCount:

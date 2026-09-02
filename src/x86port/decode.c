@@ -52,10 +52,12 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  * decision rather than a tidiness preference.
  */
 
-static const char *kOpNames[] = {"unsupported", "alu",   "alu-unary", "mov",    "movzx", "movsx",  "lea",  "push",
-                                 "pop",         "xchg",  "jmp",       "jcc",    "setcc", "cmovcc", "call", "ret",
-                                 "leave",       "nop",   "cdq",       "cwde",   "mul",   "imul",   "div",  "idiv",
-                                 "pushfd",      "popfd", "x87",       "string", "simd",  "cld",    "std"};
+static const char *kOpNames[] = {
+    "unsupported", "alu",  "alu-unary", "mov",    "movzx",  "movsx", "lea",   "push",   "pop",  "xchg",
+    "jmp",         "jcc",  "setcc",     "cmovcc", "call",   "ret",   "leave", "nop",    "cdq",  "cwde",
+    "mul",         "imul", "div",       "idiv",   "pushfd", "popfd", "x87",   "string", "simd", "cld",
+    "std",         "bcd",  "bit",       "shld",   "shrd",   "sahf",  "lahf",  "stc",    "clc",  "cmc",
+    "salc",        "xlat", "pushad",    "popad",  "enter",  "loop",  "loope", "loopne", "jecxz"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
 const char *x86p_insn_op_name(int op) {
@@ -345,6 +347,52 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_POPFD, kX86pInsnPopfd);
     SIMPLE(ZYDIS_MNEMONIC_CLD, kX86pInsnCld);
     SIMPLE(ZYDIS_MNEMONIC_STD, kX86pInsnStd);
+    SIMPLE(ZYDIS_MNEMONIC_SHLD, kX86pInsnShld);
+    SIMPLE(ZYDIS_MNEMONIC_SHRD, kX86pInsnShrd);
+    SIMPLE(ZYDIS_MNEMONIC_SAHF, kX86pInsnSahf);
+    SIMPLE(ZYDIS_MNEMONIC_LAHF, kX86pInsnLahf);
+    SIMPLE(ZYDIS_MNEMONIC_STC, kX86pInsnStc);
+    SIMPLE(ZYDIS_MNEMONIC_CLC, kX86pInsnClc);
+    SIMPLE(ZYDIS_MNEMONIC_CMC, kX86pInsnCmc);
+    SIMPLE(ZYDIS_MNEMONIC_SALC, kX86pInsnSalc);
+    SIMPLE(ZYDIS_MNEMONIC_XLAT, kX86pInsnXlat);
+    SIMPLE(ZYDIS_MNEMONIC_PUSHAD, kX86pInsnPushad);
+    SIMPLE(ZYDIS_MNEMONIC_POPAD, kX86pInsnPopad);
+    SIMPLE(ZYDIS_MNEMONIC_ENTER, kX86pInsnEnter);
+    SIMPLE(ZYDIS_MNEMONIC_LOOP, kX86pInsnLoop);
+    SIMPLE(ZYDIS_MNEMONIC_LOOPE, kX86pInsnLoope);
+    SIMPLE(ZYDIS_MNEMONIC_LOOPNE, kX86pInsnLoopne);
+    SIMPLE(ZYDIS_MNEMONIC_JECXZ, kX86pInsnJecxz);
+#undef SIMPLE
+
+#define BCD(m, k)                                                                                                      \
+  case m:                                                                                                              \
+    out->op = (uint8_t)kX86pInsnBcd;                                                                                   \
+    out->bcd = (uint8_t)(k);                                                                                           \
+    return
+    BCD(ZYDIS_MNEMONIC_DAA, kX86pBcdDaa);
+    BCD(ZYDIS_MNEMONIC_DAS, kX86pBcdDas);
+    BCD(ZYDIS_MNEMONIC_AAA, kX86pBcdAaa);
+    BCD(ZYDIS_MNEMONIC_AAS, kX86pBcdAas);
+    BCD(ZYDIS_MNEMONIC_AAM, kX86pBcdAam);
+    BCD(ZYDIS_MNEMONIC_AAD, kX86pBcdAad);
+#undef BCD
+
+#define BIT(m, k)                                                                                                      \
+  case m:                                                                                                              \
+    out->op = (uint8_t)kX86pInsnBit;                                                                                   \
+    out->bit = (uint8_t)(k);                                                                                           \
+    return
+    BIT(ZYDIS_MNEMONIC_BT, kX86pBitTest);
+    BIT(ZYDIS_MNEMONIC_BTS, kX86pBitSet);
+    BIT(ZYDIS_MNEMONIC_BTR, kX86pBitReset);
+    BIT(ZYDIS_MNEMONIC_BTC, kX86pBitComp);
+#undef BIT
+
+#define SIMPLE(m, k)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = (uint8_t)(k);                                                                                            \
+    return
 #undef SIMPLE
 
 /*
