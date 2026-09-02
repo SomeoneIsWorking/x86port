@@ -49,6 +49,52 @@ int x86p_x87_precision_is_exact(void) {
   return LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384;
 }
 
+/*
+ * The x87 extended format in memory, on a little-endian host: eight bytes of
+ * mantissa then two of sign-and-exponent. memcpy rather than a cast through a
+ * union of long double and bytes, because the object is ten significant bytes
+ * inside a sixteen-byte allocation and only the ten mean anything.
+ */
+#define X87_MANTISSA_BYTES 8u
+#define X87_SIGN_EXP_OFFSET 8u
+
+int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out) {
+  uint64_t v = 0u;
+  if (!f || !out || n < 0 || n >= X86P_X87_REGS || !x86p_x87_precision_is_exact()) {
+    return 0;
+  }
+  memcpy(&v, &f->reg[n], X87_MANTISSA_BYTES);
+  *out = v;
+  return 1;
+}
+
+int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v) {
+  uint16_t sign_exp = 0xFFFFu;
+  int i;
+  if (!f || n < 0 || n >= X86P_X87_REGS || !x86p_x87_precision_is_exact()) {
+    return 0;
+  }
+  memcpy(&f->reg[n], &v, X87_MANTISSA_BYTES);
+  memcpy((uint8_t *)&f->reg[n] + X87_SIGN_EXP_OFFSET, &sign_exp, sizeof sign_exp);
+  /* Any MMX write marks the WHOLE file valid, not just the register written.
+     That is what the hardware does, and it is why a guest must EMMS before
+     going back to x87 rather than merely avoiding the register it used. */
+  for (i = 0; i < X86P_X87_REGS; i++) {
+    f->tag[i] = (uint8_t)kX86pX87TagValid;
+  }
+  return 1;
+}
+
+void x86p_x87_emms(X86pX87 *f) {
+  int i;
+  if (!f) {
+    return;
+  }
+  for (i = 0; i < X86P_X87_REGS; i++) {
+    f->tag[i] = (uint8_t)kX86pX87TagEmpty;
+  }
+}
+
 void x86p_x87_reset(X86pX87 *f) {
   int i;
   if (!f) {

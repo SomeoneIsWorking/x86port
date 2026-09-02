@@ -104,6 +104,25 @@ typedef struct X86pCpu {
    */
   uint32_t fs_base;
   uint32_t gs_base;
+  /*
+   * The SSE register file: eight 128-bit registers, as raw bytes.
+   *
+   * Raw bytes rather than a union of float/double/integer views, because SSE
+   * reinterprets the same 128 bits differently in almost every instruction and
+   * a union in the STATE would make one of those views look privileged. The
+   * views belong at the point of use, in simd.c.
+   *
+   * Unlike MMX -- which is the x87 register file seen a different way, and
+   * lives there -- XMM is a genuinely separate file with no aliasing, so this
+   * is where it lives.
+   */
+  _Alignas(16) uint8_t xmm[8][16];
+  /* The SSE control and status word. Held because guests read and write it
+     (LDMXCSR/STMXCSR) and because its rounding-control field is architectural
+     state a context switch saves; nothing here interprets it yet, and an
+     instruction whose result would depend on it says so rather than assuming
+     the default. */
+  uint32_t mxcsr;
 } X86pCpu;
 
 /*

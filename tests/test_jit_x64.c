@@ -173,7 +173,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 79u);
+  unsigned pick = (unsigned)(r % 85u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -591,6 +591,45 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
               the generator sets. */
     p[0] = ((r >> 12) & 1u) ? 0xFDu : 0xFCu;
     return 1;
+  case 79: /* PADDW mm0+i, mm0+j -- 0F FD /r, mod=11. MMX writes through the
+              x87 register file, so a block that got the aliasing wrong shows
+              up in the x87 comparison rather than in a register nobody looks
+              at. */
+    p[0] = 0x0Fu;
+    p[1] = 0xFDu;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return 3;
+  case 80: /* PXOR mm, mm */
+    p[0] = 0x0Fu;
+    p[1] = 0xEFu;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return 3;
+  case 81: /* MOVQ mm, [base+disp8] -- 0F 6F /r, mod=01. Eight bytes from
+              guest memory, which is a width no integer instruction reads. */
+    p[0] = 0x0Fu;
+    p[1] = 0x6Fu;
+    p[2] = (uint8_t)(0x40u | ((dst & 7u) << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 82: /* MOVAPS xmm, [base+disp8] -- 0F 28 /r. Sixteen bytes, and the
+              only operand width in the generator that can run off the end of
+              the mapping from an address that is itself inside it. */
+    p[0] = 0x0Fu;
+    p[1] = 0x28u;
+    p[2] = (uint8_t)(0x40u | ((dst & 7u) << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 83: /* MULPS xmm, xmm -- 0F 59 /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0x59u;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return 3;
+  case 84: /* EMMS -- 0F 77. Empties the register file, so an x87 instruction
+              after it sees a fresh stack; the aliasing is only visible if
+              this and the FLD cases appear in the same block. */
+    p[0] = 0x0Fu;
+    p[1] = 0x77u;
+    return 2;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -724,6 +763,19 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
   }
   if (a->df != b->df) {
     printf("    FAIL %s: DF interp=%u jit=%u\n", what, a->df, b->df);
+    ok = 0;
+  }
+  {
+    int k;
+    for (k = 0; k < 8; k++) {
+      if (memcmp(a->xmm[k], b->xmm[k], 16) != 0) {
+        printf("    FAIL %s: XMM%d differs\n", what, k);
+        ok = 0;
+      }
+    }
+  }
+  if (a->mxcsr != b->mxcsr) {
+    printf("    FAIL %s: MXCSR interp=%08X jit=%08X\n", what, a->mxcsr, b->mxcsr);
     ok = 0;
   }
   if (a->fs_base != b->fs_base || a->gs_base != b->gs_base) {
@@ -1137,12 +1189,13 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
  * runs a single instruction between two identical states, so a failure names
  * the shape that is wrong and nothing else.
  *
- * The terminator is EMMS (0F 77): decodable, and with no semantics in this
- * build AT ALL -- not in the emitter and not in the interpreter -- which is
- * now what it takes to stop a block. An instruction the interpreter can run is
- * no longer a stopper, because the block calls it. If EMMS ever gains
- * semantics this test would silently start comparing longer runs than it asked
- * for, so it checks the block length rather than trusting the arrangement.
+ * The terminator is RCPPS (0F 53 C0): decodable, NAMED, and deliberately
+ * without semantics -- its result comes from a hardware table to about twelve
+ * mantissa bits, and simd.c refuses it rather than writing 1.0f/x. That makes
+ * it the stable choice for a stopper: an instruction merely not implemented
+ * YET stops being one the day it is implemented, and this test has already
+ * had to move twice for that reason. It still checks the block length rather
+ * than trusting the arrangement.
  */
 static unsigned long g_single_compares;
 
@@ -1202,9 +1255,10 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
         continue;
       }
     }
-    /* EMMS -- decodable, no semantics anywhere, stops the block. */
+    /* RCPPS XMM0, XMM0 -- decodable, refused on purpose, stops the block. */
     g_guest[len] = 0x0Fu;
-    g_guest[len + 1u] = 0x77u;
+    g_guest[len + 1u] = 0x53u;
+    g_guest[len + 2u] = 0xC0u;
 
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
@@ -1283,9 +1337,10 @@ static void test_unsupported_at_entry_produces_no_block(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* EMMS -- decodes, and has no semantics anywhere in this build. */
+  /* RCPPS XMM0, XMM0 -- decodes, and is refused on purpose. */
   g_guest[0] = 0x0Fu;
-  g_guest[1] = 0x77u;
+  g_guest[1] = 0x53u;
+  g_guest[2] = 0xC0u;
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
@@ -1293,7 +1348,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
-  CHECK(strstr(reason, "EMMS") != NULL);
+  CHECK(strstr(reason, "RCPPS") != NULL);
   munmap(code, 4096);
 }
 
@@ -1311,11 +1366,12 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* MOV EAX, 0x11223344 ; EMMS */
+  /* MOV EAX, 0x11223344 ; RCPPS XMM0, XMM0 */
   g_guest[0] = 0xB8u;
   put_u32(g_guest + 1, 0x11223344u);
   g_guest[5] = 0x0Fu;
-  g_guest[6] = 0x77u;
+  g_guest[6] = 0x53u;
+  g_guest[7] = 0xC0u;
 
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
@@ -1325,7 +1381,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   }
   CHECK(blk.insns == 1u);
   CHECK(blk.guest_len == 5u);
-  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "EMMS") == 0);
+  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "RCPPS") == 0);
 
   seed_cpu(&cpu, 99u);
   exit = x86p_jit_enter(&blk, &cpu);

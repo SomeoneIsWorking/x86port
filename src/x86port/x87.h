@@ -90,6 +90,32 @@ typedef struct X86pX87 {
   uint16_t status; /* C0-C3 and the exception flags; TOP is merged in on read */
 } X86pX87;
 
+/*
+ * THE MMX REGISTERS ARE THESE REGISTERS.
+ *
+ * MMn is the 64-bit mantissa field of PHYSICAL register n -- not of ST(n), and
+ * not of a separate file. That aliasing is architectural and observable: a
+ * guest that uses MMX and then executes FLD without EMMS reads a value with an
+ * exponent of all ones, and one that reverses the order reads the mantissa of
+ * whatever float was there. Modelling MMX as its own array would be a lie
+ * about the machine, and the code this framework runs is an Alchemy math
+ * library that interleaves 3DNow! with x87 on purpose.
+ *
+ * Writing MMn sets the sign and exponent field to all ones, which is what the
+ * hardware does and what makes the register read back as a NaN to x87. It also
+ * marks every tag VALID and does NOT change TOP -- MMX is not a stack.
+ *
+ * Both return 0 on a host whose `long double` is not x87's format, where there
+ * is no mantissa field to alias onto and the caller must refuse by name rather
+ * than invent one.
+ */
+int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out);
+int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v);
+
+/* EMMS and FEMMS: every register becomes empty again, so subsequent x87 code
+   sees a fresh stack. TOP is unchanged; the tags are what x87 reads. */
+void x86p_x87_emms(X86pX87 *f);
+
 /* Reset to the state a process starts in: empty stack, CW_INIT, clear status. */
 void x86p_x87_reset(X86pX87 *f);
 

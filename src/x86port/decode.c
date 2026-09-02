@@ -1,6 +1,9 @@
 /* decode.c -- see decode.h for why decode is borrowed and semantics are not. */
 #include "decode.h"
 
+#include "simd.h"
+#include "three_dnow.h"
+
 #include <Zydis/Zydis.h>
 
 #include <ctype.h>
@@ -52,7 +55,7 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
 static const char *kOpNames[] = {"unsupported", "alu",   "alu-unary", "mov",    "movzx", "movsx",  "lea",  "push",
                                  "pop",         "xchg",  "jmp",       "jcc",    "setcc", "cmovcc", "call", "ret",
                                  "leave",       "nop",   "cdq",       "cwde",   "mul",   "imul",   "div",  "idiv",
-                                 "pushfd",      "popfd", "x87",       "string", "cld",   "std"};
+                                 "pushfd",      "popfd", "x87",       "string", "simd",  "cld",    "std"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
 const char *x86p_insn_op_name(int op) {
@@ -138,7 +141,7 @@ static int map_register(ZydisRegister r, int8_t *index, uint8_t *size) {
    decoded -- a half-filled operand is how an engine executes against a base
    register that was never there. */
 static int
-map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out, int is_x87) {
+map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X86pOperand *out, int wide_ok) {
   (void)insn; /* the segment now comes from the operand, not the prefix set */
   memset(out, 0, sizeof *out);
   out->reg = -1;
@@ -159,6 +162,28 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
       out->kind = kX86pOperandSt;
       out->reg = (int8_t)id;
       out->size = 10;
+      return 1;
+    }
+    if (ZydisRegisterGetClass(o->reg.value) == ZYDIS_REGCLASS_MMX) {
+      ZyanI8 id = ZydisRegisterGetId(o->reg.value);
+      if (id < 0 || id > 7) {
+        return 0;
+      }
+      out->kind = kX86pOperandMmx;
+      out->reg = (int8_t)id;
+      out->size = 8;
+      return 1;
+    }
+    if (ZydisRegisterGetClass(o->reg.value) == ZYDIS_REGCLASS_XMM) {
+      ZyanI8 id = ZydisRegisterGetId(o->reg.value);
+      /* Only XMM0..XMM7 exist in 32-bit code; a higher number means the bytes
+         were decoded as something other than what the guest executes. */
+      if (id < 0 || id > 7) {
+        return 0;
+      }
+      out->kind = kX86pOperandXmm;
+      out->reg = (int8_t)id;
+      out->size = 16;
       return 1;
     }
     if (ZydisRegisterGetClass(o->reg.value) == ZYDIS_REGCLASS_SEGMENT) {
@@ -208,12 +233,17 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
     if (out->size == 1 || out->size == 2 || out->size == 4) {
       return 1;
     }
-    /* 8 and 10 bytes are a double and the extended format. They are accepted
-       only for an x87 instruction: the same widths also appear on MMX and SSE,
-       which this framework does not model, and letting them through
-       unconditionally would turn an unmodelled MOVQ into an instruction the
-       engine believes it can run. */
-    if (is_x87 && (out->size == 8 || out->size == 10)) {
+    /*
+     * The wide widths -- 8 and 10 for x87's double and extended, 8 and 16 for
+     * MMX and SSE -- are accepted only for the instruction families that have
+     * a register wide enough to hold them.
+     *
+     * Gated rather than allowed unconditionally, because an integer
+     * instruction with an 8- or 16-byte memory operand is not an instruction
+     * this framework decoded correctly, and letting it through would hand the
+     * engine an operand it would then read four bytes of.
+     */
+    if (wide_ok && (out->size == 8 || out->size == 10 || out->size == 16)) {
       return 1;
     }
     return 0;
@@ -471,6 +501,40 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
   CC(ZYDIS_MNEMONIC_JLE, ZYDIS_MNEMONIC_SETLE, ZYDIS_MNEMONIC_CMOVLE, kX86pCondLE)
   CC(ZYDIS_MNEMONIC_JNLE, ZYDIS_MNEMONIC_SETNLE, ZYDIS_MNEMONIC_CMOVNLE, kX86pCondG)
 #undef CC
+
+  /*
+   * MMX, SSE and 3DNow!, matched by NAME rather than by Zydis mnemonic
+   * constant.
+   *
+   * Everything above pairs a Zydis enumerator with a meaning, which is the
+   * right shape when there are thirty of them. There are a hundred and thirty
+   * here, and the tables that give them meaning already exist in simd.c and
+   * three_dnow.c keyed by the spelling a disassembler prints -- so pairing
+   * them again with enumerators would be a second table to keep in step, whose
+   * failure mode is one instruction quietly meaning another.
+   *
+   * The spellings are the ones the decode_diff run over 2.1M instructions
+   * confirmed, including the two Zydis 4.1 renders a letter short (PFSQRT for
+   * PFRSQRT, PFCPIT1 for PFRCPIT1) -- three_dnow.c accepts both because of
+   * that run.
+   */
+  {
+    const char *name = upper_mnemonic(insn->mnemonic);
+    X86pSimdOp sop;
+    X86pPfOp pfop;
+    if (x86p_simd_parse(name, &sop)) {
+      out->op = kX86pInsnSimd;
+      out->simd = (uint8_t)sop;
+      return;
+    }
+    if (x86p_3dnow_parse(name, &pfop)) {
+      out->op = kX86pInsnSimd;
+      out->simd = (uint8_t)kX86pSimdPf;
+      out->pf = (uint8_t)pfop;
+      return;
+    }
+  }
+
   out->op = kX86pInsnUnsupported;
 }
 
@@ -520,7 +584,7 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
   } else {
     int i;
     for (i = 0; i < out->operands; i++) {
-      if (!map_operand(&insn, &ops[i], &out->operand[i], out->op == kX86pInsnX87)) {
+      if (!map_operand(&insn, &ops[i], &out->operand[i], out->op == kX86pInsnX87 || out->op == kX86pInsnSimd)) {
         /* One unmodelled operand makes the whole instruction unsupported.
            A half-filled operand is how an engine executes against a base
            register that was never there. */

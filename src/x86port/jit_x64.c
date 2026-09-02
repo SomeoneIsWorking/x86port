@@ -7,6 +7,8 @@
 #include "emit_x64.h"
 #include "exec.h"
 #include "flags.h"
+#include "simd.h"
+#include "three_dnow.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -1148,12 +1150,41 @@ static int helper_insn_is_straight_line(const X86pInsn *insn) {
   case kX86pInsnPopfd:
   case kX86pInsnX87:
   case kX86pInsnString:
+  case kX86pInsnSimd:
   case kX86pInsnCld:
   case kX86pInsnStd:
     return 1;
   default:
     return 0;
   }
+}
+
+/*
+ * Does this build have semantics for the instruction AT ALL?
+ *
+ * Distinct from can_emit, which asks whether there is an x86-64 emitter. An
+ * instruction with no emitter is routed to the interpreter and the block
+ * carries on; an instruction with no SEMANTICS ends the block, because there
+ * is nothing to route it to.
+ *
+ * The SIMD families make this more than an op-code check: RCPPS, RSQRTSS and
+ * the 3DNow! approximation instructions are DECODED, NAMED, and deliberately
+ * unimplemented -- their results come from hardware tables and a guess would
+ * be worse than a refusal. Asking the owning module rather than keeping a
+ * second list here is what stops the two from drifting apart, and drifting
+ * would mean emitting a call that always fails.
+ */
+static int insn_has_semantics(const X86pInsn *in) {
+  if (in->op == (uint8_t)kX86pInsnUnsupported) {
+    return 0;
+  }
+  if (in->op == (uint8_t)kX86pInsnSimd) {
+    if (in->simd == (uint8_t)kX86pSimdPf) {
+      return x86p_3dnow_implemented((X86pPfOp)in->pf);
+    }
+    return x86p_simd_is_implemented((X86pSimdOp)in->simd);
+  }
+  return 1;
 }
 
 static void emit_prologue(X86pEmit *e) {
@@ -1365,7 +1396,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
     }
 
     if (!can_emit(&insn)) {
-      if (insn.op == (uint8_t)kX86pInsnUnsupported) {
+      if (!insn_has_semantics(&insn)) {
         /* No semantics ANYWHERE -- not here, not in the interpreter -- so
            there is nothing to route to and the block genuinely ends. */
         if (count == 0) {
@@ -1575,5 +1606,5 @@ int x86p_jit_emits_natively(const X86pInsn *insn) {
 int x86p_jit_can_translate(const X86pInsn *insn) {
   /* Either route counts: a helper call keeps the block going, which is what
      "translated" has to mean for a coverage number to track the work. */
-  return can_emit(insn) || insn->op != (uint8_t)kX86pInsnUnsupported;
+  return can_emit(insn) || insn_has_semantics(insn);
 }

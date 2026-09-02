@@ -71,6 +71,17 @@ typedef enum X86pOperandKind {
    * for a selector.
    */
   kX86pOperandSeg,
+  /*
+   * An MMX register, MM0..MM7. `reg` is the number and `size` is 8.
+   *
+   * Its own kind rather than a general register, for the reason every other
+   * file has its own kind: MM4 and ESP share an index and nothing else.
+   * Whether MMn aliases an x87 register is a question for cpu.h -- it does --
+   * and the decoder says only which register was named.
+   */
+  kX86pOperandMmx,
+  /* An SSE register, XMM0..XMM7. `reg` is the number and `size` is 16. */
+  kX86pOperandXmm,
   kX86pOperandKindCount /* MUST stay last */
 } X86pOperandKind;
 
@@ -160,6 +171,13 @@ typedef enum X86pInsnOp {
    * bytes where the guest moved four megabytes.
    */
   kX86pInsnString,
+  /*
+   * MMX, SSE and 3DNow!. `simd` holds an X86pSimdOp and, when that is
+   * kX86pSimdPf, `pf` holds the X86pPfOp -- one family, because they share a
+   * register file and a guest built by one compiler uses all three in the same
+   * function.
+   */
+  kX86pInsnSimd,
   kX86pInsnCld,    /* DF = 0: the string operations count upward */
   kX86pInsnStd,    /* DF = 1: ... and downward */
   kX86pInsnOpCount /* MUST stay last */
@@ -239,6 +257,8 @@ typedef struct X86pInsn {
   uint8_t str;         /* X86pStringOp, when op == kX86pInsnString */
   uint8_t rep;         /* X86pRepKind, when op == kX86pInsnString */
   uint8_t str_width;   /* element size in bytes: 1, 2 or 4 */
+  uint8_t simd;        /* X86pSimdOp, when op == kX86pInsnSimd */
+  uint8_t pf;          /* X86pPfOp, when simd == kX86pSimdPf */
   /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
      two's-complement INTEGER, not as a float of the same width. Recorded here
      rather than recovered from the mnemonic spelling, because a check on the
