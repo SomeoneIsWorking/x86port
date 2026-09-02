@@ -237,6 +237,39 @@ void x86p_emit_load8_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t 
   modrm_mem(e, dst, base, disp);
 }
 
+/*
+ * 16-bit forms.
+ *
+ * The 0x66 operand-size prefix comes BEFORE any REX byte -- REX must be the
+ * last prefix before the opcode, and a 0x66 placed after it is not a prefix at
+ * all but a different instruction. That ordering is the whole trap in these
+ * three, and it assembles cleanly either way.
+ */
+void x86p_emit_load16_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  /* movzx r32, r/m16 -- the destination's upper bits are CLEARED, which is what
+     makes it safe to store the low 16 back without carrying stale bits. */
+  rex(e, 0, dst, base);
+  put(e, 0x0Fu);
+  put(e, 0xB7u);
+  modrm_mem(e, dst, base, disp);
+}
+
+void x86p_emit_store16_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src) {
+  put(e, 0x66u);
+  rex(e, 0, src, base);
+  put(e, 0x89u);
+  modrm_mem(e, src, base, disp);
+}
+
+void x86p_emit_store16_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t imm) {
+  put(e, 0x66u);
+  rex(e, 0, kX64Rax, base);
+  put(e, 0xC7u);
+  modrm_mem(e, kX64Rax, base, disp); /* /0 */
+  put(e, (uint8_t)(imm & 0xFFu));
+  put(e, (uint8_t)((imm >> 8) & 0xFFu));
+}
+
 static X86pEmitSite make_site(X86pEmit *e) {
   X86pEmitSite s;
   s.at = e->len;

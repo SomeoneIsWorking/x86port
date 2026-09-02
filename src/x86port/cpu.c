@@ -128,7 +128,7 @@ int x86p_mem_write(const X86pMem *m, uint32_t addr, int w, uint32_t value) {
  * wrong reads a stack pointer where the guest asked for a character, and it
  * looks correct.
  */
-static int byte_reg(int index, int *shift) {
+int x86p_byte_reg(int index, int *shift) {
   if (index < 4) {
     *shift = 0;
     return index;
@@ -147,7 +147,7 @@ uint32_t x86p_reg_read(const X86pCpu *cpu, int index, int w) {
     if (index >= 8) {
       return 0;
     }
-    r = byte_reg(index, &shift);
+    r = x86p_byte_reg(index, &shift);
     return (cpu->reg[r] >> shift) & 0xFFu;
   }
   if (index >= (int)kX86pRegCount) {
@@ -172,7 +172,7 @@ void x86p_reg_write(X86pCpu *cpu, int index, int w, uint32_t value) {
     if (index >= 8) {
       return;
     }
-    r = byte_reg(index, &shift);
+    r = x86p_byte_reg(index, &shift);
     /* PRESERVES the other 24 bits. Writing the whole register here is the most
        natural mistake in an interpreter, looks right at every call site, and
        corrupts a value the guest is still using. */

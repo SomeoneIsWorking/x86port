@@ -30,8 +30,10 @@
 #include "jit_x64.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 static int g_checks;
 static int g_failed;
@@ -70,9 +72,45 @@ static unsigned long g_refused;
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
 
-static uint8_t g_guest[GUEST_SIZE];
+/*
+ * The guest mapping sits at the END of a page, with an unreadable page after
+ * it.
+ *
+ * A static array would let an over-wide HOST read run past the guest mapping
+ * into memory that happens to be readable, and the store that follows would
+ * still write the right number of bytes -- so a one-byte guest load emitted as
+ * a four-byte host load passes every comparison while reading three bytes it
+ * has no right to. Measured: that mutation SURVIVED until this guard page
+ * existed. Here the same code takes SIGSEGV at the mapping's last address.
+ */
+static uint8_t *g_guest;
 static uint8_t g_before[GUEST_SIZE];
 static uint8_t g_after_interp[GUEST_SIZE];
+
+static void guest_mem_init(void) {
+  long page = sysconf(_SC_PAGESIZE);
+  size_t span;
+  uint8_t *base;
+  if (page <= 0) {
+    printf("FATAL: cannot determine the page size, so no guard page can be placed\n");
+    exit(1);
+  }
+  span = (size_t)page * 2u;
+  base = (uint8_t *)mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (base == MAP_FAILED) {
+    printf("FATAL: could not map %zu bytes for the guest mapping and its guard\n", span);
+    exit(1);
+  }
+  if (mprotect(base + page, (size_t)page, PROT_NONE) != 0) {
+    printf("FATAL: could not make the guard page unreadable; an over-wide read would go unnoticed\n");
+    exit(1);
+  }
+  if (GUEST_SIZE > (size_t)page) {
+    printf("FATAL: the guest mapping is larger than a page and cannot end on one\n");
+    exit(1);
+  }
+  g_guest = base + page - GUEST_SIZE;
+}
 
 static X86pMem guest_mem(void) {
   X86pMem m;
@@ -128,7 +166,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 35u);
+  unsigned pick = (unsigned)(r % 41u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -274,6 +312,41 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[0] = 0x6Au;
     p[1] = (uint8_t)((r >> 22) & 0xFFu);
     return 2;
+  case 29: /* MOV r8, r/m8 -- 8A /r, mod=11. Byte-register indices 4..7 are the
+              HIGH bytes AH/CH/DH/BH, so the generator uses all eight and the
+              partial-write rule is exercised on both halves. */
+    p[0] = 0x8Au;
+    p[1] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 2;
+  case 30: /* MOV r/m8, imm8 -- C6 /0, mod=11 */
+    p[0] = 0xC6u;
+    p[1] = (uint8_t)(0xC0u | dst);
+    p[2] = (uint8_t)((r >> 22) & 0xFFu);
+    return 3;
+  case 31: /* MOV r16, r/m16 -- 66 8B /r, mod=11 */
+    p[0] = 0x66u;
+    p[1] = 0x8Bu;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 32: /* MOV r8, [base+disp8] -- 8A /r, mod=01 */
+    p[0] = 0x8Au;
+    p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 33: /* MOV [base+disp8], r8 -- 88 /r, mod=01 */
+    p[0] = 0x88u;
+    p[1] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 34: /* MOV r16, [base+disp8] -- 66 8B /r, mod=01. The two-byte access at
+              a base sitting on the last legal dword straddles the top of the
+              mapping, which is the case a width-blind bounds check gets wrong
+              in the OTHER direction: it refuses a legal narrow access. */
+    p[0] = 0x66u;
+    p[1] = 0x8Bu;
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -476,7 +549,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     Prog pr;
     uint64_t seed;
 
-    memset(g_guest, 0x90, sizeof g_guest); /* NOP fill: a run that walks off the
+    memset(g_guest, 0x90, GUEST_SIZE); /* NOP fill: a run that walks off the
                                               program hits defined instructions
                                               rather than random bytes */
     rng = rng * 6364136223846793005ull + 1442695040888963407ull;
@@ -564,10 +637,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      * state, so a store to the wrong address is a failure this must name rather
      * than a difference it happens not to look at.
      */
-    memcpy(g_before, g_guest, sizeof g_guest);
+    memcpy(g_before, g_guest, GUEST_SIZE);
     interp_st = run_interp(&ci, &mem, blk.insns);
-    memcpy(g_after_interp, g_guest, sizeof g_guest);
-    memcpy(g_guest, g_before, sizeof g_guest);
+    memcpy(g_after_interp, g_guest, GUEST_SIZE);
+    memcpy(g_guest, g_before, GUEST_SIZE);
     jit_exit = x86p_jit_enter(&blk, &cj);
     g_checks++;
     if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {
@@ -578,10 +651,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
              (int)interp_st,
              blk.stopper ? blk.stopper : "none");
     }
-    if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0) {
+    if (memcmp(g_after_interp, g_guest, GUEST_SIZE) != 0) {
       unsigned d = 0;
       size_t bi;
-      for (bi = 0; bi < sizeof g_guest; bi++) {
+      for (bi = 0; bi < GUEST_SIZE; bi++) {
         if (g_after_interp[bi] != g_guest[bi] && d++ < 4u) {
           printf(
               "    FAIL generated program: guest[%04zX] interp=%02X jit=%02X\n", bi, g_after_interp[bi], g_guest[bi]);
@@ -682,7 +755,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     uint32_t len;
     uint32_t want;
 
-    memset(g_guest, 0x90, sizeof g_guest);
+    memset(g_guest, 0x90, GUEST_SIZE);
     rng = rng * 6364136223846793005ull + 1442695040888963407ull;
     seed = rng;
     /*
@@ -743,10 +816,10 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     }
     want = blk.insns;
 
-    memcpy(g_before, g_guest, sizeof g_guest);
+    memcpy(g_before, g_guest, GUEST_SIZE);
     interp_st = run_interp(&ci, &mem, want);
-    memcpy(g_after_interp, g_guest, sizeof g_guest);
-    memcpy(g_guest, g_before, sizeof g_guest);
+    memcpy(g_after_interp, g_guest, GUEST_SIZE);
+    memcpy(g_guest, g_before, GUEST_SIZE);
     jit_exit = x86p_jit_enter(&blk, &cj);
     g_single_compares++;
     g_checks++;
@@ -759,7 +832,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
              blk.stopper ? blk.stopper : "none");
     }
 
-    if (memcmp(g_after_interp, g_guest, sizeof g_guest) != 0 || !same_state(&ci, &cj, "single instruction")) {
+    if (memcmp(g_after_interp, g_guest, GUEST_SIZE) != 0 || !same_state(&ci, &cj, "single instruction")) {
       uint32_t o = 0;
       uint32_t k;
       for (k = 0; k < want; k++) {
@@ -793,7 +866,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
   if (!code) {
     return;
   }
-  memset(g_guest, 0, sizeof g_guest);
+  memset(g_guest, 0, GUEST_SIZE);
   /* PUSHFD -- decodes, has no emitter in this build. */
   g_guest[0] = 0x9Cu;
 
@@ -820,7 +893,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   if (!code) {
     return;
   }
-  memset(g_guest, 0, sizeof g_guest);
+  memset(g_guest, 0, GUEST_SIZE);
   /* MOV EAX, 0x11223344 ; PUSHFD */
   g_guest[0] = 0xB8u;
   put_u32(g_guest + 1, 0x11223344u);
@@ -860,7 +933,7 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   if (!code) {
     return;
   }
-  memset(g_guest, 0x90, sizeof g_guest);
+  memset(g_guest, 0x90, GUEST_SIZE);
   pr = generate(&rng, 64u);
   CHECK(pr.insns > 0u);
 
@@ -892,6 +965,7 @@ static void test_fetch_fault_at_an_unmapped_eip(void) {
 }
 
 int main(void) {
+  guest_mem_init();
   if (!x86p_jit_available()) {
     /* Not a pass. A host with no backend must say so rather than report a
        clean run over a suite that executed nothing. */

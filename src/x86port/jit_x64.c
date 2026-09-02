@@ -201,6 +201,47 @@ static int is_indirect_branch(const X86pInsn *insn) {
   return insn->operands == 1 && insn->operand[0].kind != kX86pOperandImm;
 }
 
+/*
+ * MOV at 8, 16 or 32 bits.
+ *
+ * A byte-register INDEX above 7 is refused: the interpreter's x86p_reg_write
+ * ignores such a write, and reproducing "ignore it" in emitted code would bake
+ * a guess about an encoding this decoder should never produce. Refusing by name
+ * makes it visible if one ever appears.
+ */
+static int mov_operand_ok(const X86pOperand *o, int w, int for_write) {
+  if (o->kind == kX86pOperandImm) {
+    return !for_write;
+  }
+  if (o->kind == kX86pOperandMem) {
+    return o->size == w;
+  }
+  if (o->kind != kX86pOperandReg) {
+    return 0;
+  }
+  if (o->size != w) {
+    return 0;
+  }
+  return w != 1 || (o->reg >= 0 && o->reg < 8);
+}
+
+static int mov_is_emittable(const X86pInsn *insn) {
+  int w;
+  if (insn->operands != 2) {
+    return 0;
+  }
+  w = insn->operand[0].size;
+  if (w != 1 && w != 2 && w != 4) {
+    return 0;
+  }
+  /* At most ONE memory operand: x86 has no memory-to-memory MOV, and accepting
+     one would emit two host pointers into the same register. */
+  if (insn->operand[0].kind == kX86pOperandMem && insn->operand[1].kind == kX86pOperandMem) {
+    return 0;
+  }
+  return mov_operand_ok(&insn->operand[0], w, 1) && mov_operand_ok(&insn->operand[1], w, 0);
+}
+
 static int can_emit(const X86pInsn *insn) {
   if (is_relative_branch(insn)) {
     return 1;
@@ -212,12 +253,7 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnNop:
     return 1;
   case kX86pInsnMov:
-    /* At most ONE memory operand: x86 has no memory-to-memory MOV, and
-       accepting one would emit two host pointers into the same register. */
-    if (operand_is_mem32(&insn->operand[0]) && operand_is_mem32(&insn->operand[1])) {
-      return 0;
-    }
-    return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
+    return mov_is_emittable(insn);
   case kX86pInsnAlu:
     /* Shifts and rotates take their count from CL or an immediate and have
        their own flag rules; excluded until they are tested on their own. */
@@ -390,10 +426,17 @@ static void note_fault(BlockCtx *c, X86pEmitSite site) {
 }
 
 /* Leave HOSTPTR_REG pointing at the guest operand, or jump to the fault stub. */
-static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
+/* The width is the ACCESS width, not a constant: a two-byte access ending one
+   byte past the mapping must be refused, and a check hard-coded to 4 would
+   refuse a legal one-byte access at the last address instead. */
+static void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_effective_address(c->e, o);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
   emit_host_pointer(c->e, &c->plan);
+}
+
+static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
+  emit_mem_prepare_w(c, o, insn_eip, 4);
 }
 
 /*
@@ -698,30 +741,93 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
   }
 }
 
+/*
+ * Where a guest register operand of width `w` lives, as a byte offset.
+ *
+ * The host is little-endian and the guest slot is a dword, so the low byte of a
+ * register is the slot's first byte and a HIGH byte register (AH, CH, DH, BH)
+ * is its second. That means narrow writes need no read-modify-write at all: a
+ * one-byte store to the right offset preserves the other 24 bits by
+ * construction, which is exactly the rule x86p_reg_write states.
+ *
+ * x86p_byte_reg owns which register an index names -- indices 4..7 are the
+ * SECOND byte of EAX..EBX, not four different registers -- so this does not
+ * restate it.
+ */
+static int32_t reg_off_w(int index, int w) {
+  if (w == 1) {
+    int shift = 0;
+    int r = x86p_byte_reg(index, &shift);
+    return reg_off(r) + shift / 8;
+  }
+  return reg_off(index);
+}
+
+/* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
+   cleared rather than left alone because the value is about to be stored back
+   at that width, and stale high bits would be written into the neighbouring
+   part of a register the guest still owns. */
+static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
+  if (w == 1) {
+    x86p_emit_load8_zx(e, dst, base, disp);
+  } else if (w == 2) {
+    x86p_emit_load16_zx(e, dst, base, disp);
+  } else {
+    x86p_emit_load32(e, dst, base, disp);
+  }
+}
+
+static void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
+  if (w == 1) {
+    x86p_emit_store8_reg(e, base, disp, src);
+  } else if (w == 2) {
+    x86p_emit_store16_reg(e, base, disp, src);
+  } else {
+    x86p_emit_store32(e, base, disp, src);
+  }
+}
+
+static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
+  if (w == 1) {
+    x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
+  } else if (w == 2) {
+    x86p_emit_store16_imm(e, base, disp, (uint16_t)(imm & 0xFFFFu));
+  } else {
+    x86p_emit_store32_imm(e, base, disp, imm);
+  }
+}
+
 static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
+
+  const int w = dst->size;
 
   if (dst->kind == kX86pOperandMem) {
     /* Prepare the destination FIRST, then materialise the value: reading the
        source cannot disturb HOSTPTR_REG, but computing an address can disturb
        a value already sitting in a scratch register. */
-    emit_mem_prepare(c, dst, insn_eip);
+    emit_mem_prepare_w(c, dst, insn_eip, w);
     if (src->kind == kX86pOperandImm) {
-      x86p_emit_store32_imm(c->e, HOSTPTR_REG, 0, src->imm);
+      emit_store_imm_w(c->e, HOSTPTR_REG, 0, src->imm, w);
       return;
     }
-    x86p_emit_load32(c->e, kX64Rax, CPU_REG, reg_off(src->reg));
-    x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rax);
+    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, w), w);
+    emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
     return;
   }
 
   if (src->kind == kX86pOperandImm) {
-    x86p_emit_store32_imm(c->e, CPU_REG, reg_off(dst->reg), src->imm);
+    emit_store_imm_w(c->e, CPU_REG, reg_off_w(dst->reg, w), src->imm, w);
     return;
   }
-  emit_read_operand(c, kX64Rax, src, insn_eip);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(dst->reg), kX64Rax);
+  if (src->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, src, insn_eip, w);
+    emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, w);
+  } else {
+    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, w), w);
+  }
+  emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
 }
 
 /*

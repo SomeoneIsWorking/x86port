@@ -130,6 +130,17 @@ int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w);
  *
  * A write of width 1 or 2 preserves every bit outside it.
  */
+/*
+ * Which 32-bit register a BYTE register index names, and how far up it sits.
+ *
+ * Indices 0-3 are AL/CL/DL/BL, the low byte of EAX..EBX; 4-7 are AH/CH/DH/BH,
+ * the SECOND byte of those same four registers -- not SPL/BPL/SIL/DIL, which
+ * need a REX prefix the 32-bit guest never has. Exported because a translator
+ * has to reach the same byte the interpreter does, and two copies of this
+ * mapping would disagree on exactly the four indices that matter.
+ */
+int x86p_byte_reg(int index, int *shift);
+
 uint32_t x86p_reg_read(const X86pCpu *cpu, int index, int w);
 void x86p_reg_write(X86pCpu *cpu, int index, int w, uint32_t value);
 
