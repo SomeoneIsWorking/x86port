@@ -49,6 +49,16 @@ static uint8_t g_body[MAX_FN_BYTES];
 typedef struct Stopper {
   char name[32];
   unsigned long count;
+  /*
+   * The first occurrence, verbatim. A shape is a work item only if you can
+   * reproduce it: "ADD s0,s0" names a decode this framework does not model and
+   * says nothing about WHICH encoding produced it, and the difference between
+   * a far-pointer form and a genuinely mis-decoded padding byte is exactly the
+   * thing the reader needs and the tool already had in its hand.
+   */
+  uint32_t first_addr;
+  uint8_t first_bytes[16];
+  uint8_t first_len;
 } Stopper;
 
 static Stopper g_stop[512];
@@ -111,7 +121,8 @@ static unsigned long g_insn_refused;
    second has no authority to route to. */
 static unsigned long g_insn_no_semantics;
 
-static void note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m) {
+static void note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m, const uint8_t *bytes, unsigned len,
+                      uint32_t addr) {
   unsigned i;
   for (i = 0; i < *n; i++) {
     if (strcmp(tab[i].name, m) == 0) {
@@ -124,6 +135,11 @@ static void note_into(Stopper *tab, unsigned cap, unsigned *n, const char *m) {
   }
   snprintf(tab[*n].name, sizeof tab[*n].name, "%s", m);
   tab[*n].count = 1u;
+  tab[*n].first_addr = addr;
+  tab[*n].first_len = (uint8_t)(len > sizeof tab[*n].first_bytes ? sizeof tab[*n].first_bytes : len);
+  if (bytes) {
+    memcpy(tab[*n].first_bytes, bytes, tab[*n].first_len);
+  }
   (*n)++;
 }
 
@@ -199,7 +215,13 @@ static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
       if (in.op == (uint8_t)kX86pInsnUnsupported) {
         g_insn_no_semantics++;
       }
-      note_into(g_refused, (unsigned)(sizeof g_refused / sizeof g_refused[0]), &g_refusals, shape);
+      note_into(g_refused,
+                (unsigned)(sizeof g_refused / sizeof g_refused[0]),
+                &g_refusals,
+                shape,
+                b,
+                in.length,
+                base + off);
     }
     off += in.length;
     n++;
@@ -513,10 +535,16 @@ int main(int argc, char **argv) {
     printf("    distinct-shape count is a floor rather than the real number.\n\n");
   }
   for (i = 0; i < g_refusals; i++) {
-    printf("    %-32s %8lu  (%.2f%%)\n",
+    unsigned b;
+    printf("    %-32s %8lu  (%.2f%%)   first at %08X:",
            g_refused[i].name,
            g_refused[i].count,
-           100.0 * (double)g_refused[i].count / (double)g_insn_seen);
+           100.0 * (double)g_refused[i].count / (double)g_insn_seen,
+           g_refused[i].first_addr);
+    for (b = 0; b < g_refused[i].first_len; b++) {
+      printf(" %02X", g_refused[i].first_bytes[b]);
+    }
+    printf("\n");
   }
   munmap(code, CODE_SIZE);
   return diverged ? 1 : 0;

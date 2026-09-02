@@ -44,6 +44,7 @@ add_library(x86port STATIC
   src/x86port/string_ops.c
   src/x86port/bcd.c
     src/x86port/cpuid.c
+    src/x86port/x87_state.c
     src/x86port/privilege.c
     src/x86port/bit_ops.c
     src/x86port/simd.c

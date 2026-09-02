@@ -218,6 +218,13 @@ typedef enum X86pX87Insn {
   kX86pX87InsnConstLog2T,  /* FLDL2T */
   kX86pX87InsnConstLn2,    /* FLDLN2 */
   kX86pX87InsnConstLog102, /* FLDLG2 */
+  /* FCMOVB/E/BE/U and their N forms: move ST(i) into ST(0) when an EFLAGS
+     condition holds. The condition is an ordinary X86pCond in `cond` -- these
+     read the INTEGER flags, which is the whole point of the instruction: it
+     exists so that an FCOMI can be branched on without a jump. */
+  kX86pX87InsnCmov,
+  kX86pX87InsnSaveState,    /* FNSAVE/FSAVE: the whole unit to 108 bytes, then FNINIT */
+  kX86pX87InsnRestoreState, /* FRSTOR: and back */
   kX86pX87InsnCount        /* MUST stay last */
 } X86pX87Insn;
 

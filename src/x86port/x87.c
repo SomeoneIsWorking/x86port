@@ -10,7 +10,8 @@ _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pX87OpCou
 
 static const char *kInsnNames[] = {"fld",   "fild",   "fst",   "fist",   "farith", "fcom",   "fxch",   "fchs",   "fabs",
                                    "fldz",  "fld1",   "fldpi", "fnstsw", "fldcw",  "fnstcw", "ffree",  "fninit", "fn",
-                                   "fwait", "fnclex", "ftst",  "fcomi",  "fldl2e", "fldl2t", "fldln2", "fldlg2"};
+                                   "fwait", "fnclex", "ftst",  "fcomi",  "fldl2e", "fldl2t", "fldln2", "fldlg2", "fcmov",
+                                   "fnsave", "frstor"};
 _Static_assert((int)(sizeof kInsnNames / sizeof kInsnNames[0]) == (int)kX86pX87InsnCount,
                "every X86pX87Insn needs a name -- a refusal that cannot name itself is not a report");
 
