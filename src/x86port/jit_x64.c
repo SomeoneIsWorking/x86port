@@ -5,6 +5,7 @@
 #include "cond.h"
 #include "decode.h"
 #include "emit_x64.h"
+#include "exec.h"
 #include "flags.h"
 
 #include <stdarg.h>
@@ -189,9 +190,23 @@ static int is_relative_branch(const X86pInsn *insn) {
   return insn->operands >= 1 && insn->operand[0].kind == kX86pOperandImm && insn->operand[0].relative;
 }
 
+/* An indirect JMP or CALL: the target is a register or a memory location, so it
+   is not known until the block runs. The block ends with the computed address
+   in EIP and the dispatcher looks it up -- which is exactly what the block
+   cache is for, and why these could not be emitted before there was one. */
+static int is_indirect_branch(const X86pInsn *insn) {
+  if (insn->op != (uint8_t)kX86pInsnJmp) {
+    return 0;
+  }
+  return insn->operands == 1 && insn->operand[0].kind != kX86pOperandImm;
+}
+
 static int can_emit(const X86pInsn *insn) {
   if (is_relative_branch(insn)) {
     return 1;
+  }
+  if (is_indirect_branch(insn)) {
+    return operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]);
   }
   switch (insn->op) {
   case kX86pInsnNop:
@@ -221,18 +236,16 @@ static int can_emit(const X86pInsn *insn) {
     }
     return insn->operands == 2 && operand_writable(&insn->operand[0]) && operand_readable(&insn->operand[1]);
   case kX86pInsnPush:
-    /* An immediate narrower than 32 bits is sign-extended by a rule that lives
-       in the interpreter, and folding a copy of it in here would be a second
-       authority on it. PUSH imm8 is refused BY NAME until the value can come
-       from the one place that owns the rule. */
+    /* A narrow immediate is sign-extended, by x86p_sign_extend -- the
+       interpreter's own rule, called here at translation time so the constant
+       folded into the code is the one the semantics owner computes. */
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]) ||
-                                   (operand_is_imm(&insn->operand[0]) && insn->operand[0].size == 4));
+                                   operand_is_imm(&insn->operand[0]));
   case kX86pInsnPop:
     return insn->operands == 1 && operand_writable(&insn->operand[0]);
   case kX86pInsnCall:
-    /* Direct only. An indirect CALL's target is not known until the block runs,
-       for exactly the reason an indirect JMP's is not. */
-    return insn->operands == 1 && insn->operand[0].kind == kX86pOperandImm && insn->operand[0].relative;
+    return insn->operands == 1 && (operand_is_imm(&insn->operand[0]) || operand_is_reg32(&insn->operand[0]) ||
+                                   operand_is_mem32(&insn->operand[0]));
   case kX86pInsnRet:
     /* RET, or RET imm16 which also releases the caller's arguments. */
     return insn->operands == 0 || (insn->operands == 1 && operand_is_imm(&insn->operand[0]));
@@ -633,7 +646,7 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *o = &insn->operand[0];
 
   if (o->kind == kX86pOperandImm) {
-    x86p_emit_mov_r32_imm32(c->e, kX64Rsi, o->imm);
+    x86p_emit_mov_r32_imm32(c->e, kX64Rsi, x86p_sign_extend(o->imm, o->size));
   } else if (o->kind == kX86pOperandMem) {
     emit_mem_prepare(c, o, insn_eip);
     x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
@@ -783,6 +796,34 @@ static void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uin
   emit_epilogue(c->e, target, kX86pJitExitBlockEnd);
 }
 
+/*
+ * The indirect forms. TARGET_REG is read before anything else touches memory,
+ * because CALL [ESP+4] must take its target from the stack as it stands and not
+ * from the stack after the return address has been pushed onto it.
+ */
+#define TARGET_REG kX64Rdx
+
+static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
+  if (o->kind == kX86pOperandMem) {
+    emit_mem_prepare(c, o, insn_eip);
+    x86p_emit_load32(c->e, TARGET_REG, HOSTPTR_REG, 0);
+    return;
+  }
+  x86p_emit_load32(c->e, TARGET_REG, CPU_REG, reg_off(o->reg));
+}
+
+static void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  emit_read_branch_target(c, &insn->operand[0], insn_eip);
+  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+}
+
+static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
+  emit_read_branch_target(c, &insn->operand[0], insn_eip);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
+  emit_push_rsi(c, insn_eip);
+  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+}
+
 /* `release` is RET imm16's argument count, applied AFTER the pop because the
    immediate counts bytes ABOVE the return address. */
 static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
@@ -898,12 +939,16 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
       break;
     }
 
-    if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet) {
+    if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet || is_indirect_branch(&insn)) {
       uint32_t next = pc + insn.length;
-      if (insn.op == (uint8_t)kX86pInsnCall) {
+      if (is_indirect_branch(&insn)) {
+        emit_jmp_indirect(&ctx, &insn, pc);
+      } else if (insn.op != (uint8_t)kX86pInsnCall) {
+        emit_ret(&ctx, insn.operands == 1 ? insn.operand[0].imm : 0u, pc);
+      } else if (insn.operand[0].kind == kX86pOperandImm) {
         emit_call_rel(&ctx, next, next + insn.operand[0].imm, pc);
       } else {
-        emit_ret(&ctx, insn.operands == 1 ? insn.operand[0].imm : 0u, pc);
+        emit_call_indirect(&ctx, &insn, next, pc);
       }
       pc = next;
       count++;

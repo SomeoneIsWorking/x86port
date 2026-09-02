@@ -101,7 +101,7 @@ static uint32_t branch_target(Ctx *c, const X86pOperand *o) {
   return read_operand(c, o);
 }
 
-static uint32_t sign_extend(uint32_t v, int from_bytes) {
+uint32_t x86p_sign_extend(uint32_t v, int from_bytes) {
   switch (from_bytes) {
   case 1:
     return (uint32_t)(int32_t)(int8_t)(v & 0xFFu);
@@ -235,7 +235,7 @@ static void execute(Ctx *c) {
       return;
     }
     if (in->op == kX86pInsnMovsx) {
-      v = sign_extend(v, o1->size);
+      v = x86p_sign_extend(v, o1->size);
     }
     write_operand(c, o0, v);
     return;
@@ -258,7 +258,7 @@ static void execute(Ctx *c) {
       return;
     }
     if (o0->size == 1 || o0->size == 2) {
-      v = sign_extend(v, o0->size);
+      v = x86p_sign_extend(v, o0->size);
     }
     if (!x86p_push32(cpu, c->mem, v)) {
       c->fault = kX86pStepMemoryFault;
@@ -382,7 +382,7 @@ static void execute(Ctx *c) {
   }
 
   case kX86pInsnCwde:
-    x86p_reg_write(cpu, kX86pEax, 4, sign_extend(x86p_reg_read(cpu, kX86pEax, 2), 2));
+    x86p_reg_write(cpu, kX86pEax, 4, x86p_sign_extend(x86p_reg_read(cpu, kX86pEax, 2), 2));
     return;
 
   case kX86pInsnMul:

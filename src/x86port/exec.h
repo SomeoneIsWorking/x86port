@@ -70,6 +70,16 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
 /* Name a status, for logs and refusals. Never null. */
 const char *x86p_step_status_name(X86pStepStatus s);
 
+/*
+ * Widen a value from `from_bytes` bytes, sign-extending.
+ *
+ * Exported because it is a SEMANTIC RULE, not a utility: PUSH imm8 pushes a
+ * sign-extended dword, and a translator that folded its own copy of that rule
+ * would be a second authority on what the instruction means. There is one
+ * implementation and both engines call it.
+ */
+uint32_t x86p_sign_extend(uint32_t v, int from_bytes);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
