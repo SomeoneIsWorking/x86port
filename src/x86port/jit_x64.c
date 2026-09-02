@@ -50,9 +50,10 @@
 /* Emitting one guest instruction never exceeds this, so the buffer is checked
    once per instruction rather than after every emit. The margin is generous
    and the emitter's own overflow flag is still the authority -- this only
-   decides when to stop trying. */
-#define WORST_CASE_INSN_BYTES 224
-#define EPILOGUE_BYTES 64 /* normal exit plus the shared memory-fault stub */
+   decides when to stop trying. The values live in the header because the
+   dispatch loop needs the same worst case to size its arena. */
+#define WORST_CASE_INSN_BYTES X86P_JIT_WORST_CASE_INSN_BYTES
+#define EPILOGUE_BYTES X86P_JIT_EPILOGUE_BYTES /* normal exit plus the fault stub */
 
 const char *x86p_jit_exit_name(X86pJitExit e) {
   switch (e) {

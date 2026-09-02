@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(x86port C)
+project(x86port C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -14,6 +17,29 @@ set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/zydis EXCLUDE_FROM_ALL)
 
+# jit-common is CONSUMED, not vendored: the code region and block cache have one
+# implementation, in one repo, and a stale in-tree copy that silently won is the
+# exact failure that split exists to end. So the resolver REFUSES by naming
+# every path it tried rather than falling back to anything.
+set(X86P_JITCOMMON_CANDIDATES
+  "${X86PORT_JITCOMMON_DIR}"
+  "$ENV{X86PORT_JITCOMMON_DIR}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../jit-common")
+set(X86P_JITCOMMON "")
+foreach(cand IN LISTS X86P_JITCOMMON_CANDIDATES)
+  if(cand AND EXISTS "${cand}/src/jitcommon/block_cache.h")
+    set(X86P_JITCOMMON "${cand}")
+    break()
+  endif()
+endforeach()
+if(NOT X86P_JITCOMMON)
+  message(FATAL_ERROR
+    "jit-common not found. Tried, in order: ${X86P_JITCOMMON_CANDIDATES}\n"
+    "Clone it beside this repo, or set -DX86PORT_JITCOMMON_DIR=<path>. "
+    "There is deliberately no in-tree copy to fall back to.")
+endif()
+add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXCLUDE_FROM_ALL)
+
 add_library(x86port STATIC
   src/x86port/three_dnow.c
   src/x86port/decode.c
@@ -26,9 +52,10 @@ add_library(x86port STATIC
   src/x86port/x87.c
   src/x86port/x87_exec.c
   src/x86port/emit_x64.c
-  src/x86port/jit_x64.c)
+  src/x86port/jit_x64.c
+  src/x86port/jit_engine.c)
 target_include_directories(x86port PUBLIC src/x86port)
-target_link_libraries(x86port PRIVATE Zydis m)
+target_link_libraries(x86port PUBLIC jitcommon PRIVATE Zydis m)
 target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
 
 # The differential instrument. Not a test: it needs a title's Ghidra export,
@@ -36,6 +63,12 @@ target_compile_options(x86port PRIVATE -Wall -Wextra -Werror)
 add_executable(x86p_decode_diff tools/decode_diff.c)
 target_link_libraries(x86p_decode_diff PRIVATE x86port)
 target_compile_options(x86p_decode_diff PRIVATE -Wall -Wextra -Werror)
+
+add_executable(test_jit_engine tests/test_jit_engine.c)
+target_link_libraries(test_jit_engine PRIVATE x86port)
+target_include_directories(test_jit_engine PRIVATE src)
+target_compile_options(test_jit_engine PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_jit_engine COMMAND test_jit_engine)
 
 add_executable(x86p_jit_coverage tools/jit_coverage.c)
 target_link_libraries(x86p_jit_coverage PRIVATE x86port)
