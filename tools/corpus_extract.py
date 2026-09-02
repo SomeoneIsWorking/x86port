@@ -44,11 +44,43 @@ def records(path):
                          f"records with bytes -- was it exported without --bytes?")
 
 
+def functions(path):
+    """Yield (entry_address, hex_bytes_of_whole_function) from one export.
+
+    A function's instructions are contiguous, so concatenating their bytes
+    reconstructs its byte image -- which is what a TRANSLATOR needs, as opposed
+    to the flat instruction stream a decoder differ needs. Same refusal
+    discipline: a file that yields no function bodies says so.
+    """
+    doc = json.loads(path.read_text())
+    fns = doc.get("functions")
+    if fns is None:
+        raise ValueError(f"{path}: no 'functions' key -- not a Ghidra export?")
+    seen = 0
+    for fn in fns:
+        ins = fn.get("ins") or ()
+        if not ins:
+            continue
+        addr = ins[0].get("a")
+        if addr is None:
+            continue
+        body = "".join(i.get("b") or "" for i in ins)
+        if not body:
+            continue
+        seen += 1
+        yield int(addr), body
+    if seen == 0:
+        raise ValueError(f"{path}: no function bodies with bytes")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("corpus", type=pathlib.Path,
                     help="a Ghidra export .json, or a directory of them")
+    ap.add_argument("--functions", action="store_true",
+                    help="emit whole function bodies (<entry hex>\\t<hex bytes>) "
+                         "for the translator instead of one line per instruction")
     ap.add_argument("--limit", type=int, default=0,
                     help="stop after N instructions (0 = all)")
     args = ap.parse_args()
@@ -68,6 +100,24 @@ def main():
 
     emitted = 0
     out = sys.stdout
+    if args.functions:
+        for path in files:
+            try:
+                for addr, body in functions(path):
+                    out.write(f"{addr:08x}\t{body}\n")
+                    emitted += 1
+                    if args.limit and emitted >= args.limit:
+                        print(f"corpus_extract: {emitted} function(s), stopped at --limit",
+                              file=sys.stderr)
+                        return 0
+            except (ValueError, json.JSONDecodeError) as exc:
+                sys.exit(f"corpus_extract: {exc}")
+        if emitted == 0:
+            sys.exit(f"corpus_extract: {len(files)} file(s) yielded 0 functions. REFUSING.")
+        print(f"corpus_extract: {emitted} function(s) from {len(files)} file(s)",
+              file=sys.stderr)
+        return 0
+
     for path in files:
         try:
             for byts, mnemonic, length in records(path):
