@@ -136,8 +136,54 @@ typedef enum X86pInsnOp {
    * every subsequent value from the wrong place.
    */
   kX86pInsnX87,
+  /*
+   * The string operations. `str` holds an X86pStringOp, `rep` an X86pRepKind,
+   * and `str_width` the element size in bytes.
+   *
+   * The REP PREFIX IS PART OF THE INSTRUCTION, not a modifier on it, for the
+   * same reason the x87 pop suffix is: REP MOVSD and MOVSD leave different
+   * machines, and a model that recorded only the mnemonic would move four
+   * bytes where the guest moved four megabytes.
+   */
+  kX86pInsnString,
+  kX86pInsnCld,    /* DF = 0: the string operations count upward */
+  kX86pInsnStd,    /* DF = 1: ... and downward */
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
+
+/*
+ * Which string operation, by what it touches.
+ *
+ * Named by direction of travel rather than by mnemonic: MOVS reads at ESI and
+ * writes at EDI, STOS only writes, LODS only reads, and SCAS and CMPS write
+ * nothing but flags. That distinction is what decides which pointers advance,
+ * so it is the thing worth being explicit about.
+ */
+typedef enum X86pStringOp {
+  kX86pStringMovs = 0, /* [EDI] <- [ESI]; both advance */
+  kX86pStringStos,     /* [EDI] <- AL/AX/EAX; EDI advances */
+  kX86pStringLods,     /* AL/AX/EAX <- [ESI]; ESI advances */
+  kX86pStringScas,     /* CMP AL/AX/EAX, [EDI]; EDI advances */
+  kX86pStringCmps,     /* CMP [ESI], [EDI]; both advance */
+  kX86pStringOpCount   /* MUST stay last */
+} X86pStringOp;
+
+/*
+ * The repeat prefix.
+ *
+ * F3 and F2 are the same byte pair for every string operation and mean
+ * different things depending on it: on MOVS/STOS/LODS, F3 repeats CX times and
+ * F2 is not defined; on SCAS/CMPS, F3 repeats WHILE EQUAL and F2 WHILE NOT
+ * EQUAL. Recorded as the prefix that was present rather than as a resolved
+ * condition, because resolving it needs the operation and the decoder should
+ * not be the second place that knows the pairing.
+ */
+typedef enum X86pRepKind {
+  kX86pRepNone = 0,
+  kX86pRepRep,   /* F3 */
+  kX86pRepRepne, /* F2 */
+  kX86pRepKindCount
+} X86pRepKind;
 
 #define X86P_MAX_OPERANDS 3
 
@@ -155,6 +201,9 @@ typedef struct X86pInsn {
      FCOMP or a second instruction, and both are wrong. */
   uint8_t x87_pops;
   uint8_t x87_reverse; /* FSUBR/FDIVR: the operands, and only the operands */
+  uint8_t str;         /* X86pStringOp, when op == kX86pInsnString */
+  uint8_t rep;         /* X86pRepKind, when op == kX86pInsnString */
+  uint8_t str_width;   /* element size in bytes: 1, 2 or 4 */
   /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
      two's-complement INTEGER, not as a float of the same width. Recorded here
      rather than recovered from the mnemonic spelling, because a check on the

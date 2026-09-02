@@ -1121,6 +1121,9 @@ static int helper_insn_is_straight_line(const X86pInsn *insn) {
   case kX86pInsnPushfd:
   case kX86pInsnPopfd:
   case kX86pInsnX87:
+  case kX86pInsnString:
+  case kX86pInsnCld:
+  case kX86pInsnStd:
     return 1;
   default:
     return 0;

@@ -1,6 +1,8 @@
 /* exec.c -- see exec.h for why every outcome is named. */
 #include "exec.h"
 
+#include "string_ops.h"
+
 #include "x87_exec.h"
 
 #include <string.h>
@@ -446,8 +448,40 @@ static void execute(Ctx *c) {
     return;
   }
 
+  case kX86pInsnCld:
+    cpu->df = 0u;
+    return;
+
+  case kX86pInsnStd:
+    cpu->df = 1u;
+    return;
+
+  case kX86pInsnString: {
+    uint32_t fault = 0u;
+    switch (x86p_string_execute(cpu, c->mem, in, &fault)) {
+    case kX86pStringOk:
+      return;
+    case kX86pStringFault:
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = fault;
+      return;
+    case kX86pStringUnsupported:
+    case kX86pStringStatusCount:
+    default:
+      c->fault = kX86pStepUnsupported;
+      return;
+    }
+  }
+
+  /*
+   * PUSHFD and POPFD are where the two representations of EFLAGS meet: the six
+   * arithmetic flags are derived from the lazy (kind, a, b, r) record, and DF
+   * is held apart because nothing computes it. Both halves have to cross here
+   * or a guest that saves and restores its flags loses its direction flag --
+   * silently, and only visibly in a string loop that then runs backwards.
+   */
   case kX86pInsnPushfd:
-    if (!x86p_push32(cpu, c->mem, x86p_eflags(&cpu->flags))) {
+    if (!x86p_push32(cpu, c->mem, x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u))) {
       c->fault = kX86pStepMemoryFault;
       c->fault_addr = cpu->reg[kX86pEsp] - 4u;
     }
@@ -461,6 +495,7 @@ static void execute(Ctx *c) {
       return;
     }
     x86p_flags_set_explicit(&cpu->flags, v);
+    cpu->df = (v & X86P_DF) ? 1u : 0u;
     return;
   }
 
