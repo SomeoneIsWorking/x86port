@@ -459,7 +459,48 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     FP(ZYDIS_MNEMONIC_FNSTCW, kX86pX87InsnStoreControl);
     FP(ZYDIS_MNEMONIC_FFREE, kX86pX87InsnFree);
     FP(ZYDIS_MNEMONIC_FNINIT, kX86pX87InsnInit);
+    FP(ZYDIS_MNEMONIC_FWAIT, kX86pX87InsnWait);
+    FP(ZYDIS_MNEMONIC_FNCLEX, kX86pX87InsnClearExc);
+    FP(ZYDIS_MNEMONIC_FTST, kX86pX87InsnTest);
+    FP(ZYDIS_MNEMONIC_FLDL2E, kX86pX87InsnConstLog2E);
+    FP(ZYDIS_MNEMONIC_FLDL2T, kX86pX87InsnConstLog2T);
+    FP(ZYDIS_MNEMONIC_FLDLN2, kX86pX87InsnConstLn2);
+    FP(ZYDIS_MNEMONIC_FLDLG2, kX86pX87InsnConstLog102);
+    /* The comparisons that write EFLAGS instead of the condition codes. The
+       P suffix is a pop, exactly as it is on FCOM -- carried as a count, not
+       folded into the name. */
+    FPP(ZYDIS_MNEMONIC_FCOMI, kX86pX87InsnCompareInt, 0);
+    FPP(ZYDIS_MNEMONIC_FUCOMI, kX86pX87InsnCompareInt, 0);
+    FPP(ZYDIS_MNEMONIC_FCOMIP, kX86pX87InsnCompareInt, 1);
+    FPP(ZYDIS_MNEMONIC_FUCOMIP, kX86pX87InsnCompareInt, 1);
 #undef FP
+
+/*
+ * The functions evaluated on the host's own x87 unit. One instruction kind
+ * and a function selector, because what the decoder has to say about them is
+ * identical and only the opcode differs.
+ */
+#define FN(m, k)                                                                                                       \
+  case m:                                                                                                              \
+    out->op = kX86pInsnX87;                                                                                            \
+    out->x87 = (uint8_t)kX86pX87InsnFn;                                                                                \
+    out->x87_fn = (uint8_t)(k);                                                                                        \
+    return
+    FN(ZYDIS_MNEMONIC_FSQRT, kX86pX87FnSqrt);
+    FN(ZYDIS_MNEMONIC_FSIN, kX86pX87FnSin);
+    FN(ZYDIS_MNEMONIC_FCOS, kX86pX87FnCos);
+    FN(ZYDIS_MNEMONIC_FSINCOS, kX86pX87FnSinCos);
+    FN(ZYDIS_MNEMONIC_FPTAN, kX86pX87FnPtan);
+    FN(ZYDIS_MNEMONIC_FPATAN, kX86pX87FnPatan);
+    FN(ZYDIS_MNEMONIC_FYL2X, kX86pX87FnYl2x);
+    FN(ZYDIS_MNEMONIC_FYL2XP1, kX86pX87FnYl2xp1);
+    FN(ZYDIS_MNEMONIC_F2XM1, kX86pX87Fn2xm1);
+    FN(ZYDIS_MNEMONIC_FSCALE, kX86pX87FnScale);
+    FN(ZYDIS_MNEMONIC_FRNDINT, kX86pX87FnRndint);
+    FN(ZYDIS_MNEMONIC_FXTRACT, kX86pX87FnXtract);
+    FN(ZYDIS_MNEMONIC_FPREM, kX86pX87FnPrem);
+    FN(ZYDIS_MNEMONIC_FPREM1, kX86pX87FnPrem1);
+#undef FN
 #undef FPP
 #undef FPA
   default:

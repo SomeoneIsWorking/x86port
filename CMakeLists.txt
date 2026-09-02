@@ -55,6 +55,7 @@ add_library(x86port STATIC
   src/x86port/exec.c
   src/x86port/x87.c
   src/x86port/x87_exec.c
+  src/x86port/x87_transcendental.c
   src/x86port/emit_x64.c
   src/x86port/jit_x64.c
   src/x86port/jit_engine.c)
@@ -87,6 +88,11 @@ add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)
 target_compile_options(test_three_dnow PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_three_dnow COMMAND test_three_dnow)
+
+add_executable(test_x87_fn tests/test_x87_fn.c)
+target_link_libraries(test_x87_fn PRIVATE x86port)
+target_compile_options(test_x87_fn PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_x87_fn COMMAND test_x87_fn)
 
 add_executable(test_simd tests/test_simd.c)
 target_link_libraries(test_simd PRIVATE x86port)

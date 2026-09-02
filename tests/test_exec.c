@@ -358,15 +358,19 @@ static void test_memory_fault_is_named(void) {
    interpreter skipped it" the same run. */
 static void test_unsupported_is_named_and_does_not_advance(void) {
   /*
-   * FSIN. This was FLD until x87 was wired up and the case started passing for
-   * the wrong reason -- a test whose subject acquires semantics stops testing
-   * anything, and the fix is a genuinely unmodelled instruction, not a
-   * loosened assertion. FSIN is one deliberately: the transcendentals are
-   * refused by name rather than approximated (see the repo's "approximate is
-   * not a synonym for implemented"), so this stays valid until someone decides
-   * otherwise, and then it fails again and asks to be updated.
+   * RCPPS. This was FLD, then FSIN, and each stopped testing anything the day
+   * its subject acquired semantics -- FSIN now runs on the host's own x87
+   * unit, which is exact rather than an approximation, so the reasoning that
+   * made it a good choice stopped applying and the test failed and asked to be
+   * updated, exactly as its comment said it would.
+   *
+   * RCPPS is the stable choice. Its result comes from a hardware table to
+   * about twelve mantissa bits; there is no exact way to compute it here and
+   * `1.0f / x` would be wrong below the sixth digit, so simd.c refuses it on
+   * purpose. It is unmodelled by DECISION rather than by not having got to it
+   * yet, which is what a test of the refusal path needs.
    */
-  static const uint8_t code[] = {0xd9, 0xfe}; /* FSIN */
+  static const uint8_t code[] = {0x0f, 0x53, 0xc0}; /* RCPPS XMM0, XMM0 */
   X86pCpu cpu;
   X86pMem m = arena();
   X86pStepReport rep;
@@ -375,9 +379,9 @@ static void test_unsupported_is_named_and_does_not_advance(void) {
   cpu.eip = CODE_BASE;
 
   CHECK_EQ_U(x86p_step(&cpu, &m, &rep), kX86pStepUnsupported);
-  CHECK(strcmp(rep.mnemonic, "FSIN") == 0);
-  CHECK_EQ_U(rep.length, 2u); /* it DECODED; only the semantics are missing */
-  CHECK_EQ_U(rep.op, kX86pInsnUnsupported);
+  CHECK(strcmp(rep.mnemonic, "RCPPS") == 0);
+  CHECK_EQ_U(rep.length, 3u); /* it DECODED; only the semantics are refused */
+  CHECK_EQ_U(rep.op, kX86pInsnSimd);
   CHECK_EQ_U(cpu.eip, CODE_BASE);
 }
 

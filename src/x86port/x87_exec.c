@@ -1,6 +1,9 @@
 /* x87_exec.c -- see x87_exec.h for why addressing is not duplicated here. */
 #include "x87_exec.h"
 
+#include "flags.h"
+#include "x87_transcendental.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -434,6 +437,147 @@ static void execute(Ctx *c) {
   case kX86pX87InsnInit:
     x86p_x87_reset(f);
     return;
+
+  /*
+   * The four remaining hardware constants. Written to the full 64-bit
+   * significand for the same reason FLDPI is: a `double` literal is a
+   * different number in the last eleven bits, and everything computed from it
+   * drifts.
+   */
+  case kX86pX87InsnConstLog2E:
+    x86p_x87_push(f, 1.44269504088896340735992468100189214L);
+    return;
+  case kX86pX87InsnConstLog2T:
+    x86p_x87_push(f, 3.32192809488736234787031942948939018L);
+    return;
+  case kX86pX87InsnConstLn2:
+    x86p_x87_push(f, 0.693147180559945309417232121458176568L);
+    return;
+  case kX86pX87InsnConstLog102:
+    x86p_x87_push(f, 0.301029995663981195213738894724493027L);
+    return;
+
+  case kX86pX87InsnWait:
+    /* WAIT checks for a pending unmasked exception. Every process this targets
+       runs with all of them masked, so there is never one pending and there is
+       nothing to do -- but it is a NAMED arm rather than a fall-through, so a
+       build that starts modelling exceptions has somewhere to put the check. */
+    return;
+
+  case kX86pX87InsnClearExc:
+    /* The exception flags and the busy bit; the condition codes and TOP are
+       not touched. Clearing the whole word would silently reset TOP to zero
+       and every subsequent ST(i) would name a different register. */
+    f->status &= (uint16_t)~0x80FFu;
+    return;
+
+  case kX86pX87InsnTest: {
+    long double v = 0.0L;
+    if (!x86p_x87_get(f, 0, &v)) {
+      /* x86p_x87_get has already set the stack-fault and invalid-operation
+         flags; the instruction produces no result, exactly as the other arms
+         here do. */
+      return;
+    }
+    /* C3, C2, C0 encode the three-way result, exactly as FCOM does. */
+    f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3);
+    if (v > 0.0L) {
+      /* all three clear */
+    } else if (v < 0.0L) {
+      f->status |= X86P_X87_C0;
+    } else if (v == 0.0L) {
+      f->status |= X86P_X87_C3;
+    } else {
+      f->status |= (uint16_t)(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3); /* unordered */
+    }
+    return;
+  }
+
+  case kX86pX87InsnCompareInt: {
+    /*
+     * FCOMI and friends write EFLAGS rather than the x87 condition codes,
+     * which is the whole point of them: no FNSTSW, no SAHF, just a branch. ZF,
+     * PF and CF carry the same three-way encoding, with PF as UNORDERED.
+     */
+    long double x = 0.0L;
+    long double y = 0.0L;
+    uint32_t e = X86P_EFLAGS_FIXED;
+    int i = (in->operands >= 1 && o0->kind == kX86pOperandSt) ? o0->reg : 1;
+    if (!x86p_x87_get(f, 0, &x) || !x86p_x87_get(f, i, &y)) {
+      /* x86p_x87_get has already set the stack-fault and invalid-operation
+         flags; the instruction produces no result, exactly as the other arms
+         here do. */
+      return;
+    }
+    if (!(x == x) || !(y == y)) {
+      e |= X86P_ZF | X86P_PF | X86P_CF;
+    } else if (x > y) {
+      /* all three clear */
+    } else if (x < y) {
+      e |= X86P_CF;
+    } else {
+      e |= X86P_ZF;
+    }
+    x86p_flags_set_explicit(&c->cpu->flags, e);
+    for (i = 0; i < (int)in->x87_pops; i++) {
+      long double dropped;
+      (void)x86p_x87_pop(f, &dropped);
+    }
+    return;
+  }
+
+  case kX86pX87InsnFn: {
+    /*
+     * Evaluated on the host's own x87 unit -- see x87_transcendental.h. Not
+     * approximated with libm: FSIN and sinl() agree to about eighteen digits
+     * and differ below that, and a guest accumulating transforms across a
+     * frame turns "differ below that" into drift.
+     */
+    long double a = 0.0L;
+    long double b = 0.0L;
+    long double r0 = 0.0L;
+    long double r1 = 0.0L;
+    int pushed = 0;
+    uint16_t sw = 0u;
+    X86pX87Fn fn = (X86pX87Fn)in->x87_fn;
+    int two_operand = (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1 ||
+                       fn == kX86pX87FnScale || fn == kX86pX87FnPrem || fn == kX86pX87FnPrem1);
+
+    if (!x86p_x87_get(f, 0, &a)) {
+      /* x86p_x87_get has already set the stack-fault and invalid-operation
+         flags; the instruction produces no result, exactly as the other arms
+         here do. */
+      return;
+    }
+    if (two_operand && !x86p_x87_get(f, 1, &b)) {
+      /* x86p_x87_get has already set the stack-fault and invalid-operation
+         flags; the instruction produces no result, exactly as the other arms
+         here do. */
+      return;
+    }
+    if (!x86p_x87_fn(fn, a, b, &r0, &r1, &pushed, &sw)) {
+      /* No x87 unit on this host. Refused by name rather than substituted. */
+      c->status = kX86pX87ExecUnsupported;
+      return;
+    }
+    /* C1 and C2 are guest-visible: C2 reports an incomplete FPREM reduction
+       and an out-of-range trigonometric argument, and guest code loops on it. */
+    f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
+    f->status |= (uint16_t)(sw & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
+
+    if (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1) {
+      /* These consume BOTH registers and leave one result: pop, then replace. */
+      long double dropped;
+      (void)x86p_x87_pop(f, &dropped);
+      x86p_x87_set(f, 0, r0);
+    } else {
+      x86p_x87_set(f, 0, r0);
+      if (pushed) {
+        x86p_x87_push(f, r1);
+      }
+    }
+    return;
+  }
 
   case kX86pX87InsnCount:
   default:
