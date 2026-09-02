@@ -149,7 +149,7 @@ static void expect_disassembly(const uint8_t *code, size_t n, const char *const 
 }
 
 /*
- * Run until HLT, which decodes and has no semantics, so it comes back as a
+ * Run until HLT, which a ring-3 process may not execute, so it comes back as a
  * NAMED Unsupported and serves as the stop marker. `steps` is evidence in its
  * own right: a program that stopped at the first instruction and one that ran
  * to the end leave the same memory when the memory was already right.
@@ -163,7 +163,10 @@ static X86pStepStatus run(X86pCpu *cpu, const X86pMem *m, int *steps) {
       if (steps) {
         *steps = n;
       }
-      if (st == kX86pStepUnsupported && rep.mnemonic && strcmp(rep.mnemonic, "HLT") == 0) {
+      /* HLT stops the run by raising the protection fault a ring-3 process
+         gets for executing it -- a defined outcome, so this terminator stays
+         valid however much else gets implemented. */
+      if (st == kX86pStepProtectionFault && rep.mnemonic && strcmp(rep.mnemonic, "HLT") == 0) {
         return kX86pStepOk; /* the stop marker, not a failure */
       }
       printf("    stopped: %s at %#x (%s)\n", x86p_step_status_name(st), rep.eip, rep.mnemonic ? rep.mnemonic : "?");

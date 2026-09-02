@@ -3,6 +3,8 @@
 
 #include "bcd.h"
 #include "bit_ops.h"
+#include "cpuid.h"
+#include "privilege.h"
 #include "simd.h"
 #include "string_ops.h"
 
@@ -10,8 +12,15 @@
 
 #include <string.h>
 
-static const char *kStatusNames[] = {
-    "ok", "decode-failed", "unsupported", "fetch-fault", "memory-fault", "divide-error"};
+static const char *kStatusNames[] = {"ok",
+                                     "decode-failed",
+                                     "unsupported",
+                                     "fetch-fault",
+                                     "memory-fault",
+                                     "divide-error",
+                                     "interrupt",
+                                     "protection-fault",
+                                     "bound-range"};
 _Static_assert((int)(sizeof kStatusNames / sizeof kStatusNames[0]) == (int)kX86pStepStatusCount,
                "every X86pStepStatus needs a name");
 
@@ -825,6 +834,151 @@ static void execute(Ctx *c) {
       c->next_eip = t;
     }
     return;
+
+    /* ---- traps, faults, and the instructions a ring-3 process may not run.
+       None of these is a gap: each has a defined outcome and reports it. */
+
+  case kX86pInsnInt3:
+  case kX86pInsnInt1:
+  case kX86pInsnInto:
+  case kX86pInsnInt: {
+    static const uint8_t kFixedVector[] = {3u, 1u, 4u};
+    uint8_t vector;
+    if (in->op == (uint8_t)kX86pInsnInt) {
+      vector = (uint8_t)o0->imm;
+    } else {
+      vector = kFixedVector[in->op == (uint8_t)kX86pInsnInt3 ? 0 : (in->op == (uint8_t)kX86pInsnInt1 ? 1 : 2)];
+    }
+    if (in->op == (uint8_t)kX86pInsnInto && !x86p_flag_of(&cpu->flags)) {
+      return; /* INTO with OF clear is a no-op, not a trap */
+    }
+    /* EIP still points AT the instruction, which is what a handler that wants
+       to resume or report needs; advancing first would name the wrong site. */
+    c->fault = kX86pStepInterrupt;
+    cpu->trap_vector = vector;
+    return;
+  }
+
+  case kX86pInsnHlt:
+  case kX86pInsnWbinvd:
+  case kX86pInsnCli:
+  case kX86pInsnSti:
+  case kX86pInsnPortIo:
+    /* privilege.h owns the decision and the reasoning; asking it here rather
+       than repeating the list keeps one authority for "may a ring-3 process do
+       this". The assert is the exhaustiveness check: a kind added to one and
+       not the other is a bug this catches at the first execution. */
+    c->fault = x86p_insn_is_privileged(in) ? kX86pStepProtectionFault : kX86pStepUnsupported;
+    return;
+
+  case kX86pInsnBound: {
+    /*
+     * BOUND is an ordinary user-mode instruction, and the only one here whose
+     * fault is conditional: it reads a PAIR of bounds from memory and traps
+     * only when the index is outside them. The comparison is SIGNED.
+     */
+    const int32_t index = (int32_t)read_operand(c, o0);
+    X86pOperand upper = *o1;
+    int32_t lo, hi;
+    if (c->fault) {
+      return;
+    }
+    upper.size = o0->size;
+    lo = (int32_t)x86p_sign_extend(read_operand(c, &upper), o0->size);
+    upper.disp = (int32_t)((uint32_t)upper.disp + (uint32_t)o0->size);
+    hi = (int32_t)x86p_sign_extend(read_operand(c, &upper), o0->size);
+    if (c->fault) {
+      return;
+    }
+    if (index < lo || index > hi) {
+      c->fault = kX86pStepBoundRange;
+    }
+    return;
+  }
+
+  case kX86pInsnArpl: {
+    /* Adjust the requested privilege level: if the destination's RPL is lower
+       than the source's, raise it and say so in ZF. Legal at ring 3, and gone
+       from 64-bit mode -- its opcode is now a REX prefix. */
+    const uint32_t dst = read_operand(c, o0);
+    const uint32_t src = read_operand(c, o1);
+    if (c->fault) {
+      return;
+    }
+    if ((dst & 3u) < (src & 3u)) {
+      write_operand(c, o0, (dst & ~3u) | (src & 3u));
+      x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) | X86P_ZF);
+    } else {
+      x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) & ~(uint32_t)X86P_ZF);
+    }
+    return;
+  }
+
+  case kX86pInsnSldt:
+    /* The LDT selector. A flat Win32 process has no LDT of its own, and cpu.h
+       states that flat model as a contract rather than leaving it implied --
+       so this stores the selector the CPU holds, which is zero unless
+       something set it. */
+    write_operand(c, o0, cpu->ldtr);
+    return;
+
+  case kX86pInsnLfp: {
+    /* LES/LDS/LFS/LGS/LSS: a 32-bit offset and a 16-bit selector, adjacent in
+       memory. The selector is the HIGH half, whatever the operand size says. */
+    X86pOperand part = *o1;
+    uint32_t offset, selector;
+    /* The decoded operand is the whole six-byte structure, so neither half can
+       be read through it directly -- its size is the size of the pair. */
+    part.size = o0->size;
+    offset = read_operand(c, &part);
+    if (c->fault) {
+      return;
+    }
+    part.size = 2;
+    part.disp = (int32_t)((uint32_t)o1->disp + (uint32_t)o0->size);
+    selector = read_operand(c, &part);
+    if (c->fault) {
+      return;
+    }
+    write_operand(c, o0, offset);
+    cpu->seg[in->seg_dest] = (uint16_t)selector;
+    return;
+  }
+
+  case kX86pInsnIretd: {
+    /* Pop EIP, CS and EFLAGS -- the frame an interrupt pushed. Legal at ring 3
+       for a same-privilege return, which is the only kind this flat model has.
+       No task switch, no stack switch: both need a descriptor table, and this
+       process has neither. */
+    uint32_t eip_v, cs_v, fl_v;
+    if (!x86p_pop32(cpu, c->mem, &eip_v) || !x86p_pop32(cpu, c->mem, &cs_v) || !x86p_pop32(cpu, c->mem, &fl_v)) {
+      c->fault = kX86pStepMemoryFault;
+      c->fault_addr = cpu->reg[kX86pEsp];
+      return;
+    }
+    cpu->seg[kX86pSegCs] = (uint16_t)cs_v;
+    x86p_flags_set_explicit(&cpu->flags, fl_v);
+    cpu->df = (fl_v & X86P_DF) ? 1u : 0u;
+    c->next_eip = eip_v;
+    return;
+  }
+
+  case kX86pInsnCpuid: {
+    X86pCpuidResult r;
+    x86p_cpuid(cpu->reg[kX86pEax], cpu->reg[kX86pEcx], &r);
+    cpu->reg[kX86pEax] = r.eax;
+    cpu->reg[kX86pEbx] = r.ebx;
+    cpu->reg[kX86pEcx] = r.ecx;
+    cpu->reg[kX86pEdx] = r.edx;
+    return;
+  }
+
+  case kX86pInsnRdtsc: {
+    const uint64_t t = x86p_rdtsc_next(&cpu->tsc);
+    cpu->reg[kX86pEax] = (uint32_t)t;
+    cpu->reg[kX86pEdx] = (uint32_t)(t >> 32);
+    return;
+  }
 
   case kX86pInsnUnsupported:
   case kX86pInsnOpCount:

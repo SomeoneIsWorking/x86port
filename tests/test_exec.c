@@ -170,7 +170,12 @@ static void test_program_sum_loop(void) {
   cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
 
   st = run(&cpu, &m, 1000, &steps, &rep);
-  CHECK_EQ_U(st, kX86pStepUnsupported); /* stopped AT the HLT, by name */
+  /* HLT is a PROTECTION FAULT, not a gap: a ring-3 process may not execute it,
+     and that is its defined outcome rather than something this build has yet
+     to implement. Using it as the terminator is stable for the same reason --
+     unlike "unsupported", it cannot stop being true when someone implements
+     another instruction. */
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
   CHECK(strcmp(rep.mnemonic, "HLT") == 0);
   CHECK_EQ_U(cpu.eip, CODE_BASE + 12u); /* and EIP still points at it */
 
@@ -216,7 +221,7 @@ static void test_program_call_and_frame(void) {
   cpu.reg[kX86pEsp] = esp0;
 
   st = run(&cpu, &m, 1000, &steps, &rep);
-  CHECK_EQ_U(st, kX86pStepUnsupported);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
   CHECK(strcmp(rep.mnemonic, "HLT") == 0);
   CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 42u); /* 35 + 7 */
   /* THE STACK IS BALANCED. A call that returns the right value having leaked
@@ -255,7 +260,7 @@ static void test_program_memory_and_extension(void) {
   cpu.reg[kX86pEcx] = 3u;
 
   st = run(&cpu, &m, 100, &steps, &rep);
-  CHECK_EQ_U(st, kX86pStepUnsupported);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
   CHECK(strcmp(rep.mnemonic, "HLT") == 0);
 
   /* The dword really landed in guest memory, little-endian. */
@@ -304,7 +309,7 @@ static void test_program_divide_setcc_cmovcc(void) {
   cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
 
   st = run(&cpu, &m, 100, &steps, &rep);
-  CHECK_EQ_U(st, kX86pStepUnsupported);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
   CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 14u); /* 100 / 7 */
   CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEdx, 4), 2u);  /* remainder */
   CHECK_EQ_U(x86p_reg_read(&cpu, 3, 1), 1u);         /* BL, from SETZ */

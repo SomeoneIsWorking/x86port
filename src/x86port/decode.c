@@ -53,11 +53,13 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  */
 
 static const char *kOpNames[] = {
-    "unsupported", "alu",  "alu-unary", "mov",    "movzx",  "movsx", "lea",   "push",   "pop",  "xchg",
-    "jmp",         "jcc",  "setcc",     "cmovcc", "call",   "ret",   "leave", "nop",    "cdq",  "cwde",
-    "mul",         "imul", "div",       "idiv",   "pushfd", "popfd", "x87",   "string", "simd", "cld",
-    "std",         "bcd",  "bit",       "shld",   "shrd",   "sahf",  "lahf",  "stc",    "clc",  "cmc",
-    "salc",        "xlat", "pushad",    "popad",  "enter",  "loop",  "loope", "loopne", "jecxz"};
+    "unsupported", "alu",   "alu-unary", "mov",    "movzx",  "movsx",  "lea",  "push",    "pop",   "xchg",   "jmp",
+    "jcc",         "setcc", "cmovcc",    "call",   "ret",    "leave",  "nop",  "cdq",     "cwde",  "mul",    "imul",
+    "div",         "idiv",  "pushfd",    "popfd",  "x87",    "string", "simd", "cld",     "std",   "bcd",    "bit",
+    "shld",        "shrd",  "sahf",      "lahf",   "stc",    "clc",    "cmc",  "salc",    "xlat",  "pushad", "popad",
+    "enter",       "loop",  "loope",     "loopne", "jecxz",  "int3",   "int1", "int",     "into",  "iretd",  "bound",
+    "arpl",        "sldt",  "lfp",       "hlt",    "wbinvd", "cli",    "sti",  "port-io", "cpuid", "rdtsc"};
+
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
 const char *x86p_insn_op_name(int op) {
@@ -245,7 +247,7 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
      * this framework decoded correctly, and letting it through would hand the
      * engine an operand it would then read four bytes of.
      */
-    if (wide_ok && (out->size == 8 || out->size == 10 || out->size == 16)) {
+    if (wide_ok && (out->size == 6 || out->size == 8 || out->size == 10 || out->size == 16)) {
       return 1;
     }
     return 0;
@@ -363,6 +365,50 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_LOOPE, kX86pInsnLoope);
     SIMPLE(ZYDIS_MNEMONIC_LOOPNE, kX86pInsnLoopne);
     SIMPLE(ZYDIS_MNEMONIC_JECXZ, kX86pInsnJecxz);
+    SIMPLE(ZYDIS_MNEMONIC_INT3, kX86pInsnInt3);
+    SIMPLE(ZYDIS_MNEMONIC_INT1, kX86pInsnInt1);
+    SIMPLE(ZYDIS_MNEMONIC_INT, kX86pInsnInt);
+    SIMPLE(ZYDIS_MNEMONIC_INTO, kX86pInsnInto);
+    SIMPLE(ZYDIS_MNEMONIC_IRETD, kX86pInsnIretd);
+    SIMPLE(ZYDIS_MNEMONIC_BOUND, kX86pInsnBound);
+    SIMPLE(ZYDIS_MNEMONIC_ARPL, kX86pInsnArpl);
+    SIMPLE(ZYDIS_MNEMONIC_SLDT, kX86pInsnSldt);
+    SIMPLE(ZYDIS_MNEMONIC_HLT, kX86pInsnHlt);
+    SIMPLE(ZYDIS_MNEMONIC_WBINVD, kX86pInsnWbinvd);
+    SIMPLE(ZYDIS_MNEMONIC_CLI, kX86pInsnCli);
+    SIMPLE(ZYDIS_MNEMONIC_STI, kX86pInsnSti);
+    SIMPLE(ZYDIS_MNEMONIC_CPUID, kX86pInsnCpuid);
+    SIMPLE(ZYDIS_MNEMONIC_RDTSC, kX86pInsnRdtsc);
+    /* One kind for the whole I/O family: they differ in direction and width,
+       and a ring-3 process gets the same answer from every one of them. */
+    SIMPLE(ZYDIS_MNEMONIC_IN, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_OUT, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_INSB, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_INSW, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_INSD, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_OUTSB, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_OUTSW, kX86pInsnPortIo);
+    SIMPLE(ZYDIS_MNEMONIC_OUTSD, kX86pInsnPortIo);
+#undef SIMPLE
+
+/* The far-pointer loads differ only in which segment register they write, so
+   they share a kind and carry the destination. */
+#define LFP(m, sreg)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = (uint8_t)kX86pInsnLfp;                                                                                   \
+    out->seg_dest = (uint8_t)(sreg);                                                                                   \
+    return
+    LFP(ZYDIS_MNEMONIC_LES, kX86pSegEs);
+    LFP(ZYDIS_MNEMONIC_LDS, kX86pSegDs);
+    LFP(ZYDIS_MNEMONIC_LFS, kX86pSegFs);
+    LFP(ZYDIS_MNEMONIC_LGS, kX86pSegGs);
+    LFP(ZYDIS_MNEMONIC_LSS, kX86pSegSs);
+#undef LFP
+
+#define SIMPLE(m, k)                                                                                                   \
+  case m:                                                                                                              \
+    out->op = (uint8_t)(k);                                                                                            \
+    return
 #undef SIMPLE
 
 #define BCD(m, k)                                                                                                      \
@@ -673,7 +719,13 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
   } else {
     int i;
     for (i = 0; i < out->operands; i++) {
-      if (!map_operand(&insn, &ops[i], &out->operand[i], out->op == kX86pInsnX87 || out->op == kX86pInsnSimd)) {
+      /* Which families legitimately have a memory operand wider than four
+         bytes: the ones with a register wide enough to hold it (x87, SIMD),
+         plus the two that read a STRUCTURE rather than a value -- BOUND's pair
+         of limits and the far-pointer loads' offset-and-selector. */
+      const int wide_ok =
+          out->op == kX86pInsnX87 || out->op == kX86pInsnSimd || out->op == kX86pInsnBound || out->op == kX86pInsnLfp;
+      if (!map_operand(&insn, &ops[i], &out->operand[i], wide_ok)) {
         /* One unmodelled operand makes the whole instruction unsupported.
            A half-filled operand is how an engine executes against a base
            register that was never there. */

@@ -43,6 +43,8 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 add_library(x86port STATIC
   src/x86port/string_ops.c
   src/x86port/bcd.c
+    src/x86port/cpuid.c
+    src/x86port/privilege.c
     src/x86port/bit_ops.c
     src/x86port/simd.c
   src/x86port/simd_int.c
