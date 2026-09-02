@@ -108,6 +108,19 @@ typedef struct X86pJitBlock {
   const char *stopper; /* mnemonic that ended the block, or NULL if it ran out
                           of room or hit the instruction limit. NAMED so the
                           unsupported set is a ranked work list, not a count. */
+  /*
+   * How many times the block had to CALL x86p_flag_cf to recover the incoming
+   * carry, rather than deriving it inline from a predecessor whose flag kind
+   * was known at translation time.
+   *
+   * Published because the difference is invisible in guest state: emitting the
+   * call everywhere is entirely CORRECT and merely slow, so a change that lost
+   * the inline derivation would pass every comparison. One per block is the
+   * expected figure -- the first flag write faces a predecessor from outside
+   * the block -- and more than that means something inside the block gave up
+   * information it had.
+   */
+  unsigned flag_helper_calls;
 } X86pJitBlock;
 
 /*

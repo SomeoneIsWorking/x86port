@@ -68,6 +68,8 @@ static unsigned long g_guest_insns;
 static unsigned long g_state_compares;
 static unsigned long g_branch_blocks;
 static unsigned long g_refused;
+static unsigned long g_self_modified;
+static unsigned long g_helper_calls;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -166,7 +168,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 47u);
+  unsigned pick = (unsigned)(r % 53u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -377,6 +379,32 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
   case 40: /* <alu> r8, [base+disp8] -- (op*8+2) /r, mod=01 */
     p[0] = (uint8_t)((aluop << 3) | 2u);
     p[1] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 41: /* INC r32 -- 40+r. PRESERVES CF, which is what carry_in exists for,
+              so the generator places these among the ALU ops rather than in a
+              corner of their own. */
+    p[0] = (uint8_t)(0x40u + dst);
+    return 1;
+  case 42: /* DEC r32 -- 48+r */
+    p[0] = (uint8_t)(0x48u + dst);
+    return 1;
+  case 43: /* NEG r/m32 -- F7 /3, mod=11 */
+    p[0] = 0xF7u;
+    p[1] = (uint8_t)(0xD8u | dst);
+    return 2;
+  case 44: /* NOT r/m32 -- F7 /2, mod=11. Writes NO flags, so the instruction
+              AFTER it must still see the one before it as its predecessor. */
+    p[0] = 0xF7u;
+    p[1] = (uint8_t)(0xD0u | dst);
+    return 2;
+  case 45: /* INC r/m8 -- FE /0, mod=11 */
+    p[0] = 0xFEu;
+    p[1] = (uint8_t)(0xC0u | dst);
+    return 2;
+  case 46: /* DEC [base+disp8] -- FF /1, mod=01 */
+    p[0] = 0xFFu;
+    p[1] = (uint8_t)(0x40u | (1u << 3) | membase);
     p[2] = memdisp;
     return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
@@ -674,6 +702,26 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     memcpy(g_after_interp, g_guest, GUEST_SIZE);
     memcpy(g_guest, g_before, GUEST_SIZE);
     jit_exit = x86p_jit_enter(&blk, &cj);
+
+    /*
+     * SELF-MODIFYING CODE IS NOT A DIVERGENCE, AND THIS INSTRUMENT CANNOT JUDGE
+     * IT.
+     *
+     * A generated store can land in the program itself -- the base registers
+     * are seeded in range but any MOV can overwrite one, after which the
+     * address is wherever it lands, and the mapping includes the code. The
+     * interpreter re-reads each instruction from memory as it goes; the JIT
+     * runs a block translated BEFORE the write. Both behaviours are correct,
+     * and the guest is required to invalidate between them, which is what
+     * test_jit_engine's invalidation test covers.
+     *
+     * So the round is dropped and COUNTED. A silent skip here could grow to
+     * swallow the corpus while the suite still reported a clean run.
+     */
+    if (memcmp(g_after_interp, g_before, pr.len) != 0 || memcmp(g_guest, g_before, pr.len) != 0) {
+      g_self_modified++;
+      continue;
+    }
     g_checks++;
     if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {
       g_failed++;
@@ -695,6 +743,24 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
       g_failed++;
     }
 
+    /*
+     * AT MOST ONE call to x86p_flag_cf per block.
+     *
+     * Only the FIRST flag write in a block faces a predecessor from outside it;
+     * every later one has a kind this file chose and can derive inline. Calling
+     * the helper more often is entirely correct and merely slow, so no state
+     * comparison can see it -- measured: treating an instruction that writes no
+     * flags (NOT) as if it destroyed the predecessor's kind passed everything.
+     */
+    g_checks++;
+    if (blk.flag_helper_calls > 1u) {
+      g_failed++;
+      printf("    FAIL round %d: %u carry-in helper call(s) in one block; at most one is derivable\n",
+             round,
+             blk.flag_helper_calls);
+    }
+    g_helper_calls += blk.flag_helper_calls;
+
     g_programs++;
     g_guest_insns += blk.insns;
     if (blk.ends_in_branch) {
@@ -704,19 +770,20 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     if (!same_state(&ci, &cj, "generated program")) {
       /* Decode and print the program: a divergence report that does not say
          WHICH instructions were involved is a number, not a lead. */
+      /* Decoded from the program AS IT WAS SEEDED, not from memory after the
+         run: the program can store into itself, and disassembling the result
+         shows instructions that were never executed. */
       uint32_t off = 0;
       uint32_t k;
       for (k = 0; k < blk.insns; k++) {
-        uint8_t ib[X86P_MAX_INSN_LEN];
         X86pInsn di;
-        uint32_t j;
-        for (j = 0; j < (uint32_t)X86P_MAX_INSN_LEN; j++) {
-          uint32_t bv;
-          ib[j] = x86p_mem_read(&mem, GUEST_BASE + off + j, 1, &bv) ? (uint8_t)bv : 0u;
-        }
-        if (!x86p_decode(ib, X86P_MAX_INSN_LEN, &di)) {
+        if (off + (uint32_t)X86P_MAX_INSN_LEN > GUEST_SIZE) {
           break;
         }
+        if (!x86p_decode(g_before + off, X86P_MAX_INSN_LEN, &di)) {
+          break;
+        }
+        printf("        %04X", off);
         printf("        [%u] %-8s op=%u alu=%u ops=%d k0=%u k1=%u\n",
                k,
                di.mnemonic,
@@ -729,8 +796,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
           unsigned bi2;
           printf("             bytes:");
           for (bi2 = 0; bi2 < di.length; bi2++) {
-            uint32_t bv2;
-            printf(" %02X", x86p_mem_read(&mem, GUEST_BASE + off + bi2, 1, &bv2) ? (unsigned)bv2 : 0u);
+            printf(" %02X", g_before[off + bi2]);
           }
           printf("\n");
         }
@@ -1018,8 +1084,13 @@ int main(void) {
          g_guest_insns,
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
-  printf(
-      "%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal\n", g_single_compares, g_refused);
+  printf("%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal, %lu on a store into\n"
+         "the program itself; %lu carry-in helper call(s) over %lu block(s)\n",
+         g_single_compares,
+         g_refused,
+         g_self_modified,
+         g_helper_calls,
+         g_programs);
   if (g_single_compares == 0u) {
     printf("NO single-instruction comparison ran: this suite claims nothing\n");
     return 1;
