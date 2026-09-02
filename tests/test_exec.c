@@ -187,6 +187,123 @@ static void test_program_sum_loop(void) {
 }
 
 /*
+ * The FAR transfers, which move CS as well as EIP.
+ *
+ *      lcall $0x0033, $target   ; 9A off32 sel16
+ *      hlt
+ * target:
+ *      mov  $0x5a, %eax
+ *      lret                     ; CB
+ *
+ * The thing worth pinning is the STACK, not the destination: a far call pushes
+ * CS and then the return offset, and LRET pops them back in that order. A far
+ * transfer executed as a near one arrives at the right instruction with the
+ * stack four bytes out, and stays wrong for the rest of the program -- so the
+ * assertions below are that ESP came back to where it started, that the return
+ * landed on the HLT, and that CS was restored, not merely that EAX is 0x5A.
+ */
+static void test_program_far_call_and_return(void) {
+  static const uint8_t code[] = {0x9a, 0x08, 0x10, 0x00, 0x00, 0x33, 0x00, 0xf4, 0xb8, 0x5a, 0x00, 0x00, 0x00, 0xcb};
+  static const char *const mn[] = {"CALL", "HLT", "MOV", "RET"};
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+  X86pStepStatus st;
+  uint32_t esp0;
+  uint16_t cs0;
+
+  expect_disassembly(code, sizeof code, mn, 4);
+  load(code, sizeof code);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  esp0 = CODE_BASE + ARENA_SIZE - 0x100u;
+  cpu.reg[kX86pEsp] = esp0;
+  cs0 = cpu.seg[kX86pSegCs];
+
+  st = run(&cpu, &m, 100, &steps, &rep);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
+  CHECK(strcmp(rep.mnemonic, "HLT") == 0);
+  CHECK_EQ_U(cpu.eip, CODE_BASE + 7u);
+  CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 0x5au);
+  CHECK_EQ_U(cpu.reg[kX86pEsp], esp0);
+  CHECK_EQ_U(cpu.seg[kX86pSegCs], cs0);
+  /* LCALL, MOV, LRET. Asserted because a stack left four bytes out returns to
+     the middle of an instruction and can still stop on something named HLT. */
+  CHECK_EQ_U(steps, 3);
+}
+
+/*
+ *      ljmp $0x0033, $target    ; EA off32 sel16
+ *      hlt                      ; never reached
+ * target:
+ *      hlt
+ *
+ * A far JMP pushes nothing, so the evidence that it is not a far CALL is the
+ * stack pointer standing still.
+ */
+static void test_program_far_jump(void) {
+  static const uint8_t code[] = {0xea, 0x08, 0x10, 0x00, 0x00, 0x33, 0x00, 0xf4, 0xf4};
+  static const char *const mn[] = {"JMP", "HLT", "HLT"};
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+  X86pStepStatus st;
+  uint32_t esp0;
+
+  expect_disassembly(code, sizeof code, mn, 3);
+  load(code, sizeof code);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  esp0 = CODE_BASE + ARENA_SIZE - 0x100u;
+  cpu.reg[kX86pEsp] = esp0;
+
+  st = run(&cpu, &m, 100, &steps, &rep);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
+  CHECK_EQ_U(cpu.eip, CODE_BASE + 8u);
+  CHECK_EQ_U(cpu.reg[kX86pEsp], esp0);
+  CHECK_EQ_U(cpu.seg[kX86pSegCs], 0x33u);
+  CHECK_EQ_U(steps, 1);
+}
+
+/*
+ * A 16-BIT address wraps within sixteen bits, and it does so before anything
+ * is added to it.
+ *
+ *      mov  $0x0000f000, %ebx
+ *      mov  $0xdead2000, %esi
+ *      lea  (%bx,%si), %eax     ; 67 8d 00
+ *      hlt
+ *
+ * 0xF000 + 0x2000 is 0x11000 in thirty-two bits and 0x1000 in sixteen, and the
+ * high half of ESI is garbage that must not reach the sum at all. The oracle in
+ * test_integer_tail checks this arithmetic against the host CPU across a sweep;
+ * this one checks that the interpreter reaches it -- a correct
+ * effective_address is not visible if the decoder never sets the flag.
+ */
+static void test_program_addr16_wraps(void) {
+  static const uint8_t code[] = {0xbb, 0x00, 0xf0, 0x00, 0x00, 0xbe, 0x00, 0x20, 0xad, 0xde, 0x67, 0x8d, 0x00, 0xf4};
+  static const char *const mn[] = {"MOV", "MOV", "LEA", "HLT"};
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+  X86pStepStatus st;
+
+  expect_disassembly(code, sizeof code, mn, 4);
+  load(code, sizeof code);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
+
+  st = run(&cpu, &m, 100, &steps, &rep);
+  CHECK_EQ_U(st, kX86pStepProtectionFault);
+  CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 0x1000u);
+  CHECK_EQ_U(steps, 3);
+}
+
+/*
  *     mov  $7, %eax        ; push two arguments, call, clean up
  *     push %eax
  *     mov  $35, %eax
@@ -453,6 +570,9 @@ static void test_instruction_at_the_very_end_of_memory(void) {
 
 int main(void) {
   RUN(test_program_sum_loop);
+  RUN(test_program_far_call_and_return);
+  RUN(test_program_far_jump);
+  RUN(test_program_addr16_wraps);
   RUN(test_program_call_and_frame);
   RUN(test_program_memory_and_extension);
   RUN(test_program_divide_setcc_cmovcc);

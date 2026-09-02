@@ -85,6 +85,17 @@ typedef enum X86pOperandKind {
   kX86pOperandMmx,
   /* An SSE register, XMM0..XMM7. `reg` is the number and `size` is 16. */
   kX86pOperandXmm,
+  /*
+   * An immediate FAR POINTER, ptr16:32 -- the operand of `CALL 0C00:00000000`
+   * and its JMP form, where the selector and the offset are both encoded in
+   * the instruction. `imm` holds the offset and `selector` the segment.
+   *
+   * Its own kind rather than two immediates because it is one operand: an
+   * encoding that carried the selector as a second operand would make the
+   * far and near forms differ only in operand count, and the near form's
+   * emitter would happily translate it.
+   */
+  kX86pOperandFarPtr,
   kX86pOperandKindCount /* MUST stay last */
 } X86pOperandKind;
 
@@ -112,6 +123,17 @@ typedef struct X86pOperand {
      stores a byte and means a dword, and every caller would otherwise have to
      remember to widen it the same way. */
   uint32_t imm;
+  /* kind == FarPtr: the segment selector, beside `imm`'s offset. */
+  uint16_t selector;
+  /*
+   * kind == Mem, and the address was computed with 16-BIT registers -- the
+   * 0x67 prefix's [BX+SI] family. The parts are summed as usual and the
+   * result is then truncated to sixteen bits BEFORE the segment base is
+   * added, which is the whole observable difference and the reason this is a
+   * flag on the operand rather than a different operand kind: `[BX+0x8000]`
+   * wraps to a low address where `[EBX+0x8000]` does not.
+   */
+  uint8_t addr16;
   /* A branch displacement is RELATIVE TO THE NEXT INSTRUCTION, not to the one
      it appears in. Carried as a flag rather than resolved at decode time
      because decode does not know where the instruction lives -- and folding
@@ -144,6 +166,17 @@ typedef enum X86pInsnOp {
   kX86pInsnCmovcc,
   kX86pInsnCall,
   kX86pInsnRet,
+  /*
+   * The far forms, which transfer CS as well as EIP.
+   *
+   * Separate kinds rather than a flag, because the near translator must not be
+   * able to reach them by forgetting to test one: a far CALL pushes two words
+   * and a near CALL pushes one, so a far transfer executed as a near one
+   * leaves the stack off by four for the rest of the program.
+   */
+  kX86pInsnCallFar,
+  kX86pInsnJmpFar,
+  kX86pInsnRetf,
   kX86pInsnLeave,
   kX86pInsnNop,
   kX86pInsnCdq,  /* sign-extend EAX into EDX:EAX */

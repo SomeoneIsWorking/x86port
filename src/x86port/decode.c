@@ -53,12 +53,13 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  */
 
 static const char *kOpNames[] = {
-    "unsupported", "alu",   "alu-unary", "mov",    "movzx",  "movsx",  "lea",  "push",    "pop",   "xchg",   "jmp",
-    "jcc",         "setcc", "cmovcc",    "call",   "ret",    "leave",  "nop",  "cdq",     "cwde",  "mul",    "imul",
-    "div",         "idiv",  "pushfd",    "popfd",  "x87",    "string", "simd", "cld",     "std",   "bcd",    "bit",
-    "shld",        "shrd",  "sahf",      "lahf",   "stc",    "clc",    "cmc",  "salc",    "xlat",  "pushad", "popad",
-    "enter",       "loop",  "loope",     "loopne", "jecxz",  "int3",   "int1", "int",     "into",  "iretd",  "bound",
-    "arpl",        "sldt",  "lfp",       "hlt",    "wbinvd", "cli",    "sti",  "port-io", "cpuid", "rdtsc"};
+    "unsupported", "alu",   "alu-unary", "mov",    "movzx", "movsx",   "lea",      "push",    "pop",   "xchg",
+    "jmp",         "jcc",   "setcc",     "cmovcc", "call",  "ret",     "call-far", "jmp-far", "retf",  "leave",
+    "nop",         "cdq",   "cwde",      "mul",    "imul",  "div",     "idiv",     "pushfd",  "popfd", "x87",
+    "string",      "simd",  "cld",       "std",    "bcd",   "bit",     "shld",     "shrd",    "sahf",  "lahf",
+    "stc",         "clc",   "cmc",       "salc",   "xlat",  "pushad",  "popad",    "enter",   "loop",  "loope",
+    "loopne",      "jecxz", "int3",      "int1",   "int",   "into",    "iretd",    "bound",   "arpl",  "sldt",
+    "lfp",         "hlt",   "wbinvd",    "cli",    "sti",   "port-io", "cpuid",    "rdtsc"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
@@ -218,17 +219,30 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
     if (!map_segment(o->mem.segment, &out->seg)) {
       return 0;
     }
+    /*
+     * Address size, from the registers the encoding names rather than from a
+     * prefix byte. The 0x67 forms address with BX/BP/SI/DI, and the guest
+     * really does contain a handful of them -- four in X-Men Legends II --
+     * so they are modelled rather than refused. Both parts must agree: a mix
+     * of a 16- and a 32-bit register in one address is not an encoding, so
+     * seeing one means the bytes were not read as the guest executes them.
+     */
     if (o->mem.base != ZYDIS_REGISTER_NONE) {
       uint8_t bsize = 0;
-      if (!map_register(o->mem.base, &out->base, &bsize) || bsize != 4) {
-        return 0; /* 16-bit addressing is not something this guest emits */
+      if (!map_register(o->mem.base, &out->base, &bsize) || (bsize != 4 && bsize != 2)) {
+        return 0;
       }
+      out->addr16 = (uint8_t)(bsize == 2);
     }
     if (o->mem.index != ZYDIS_REGISTER_NONE) {
       uint8_t isize = 0;
-      if (!map_register(o->mem.index, &out->index, &isize) || isize != 4) {
+      if (!map_register(o->mem.index, &out->index, &isize) || (isize != 4 && isize != 2)) {
         return 0;
       }
+      if (o->mem.base != ZYDIS_REGISTER_NONE && out->addr16 != (uint8_t)(isize == 2)) {
+        return 0;
+      }
+      out->addr16 = (uint8_t)(isize == 2);
     }
     out->scale = o->mem.scale ? o->mem.scale : 1;
     out->disp = o->mem.disp.has_displacement ? (int32_t)o->mem.disp.value : 0;
@@ -270,6 +284,14 @@ map_operand(const ZydisDecodedInstruction *insn, const ZydisDecodedOperand *o, X
       out->size = 4;
     }
     return 1;
+  case ZYDIS_OPERAND_TYPE_POINTER:
+    /* ptr16:32, the immediate far pointer. Both halves are encoded, so this
+       operand needs no registers and no memory -- it IS the destination. */
+    out->kind = kX86pOperandFarPtr;
+    out->imm = (uint32_t)o->ptr.offset;
+    out->selector = (uint16_t)o->ptr.segment;
+    out->size = 6;
+    return 1;
   default:
     return 0;
   }
@@ -296,6 +318,7 @@ static X86pRepKind string_rep(const ZydisDecodedInstruction *insn) {
 }
 
 static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
+  const int far = insn->meta.branch_type == ZYDIS_BRANCH_TYPE_FAR;
   switch (insn->mnemonic) {
 #define ALU(m, a)                                                                                                      \
   case m:                                                                                                              \
@@ -340,9 +363,21 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_PUSH, kX86pInsnPush);
     SIMPLE(ZYDIS_MNEMONIC_POP, kX86pInsnPop);
     SIMPLE(ZYDIS_MNEMONIC_XCHG, kX86pInsnXchg);
-    SIMPLE(ZYDIS_MNEMONIC_JMP, kX86pInsnJmp);
-    SIMPLE(ZYDIS_MNEMONIC_CALL, kX86pInsnCall);
-    SIMPLE(ZYDIS_MNEMONIC_RET, kX86pInsnRet);
+    /*
+     * The three control transfers that have a far form, which Zydis spells
+     * with the SAME mnemonic and distinguishes by branch type -- so the near
+     * and far encodings are told apart by the field that describes them,
+     * rather than by inspecting the opcode byte here for a second time.
+     */
+  case ZYDIS_MNEMONIC_JMP:
+    out->op = far ? kX86pInsnJmpFar : kX86pInsnJmp;
+    return;
+  case ZYDIS_MNEMONIC_CALL:
+    out->op = far ? kX86pInsnCallFar : kX86pInsnCall;
+    return;
+  case ZYDIS_MNEMONIC_RET:
+    out->op = far ? kX86pInsnRetf : kX86pInsnRet;
+    return;
     SIMPLE(ZYDIS_MNEMONIC_LEAVE, kX86pInsnLeave);
     SIMPLE(ZYDIS_MNEMONIC_NOP, kX86pInsnNop);
     SIMPLE(ZYDIS_MNEMONIC_CDQ, kX86pInsnCdq);
@@ -748,10 +783,11 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
     for (i = 0; i < out->operands; i++) {
       /* Which families legitimately have a memory operand wider than four
          bytes: the ones with a register wide enough to hold it (x87, SIMD),
-         plus the two that read a STRUCTURE rather than a value -- BOUND's pair
-         of limits and the far-pointer loads' offset-and-selector. */
-      const int wide_ok =
-          out->op == kX86pInsnX87 || out->op == kX86pInsnSimd || out->op == kX86pInsnBound || out->op == kX86pInsnLfp;
+         plus the ones that read a STRUCTURE rather than a value -- BOUND's
+         pair of limits, and the offset-and-selector that the far-pointer
+         loads and the indirect far transfers both read. */
+      const int wide_ok = out->op == kX86pInsnX87 || out->op == kX86pInsnSimd || out->op == kX86pInsnBound ||
+                          out->op == kX86pInsnLfp || out->op == kX86pInsnCallFar || out->op == kX86pInsnJmpFar;
       if (!map_operand(&insn, &ops[i], &out->operand[i], wide_ok)) {
         /* One unmodelled operand makes the whole instruction unsupported.
            A half-filled operand is how an engine executes against a base

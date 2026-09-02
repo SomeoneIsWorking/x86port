@@ -1,8 +1,8 @@
 /* x87_exec.c -- see x87_exec.h for why addressing is not duplicated here. */
 #include "x87_exec.h"
 
-#include "flags.h"
 #include "cond.h"
+#include "flags.h"
 #include "x87_state.h"
 #include "x87_transcendental.h"
 

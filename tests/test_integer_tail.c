@@ -498,6 +498,50 @@ static void sweep_simple(const char *what, const uint8_t *code, unsigned len, Ho
   }
 }
 
+/*
+ * 16-BIT ADDRESSING, through LEA -- the 0x67 prefix's [BX+SI] family.
+ *
+ * LEA rather than a load, because the whole question is the ADDRESS: a 16-bit
+ * effective address wraps within its sixteen bits before any segment base is
+ * added, so [BX+SI] with BX=0xF000 and SI=0x2000 names 0x1000 and not
+ * 0x11000. Reading through it would need memory below 64K, which
+ * vm.mmap_min_addr forbids -- and would test the same arithmetic behind an
+ * access that cannot be set up. LEA computes it and writes it down.
+ *
+ * The register values carry GARBAGE IN THEIR HIGH HALVES on purpose. A model
+ * that summed the full 32-bit registers and then truncated agrees with one
+ * that truncates the parts on every input where the high halves are zero,
+ * which is every input a careless sweep would pick.
+ *
+ * Compat mode, necessarily: in 64-bit mode 0x67 selects 32-bit addressing and
+ * these bytes mean something else entirely.
+ */
+static void sweep_addr16(const char *what, const uint8_t *code, unsigned len) {
+  static const uint32_t kVals[] = {0x00000000u,
+                                   0x00000001u,
+                                   0x0000FFFFu,
+                                   0x00008000u,
+                                   0x00007FFFu,
+                                   0xDEAD0001u,
+                                   0x1234F000u,
+                                   0xFFFF2000u,
+                                   0xAAAAFFFFu,
+                                   0x0000ABCDu};
+  unsigned b, i;
+  for (b = 0; b < sizeof kVals / sizeof kVals[0]; b++) {
+    for (i = 0; i < sizeof kVals / sizeof kVals[0]; i++) {
+      Regs r;
+      memset(&r, 0, sizeof r);
+      r.ebx = kVals[b];
+      r.esi = kVals[i];
+      r.edi = kVals[(i + 3u) % (sizeof kVals / sizeof kVals[0])];
+      r.eax = 0xCCCCCCCCu;
+      r.eflags = 0x00000002u;
+      compare(what, code, len, &r, kModeCompat32, 0, 0u);
+    }
+  }
+}
+
 #define INSN(id, ...) static const uint8_t id[] = {__VA_ARGS__};
 
 /* Two-operand sweeps for the shifts and bit tests, over values chosen to cross
@@ -588,6 +632,18 @@ int main(void) {
   INSN(k_bts_m, 0x0Fu, 0xABu, 0x03u)
   INSN(k_btr_m, 0x0Fu, 0xB3u, 0x03u)
   INSN(k_btc_m, 0x0Fu, 0xBBu, 0x03u)
+  /* LEA EAX, <16-bit address>. Every form that does not name BP, which the
+     harness uses as its own frame register. */
+  INSN(k_lea16_bxsi, 0x67u, 0x8Du, 0x00u)
+  INSN(k_lea16_bxdi, 0x67u, 0x8Du, 0x01u)
+  INSN(k_lea16_si, 0x67u, 0x8Du, 0x04u)
+  INSN(k_lea16_di, 0x67u, 0x8Du, 0x05u)
+  INSN(k_lea16_abs, 0x67u, 0x8Du, 0x06u, 0x34u, 0x12u)
+  INSN(k_lea16_bx, 0x67u, 0x8Du, 0x07u)
+  INSN(k_lea16_d8, 0x67u, 0x8Du, 0x40u, 0x7Fu)
+  INSN(k_lea16_d8n, 0x67u, 0x8Du, 0x41u, 0x80u)
+  INSN(k_lea16_d16, 0x67u, 0x8Du, 0x80u, 0x00u, 0x80u)
+  INSN(k_lea16_bxd16, 0x67u, 0x8Du, 0x87u, 0xFFu, 0xFFu)
 
   printf("test the integer tail against the host CPU\n");
 
@@ -638,6 +694,18 @@ int main(void) {
   STRING(btr_m);
   STRING(btc_m);
 #undef STRING
+#define ADDR16(x) sweep_addr16(#x, k_##x, (unsigned)sizeof k_##x)
+  ADDR16(lea16_bxsi);
+  ADDR16(lea16_bxdi);
+  ADDR16(lea16_si);
+  ADDR16(lea16_di);
+  ADDR16(lea16_abs);
+  ADDR16(lea16_bx);
+  ADDR16(lea16_d8);
+  ADDR16(lea16_d8n);
+  ADDR16(lea16_d16);
+  ADDR16(lea16_bxd16);
+#undef ADDR16
 
   if (g_oracle_runs == 0u) {
     printf("REFUSED: the host oracle never ran, so nothing here was verified\n");
@@ -652,38 +720,6 @@ int main(void) {
 }
 
 #else
-
-/*
- * The bit-string forms: BT/BTS/BTR/BTC with a memory destination and a
- * REGISTER offset, which is the one addressing mode in this file that is not a
- * modrm. The offset is signed and unbounded, so the instruction reaches a bit
- * whole operands away from the address the modrm computed -- forwards and
- * backwards. A model that masked the offset to the operand width instead is
- * right for every offset under 32 and wrong past it, which is exactly the
- * range a guest walking a bitmap uses.
- */
-static void sweep_bit_string(const char *what, const uint8_t *code, unsigned len) {
-  static const int32_t kOffs[] = {0,  1,  7,   8,   31,  32,  33,   63,   64,  127,
-                                  -1, -8, -32, -33, -64, -65, -127, -128, 255, -256};
-  unsigned i;
-  if (!page_ready()) {
-    return;
-  }
-  for (i = 0; i < sizeof kOffs / sizeof kOffs[0]; i++) {
-    Regs r;
-    unsigned k;
-    for (k = 0; k < SHARED_WINDOW; k++) {
-      g_low->scratch[k] = (uint8_t)(0x11u * (k + 1u) ^ (k << 3));
-    }
-    memset(&r, 0, sizeof r);
-    /* The base sits in the MIDDLE of the window so a negative offset still
-       lands inside it; every offset above is within +/- 32 bytes of it. */
-    r.ebx = (uint32_t)(uintptr_t)(g_low->scratch + SHARED_WINDOW / 2u);
-    r.eax = (uint32_t)kOffs[i];
-    r.eflags = 0x00000002u;
-    compare(what, code, len, &r, kModeLong, 0, SHARED_WINDOW);
-  }
-}
 
 int main(void) {
   printf("REFUSED: this host is not x86-64, so nothing in the integer tail was verified.\n");
