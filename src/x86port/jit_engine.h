@@ -165,6 +165,37 @@ typedef int (*X86pJitInterceptFn)(const X86pCpu *cpu, void *user);
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user);
 
 /*
+ * What the inline dispatch handler did with an interception point.
+ */
+typedef enum X86pJitDispatchResult {
+  /* The handler executed the intercepted operation by mutating cpu (eip, regs,
+     esp) and the run must continue from the new cpu->eip -- no unwind. */
+  kX86pDispatchContinue = 0,
+  /* The handler wants x86p_jit_engine_run to return kX86pRunIntercept, exactly
+     as if no dispatch handler were installed. For the cases that genuinely
+     need the caller's host frame back: a guest setjmp/longjmp, control
+     reaching the caller's own return address. */
+  kX86pDispatchUnwind,
+} X86pJitDispatchResult;
+
+/*
+ * Called from INSIDE the run loop when the intercept predicate fires, instead
+ * of unwinding the run with kX86pRunIntercept. The handler runs the host thunk
+ * or native override the address stands for -- reading and writing cpu
+ * directly -- then returns kX86pDispatchContinue so the same run resumes at
+ * the updated cpu->eip. Each dispatched intercept counts as one step against
+ * the run's budget, so an override that fails to advance eip still terminates
+ * the slice rather than spinning.
+ *
+ * Without a handler installed (the default), every interception point unwinds
+ * the run: correct, but at ~20k host-API calls per game frame the teardown and
+ * re-entry of x86p_jit_engine_run dominates. Null clears it.
+ */
+typedef X86pJitDispatchResult (*X86pJitDispatchFn)(X86pCpu *cpu, void *user);
+
+void x86p_jit_engine_set_dispatch(X86pJitEngine *e, X86pJitDispatchFn fn, void *user);
+
+/*
  * A predicate consulted DURING translation: it must return non-zero for any
  * guest address the consumer's intercept handler would take over, so a block is
  * never translated past one. The intercept predicate above runs only between
