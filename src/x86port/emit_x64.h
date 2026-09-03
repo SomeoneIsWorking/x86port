@@ -187,6 +187,10 @@ void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
 /* shl r32, imm8 -- the scale of a guest index operand. */
 void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count);
 
+/* sar r32, imm8 -- arithmetic (sign-propagating) right shift. Pairs with shl
+   to synthesise MOVSX, and fills the sign word for CDQ/CWDE. */
+void x86p_emit_sar_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count);
+
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);

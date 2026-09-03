@@ -228,6 +228,15 @@ void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count) {
   put(e, count);
 }
 
+/* sar r32, imm8 -- the second half of a MOVSX synthesised from shifts, and the
+   whole of CDQ/CWDE's sign fill. C1 /7. */
+void x86p_emit_sar_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count) {
+  rex(e, 0, kX64Rax, dst);
+  put(e, 0xC1u);
+  put(e, (uint8_t)(0xF8u | ((unsigned)dst & 7u))); /* /7 */
+  put(e, count);
+}
+
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
   rex(e, 0, b, a);
   put(e, 0x85u);

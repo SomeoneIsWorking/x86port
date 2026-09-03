@@ -238,6 +238,16 @@ int x86p_jit_can_translate(const X86pInsn *insn);
  */
 int x86p_jit_emits_natively(const X86pInsn *insn);
 
+/*
+ * Ranked tally of which instruction kinds the translator handed to the
+ * interpreter, by TRANSLATION count (a block is counted once however often it
+ * runs -- read this beside the execution-weighted jit.profile). A work list for
+ * the emitter, not a correctness signal. `report` writes at most `len` bytes
+ * including the NUL; `reset` zeroes it (call once at engine start).
+ */
+void x86p_jit_helper_histogram_reset(void);
+void x86p_jit_helper_histogram_report(char *buf, size_t len);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
