@@ -325,12 +325,9 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
     }
     consecutive_translate_retries = 0u;
 
-    {
-      X86pJitBlock entered;
-      memset(&entered, 0, sizeof entered);
-      entered.entry = host;
-      exit = x86p_jit_enter(&entered, cpu);
-    }
+    uint32_t (*fn)(X86pCpu *);
+    *(void **)&fn = host;
+    exit = (X86pJitExit)fn(cpu);
     e->stats.blocks_entered++;
     steps++;
 
