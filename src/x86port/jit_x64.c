@@ -1345,6 +1345,18 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  X86pJitBlock *out,
                                  char *reason,
                                  unsigned reason_len) {
+  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, out, reason, reason_len);
+}
+
+X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
+                                         uint32_t eip,
+                                         void *code,
+                                         size_t code_cap,
+                                         X86pJitBoundaryFn boundary,
+                                         void *boundary_user,
+                                         X86pJitBlock *out,
+                                         char *reason,
+                                         unsigned reason_len) {
   X86pEmit e;
   BlockCtx ctx;
   uint32_t pc = eip;
@@ -1418,6 +1430,15 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
         say(reason, reason_len, "the bytes at %08X are not an instruction", pc);
         return kX86pJitDecodeFailed;
       }
+      break;
+    }
+
+    /* Stop before an address the consumer intercepts: the dispatch loop checks
+       its predicate only between blocks, so translating past one would run the
+       original guest bytes where the consumer meant to take control. `pc != eip`
+       because the block leader was already cleared by that same predicate. */
+    if (pc != eip && boundary && boundary(pc, boundary_user)) {
+      stopper = "consumer interception point";
       break;
     }
 

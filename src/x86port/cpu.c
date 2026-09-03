@@ -87,9 +87,20 @@ uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max) {
   return room < max ? room : max;
 }
 
+static X86pMemWriteObserver g_write_observer;
+static void *g_write_observer_user;
+
+void x86p_mem_set_write_observer(X86pMemWriteObserver fn, void *user) {
+  g_write_observer = fn;
+  g_write_observer_user = user;
+}
+
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n) {
   if (!src || !span_ok(m, addr, n)) {
     return 0;
+  }
+  if (g_write_observer) {
+    g_write_observer(addr, n, g_write_observer_user);
   }
   memcpy(x86p_mem_at(m, addr), src, n);
   return 1;
@@ -144,6 +155,9 @@ int x86p_mem_write(const X86pMem *m, uint32_t addr, int w, uint32_t value) {
   int i;
   if (!x86p_mem_ok(m, addr, w)) {
     return 0;
+  }
+  if (g_write_observer) {
+    g_write_observer(addr, (uint32_t)w, g_write_observer_user);
   }
   p = x86p_mem_at(m, addr);
   for (i = 0; i < w; i++) {

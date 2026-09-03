@@ -171,6 +171,34 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  unsigned reason_len);
 
 /*
+ * A guest address the CONSUMER intercepts -- a host thunk, a native override
+ * entry, a return sentinel. Returns non-zero when the block must not translate
+ * PAST `eip`: the byte at `eip` is not the guest code that runs there.
+ *
+ * The dispatch loop only checks its interception predicate between blocks, so
+ * an interception point in the MIDDLE of a straight-line run would otherwise be
+ * translated over and the original guest bytes executed where the consumer
+ * meant to take control. Branch targets are block leaders already; this is for
+ * the address reached by fall-through.
+ */
+typedef int (*X86pJitBoundaryFn)(uint32_t eip, void *user);
+
+/*
+ * As x86p_jit_translate, but ends the block before any address (other than
+ * `eip` itself) for which `boundary` returns non-zero. `boundary` may be NULL,
+ * which is exactly x86p_jit_translate.
+ */
+X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
+                                         uint32_t eip,
+                                         void *code,
+                                         size_t code_cap,
+                                         X86pJitBoundaryFn boundary,
+                                         void *boundary_user,
+                                         X86pJitBlock *out,
+                                         char *reason,
+                                         unsigned reason_len);
+
+/*
  * Run a translated block. Returns an X86pJitExit; cpu->eip is left where the
  * guest should continue.
  *

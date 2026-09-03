@@ -194,6 +194,19 @@ int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint3
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w);
 
 /*
+ * An observer notified BEFORE every guest memory write x86p_mem_write /
+ * x86p_mem_write_bytes is about to perform, with the address and byte count.
+ *
+ * One process-global hook: interpretation is already serialised by the guest
+ * lock, and this exists for one caller -- the JIT engine's verify mode, which
+ * records each shadow-interpreter store so it can restore memory before running
+ * the block for real. Null clears it. The JIT's own emitted stores do not pass
+ * through here; nothing else should install an observer.
+ */
+typedef void (*X86pMemWriteObserver)(uint32_t addr, uint32_t len, void *user);
+void x86p_mem_set_write_observer(X86pMemWriteObserver fn, void *user);
+
+/*
  * Read/write a register by ENCODED NUMBER at a width.
  *
  * For w == 1 the index is a BYTE register: 0-3 are AL, CL, DL, BL and 4-7 are

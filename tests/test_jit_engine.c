@@ -556,6 +556,122 @@ static void test_intercept_stops_before_block(void) {
   x86p_jit_engine_destroy(eng);
 }
 
+static int boundary_at(uint32_t eip, void *user) {
+  return eip == *(const uint32_t *)user;
+}
+
+/*
+ * The dispatch loop only checks its intercept predicate between blocks, so an
+ * interception point reached by fall-through inside a straight-line run would be
+ * translated over. The boundary predicate must end the block before it. Without
+ * it a run of INCs is one block; with it flagging a mid-run address, the block
+ * ends there and the between-block intercept then fires on the same address.
+ */
+static void test_boundary_ends_a_block_before_a_flagged_address(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  char reason[256];
+  uint32_t flagged = GUEST_BASE + 5u;
+
+  memset(g_guest, 0x40, sizeof g_guest); /* INC EAX, over and over */
+  g_guest[10] = 0xEB;                    /* JMP $ at +10 */
+  g_guest[11] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+
+  /* No boundary: the ten INCs and the JMP are one translated block. */
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(cpu.eip == GUEST_BASE + 10u);
+  CHECK(cpu.reg[kX86pEax] == 10u);
+  CHECK(st.blocks_translated == 2u); /* body block + the JMP $ self-target */
+
+  x86p_jit_engine_destroy(eng);
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+
+  /* Boundary flags +5: the first block must stop there, and with an intercept
+     on the same address the loop hands back before running block two. */
+  x86p_jit_engine_set_boundary(eng, boundary_at, &flagged);
+  x86p_jit_engine_set_intercept(eng, intercept_at_target, &flagged);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(cpu.eip == flagged);
+  CHECK(cpu.reg[kX86pEax] == 5u); /* exactly the five INCs before the boundary */
+
+  /* Drop the intercept, keep the boundary: it still runs to the spin, but as
+     at least two blocks split at +5. */
+  x86p_jit_engine_set_intercept(eng, NULL, NULL);
+  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(cpu.eip == GUEST_BASE + 10u);
+  CHECK(cpu.reg[kX86pEax] == 10u);
+  CHECK(st.blocks_translated == 3u); /* split at +5 adds one over the baseline 2 */
+
+  x86p_jit_engine_destroy(eng);
+}
+
+/*
+ * Verify mode must actually be able to REPORT a divergence, or "0 divergences"
+ * over a real run means nothing. A block that writes its own not-yet-executed
+ * bytes is the honest case: the JIT runs the translation made from the original
+ * bytes, the interpreter runs the modified ones, and the two legitimately
+ * disagree until the consumer invalidates. The shadow-run cross-check catches it
+ * and stops with kX86pRunVerifyDivergence.
+ */
+static void test_verify_reports_an_in_block_self_modification(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  /* MOV byte [GUEST_BASE+8], 0x90  -- turns the second INC below into a NOP */
+  g_guest[0] = 0xC6;
+  g_guest[1] = 0x05;
+  g_guest[2] = (uint8_t)((GUEST_BASE + 8u) & 0xFFu);
+  g_guest[3] = (uint8_t)(((GUEST_BASE + 8u) >> 8) & 0xFFu);
+  g_guest[4] = (uint8_t)(((GUEST_BASE + 8u) >> 16) & 0xFFu);
+  g_guest[5] = (uint8_t)(((GUEST_BASE + 8u) >> 24) & 0xFFu);
+  g_guest[6] = 0x90;
+  g_guest[7] = 0x40; /* INC EAX */
+  g_guest[8] = 0x40; /* INC EAX -- the interpreter sees this become 0x90 */
+  g_guest[9] = 0xEB; /* JMP $ */
+  g_guest[10] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  x86p_jit_engine_set_verify(eng, 1);
+
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunVerifyDivergence);
+  CHECK(strstr(reason, "verify") != NULL);
+  printf("    verify said: %s\n", reason);
+
+  x86p_jit_engine_destroy(eng);
+
+  /* Restore the byte the test scribbled for the next test. */
+  g_guest[8] = 0x40;
+}
+
 int main(void) {
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND on this host: this suite cannot run and claims nothing\n");
@@ -570,6 +686,8 @@ int main(void) {
   RUN(test_a_rewound_arena_does_not_leave_stale_cache_entries);
   RUN(test_the_same_run_through_dual_mapping);
   RUN(test_intercept_stops_before_block);
+  RUN(test_boundary_ends_a_block_before_a_flagged_address);
+  RUN(test_verify_reports_an_in_block_self_modification);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;
