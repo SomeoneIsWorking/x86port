@@ -672,6 +672,122 @@ static void test_verify_reports_an_in_block_self_modification(void) {
   g_guest[8] = 0x40;
 }
 
+/* ---- inline dispatch: handle an interception point without unwinding ---- */
+
+static uint32_t g_disp_thunk, g_disp_unwind;
+static int g_disp_calls;
+
+static int intercept_thunk_or_unwind(const X86pCpu *cpu, void *user) {
+  (void)user;
+  return cpu->eip == g_disp_thunk || cpu->eip == g_disp_unwind;
+}
+
+static X86pJitDispatchResult dispatch_thunk_or_unwind(X86pCpu *cpu, void *user) {
+  (void)user;
+  if (cpu->eip == g_disp_thunk) {
+    g_disp_calls++;
+    cpu->reg[kX86pEax] += 0x10u; /* the "thunk" side effect */
+    cpu->eip += 1u;              /* step over the one-byte stand-in */
+    return kX86pDispatchContinue;
+  }
+  return kX86pDispatchUnwind; /* g_disp_unwind: hand the run back */
+}
+
+/* A handler that never advances eip -- the slice must still terminate. */
+static int intercept_always(const X86pCpu *cpu, void *user) {
+  (void)cpu;
+  (void)user;
+  return 1;
+}
+static X86pJitDispatchResult dispatch_stuck(X86pCpu *cpu, void *user) {
+  (void)cpu;
+  (void)user;
+  g_disp_calls++;
+  return kX86pDispatchContinue;
+}
+
+static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  /* 0: mov eax, 1 */
+  g_guest[0] = 0xB8;
+  g_guest[1] = 0x01;
+  g_guest[2] = g_guest[3] = g_guest[4] = 0x00;
+  /* 5: nop  <- the interception point ("thunk") */
+  g_guest[5] = 0x90;
+  /* 6: inc eax */
+  g_guest[6] = 0x40;
+  /* 7: jmp $  <- the "return to caller" sentinel */
+  g_guest[7] = 0xEB;
+  g_guest[8] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng)
+    return;
+
+  g_disp_thunk = GUEST_BASE + 5u;
+  g_disp_unwind = GUEST_BASE + 7u;
+  g_disp_calls = 0;
+  x86p_jit_engine_set_intercept(eng, intercept_thunk_or_unwind, NULL);
+  x86p_jit_engine_set_boundary(eng, boundary_at, &g_disp_thunk);
+
+  /* No dispatch handler: the interception point unwinds the run, as before. */
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) ==
+        kX86pRunIntercept);
+  CHECK(cpu.eip == GUEST_BASE + 5u);
+  CHECK(cpu.reg[kX86pEax] == 1u);
+  CHECK(g_disp_calls == 0);
+
+  /* With the handler: the run stays on one stack across the thunk and only
+     unwinds at the sentinel. */
+  x86p_jit_engine_set_dispatch(eng, dispatch_thunk_or_unwind, NULL);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) ==
+        kX86pRunIntercept);
+  CHECK(cpu.eip == GUEST_BASE + 7u); /* stopped at the sentinel, not the thunk */
+  CHECK(g_disp_calls == 1);          /* the thunk ran exactly once */
+  CHECK(cpu.reg[kX86pEax] == 0x12u); /* mov eax,1; +0x10 in the handler; inc */
+
+  x86p_jit_engine_destroy(eng);
+}
+
+static void test_inline_dispatch_that_never_advances_still_ends_the_slice(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xEB; /* jmp $ */
+  g_guest[1] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng)
+    return;
+
+  g_disp_calls = 0;
+  x86p_jit_engine_set_intercept(eng, intercept_always, NULL);
+  x86p_jit_engine_set_dispatch(eng, dispatch_stuck, NULL);
+
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, sizeof reason) ==
+        kX86pRunBudget);
+  CHECK(g_disp_calls == 64); /* one per step, then the budget stops it */
+
+  x86p_jit_engine_destroy(eng);
+}
+
 int main(void) {
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND on this host: this suite cannot run and claims nothing\n");
@@ -688,6 +804,8 @@ int main(void) {
   RUN(test_intercept_stops_before_block);
   RUN(test_boundary_ends_a_block_before_a_flagged_address);
   RUN(test_verify_reports_an_in_block_self_modification);
+  RUN(test_inline_dispatch_continues_the_run_without_unwinding);
+  RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;

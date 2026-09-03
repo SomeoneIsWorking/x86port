@@ -46,6 +46,8 @@ struct X86pJitEngine {
   X86pJitEngineStats stats;
   X86pJitInterceptFn intercept;
   void *intercept_user;
+  X86pJitDispatchFn dispatch;
+  void *dispatch_user;
   X86pJitBoundaryFn boundary;
   void *boundary_user;
   int cache_disabled; /* diagnostic: retranslate every block, never reuse one */
@@ -183,6 +185,13 @@ void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void
   if (e) {
     e->intercept = fn;
     e->intercept_user = user;
+  }
+}
+
+void x86p_jit_engine_set_dispatch(X86pJitEngine *e, X86pJitDispatchFn fn, void *user) {
+  if (e) {
+    e->dispatch = fn;
+    e->dispatch_user = user;
   }
 }
 
@@ -526,6 +535,13 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
 
   while (steps < max_steps) {
     if (e->intercept && e->intercept(cpu, e->intercept_user)) {
+      if (e->dispatch &&
+          e->dispatch(cpu, e->dispatch_user) == kX86pDispatchContinue) {
+        /* Handled in place; the run stays on this stack. Counts as a step so a
+           handler that does not advance eip still ends the slice. */
+        steps++;
+        continue;
+      }
       return kX86pRunIntercept;
     }
     void *host = e->cache_disabled ? NULL : jc_block_lookup(e->cache, cpu->eip);
