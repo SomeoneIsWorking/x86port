@@ -57,6 +57,7 @@ add_library(x86port STATIC
   src/x86port/flags.c
   src/x86port/alu.c
   src/x86port/cpu.c
+  src/x86port/cpu_compare.c
   src/x86port/cond.c
   src/x86port/exec.c
   src/x86port/x87.c

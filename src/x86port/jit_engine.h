@@ -52,10 +52,11 @@ typedef enum X86pJitRunStatus {
   kX86pRunInterrupt,
   kX86pRunProtectionFault,
   kX86pRunBoundRange,
-  kX86pRunTranslateFailed, /* the block at this EIP could not be translated */
-  kX86pRunOutOfCode,       /* the code region filled and a flush did not help */
-  kX86pRunIntercept,       /* intercepted by consumer: thunk, override, setjmp, return */
-  kX86pRunStatusCount      /* MUST stay last: the denominator */
+  kX86pRunTranslateFailed,  /* the block at this EIP could not be translated */
+  kX86pRunOutOfCode,        /* the code region filled and a flush did not help */
+  kX86pRunIntercept,        /* intercepted by consumer: thunk, override, setjmp, return */
+  kX86pRunVerifyDivergence, /* verify mode: this block's result disagreed with the interpreter */
+  kX86pRunStatusCount       /* MUST stay last: the denominator */
 } X86pJitRunStatus;
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s);
@@ -105,6 +106,17 @@ typedef struct X86pJitEngineStats {
    * rather than how often it ran.
    */
   uint64_t guest_insns_via_helper;
+  /*
+   * Verify mode only (x86p_jit_engine_set_verify). `verify_blocks_checked` is
+   * blocks whose whole-machine result was compared against a shadow
+   * interpreter run and agreed; `verify_blocks_skipped` is blocks the compare
+   * could not cover soundly -- a REP string op, a shadow step that faulted, or
+   * more shadow writes than the undo log holds -- counted so "0 divergences"
+   * is read against how much was actually checked. A divergence stops the run
+   * with kX86pRunVerifyDivergence rather than being counted here.
+   */
+  uint64_t verify_blocks_checked;
+  uint64_t verify_blocks_skipped;
 } X86pJitEngineStats;
 
 /*
@@ -151,6 +163,48 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out);
 typedef int (*X86pJitInterceptFn)(const X86pCpu *cpu, void *user);
 
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user);
+
+/*
+ * A predicate consulted DURING translation: it must return non-zero for any
+ * guest address the consumer's intercept handler would take over, so a block is
+ * never translated past one. The intercept predicate above runs only between
+ * blocks; without this, an interception point reached by fall-through inside a
+ * straight-line run is translated over and the original guest bytes execute
+ * there. Branch targets are already block leaders, so this matters only for the
+ * fall-through case. Null clears it.
+ */
+void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *user);
+
+/*
+ * Turn the block cache off (enabled != 0 turns it back on; it is on by default).
+ *
+ * With the cache off every block is retranslated on entry and the code region
+ * is rewound after it runs, so nothing is ever executed from a translation made
+ * before the current guest bytes. This is a DIAGNOSTIC, not a mode to ship:
+ * it is how a consumer distinguishes "the JIT translates this block wrongly"
+ * from "the JIT is running a stale translation the guest has since overwritten"
+ * without yet having wired write-notified invalidation.
+ */
+void x86p_jit_engine_set_cache(X86pJitEngine *e, int enabled);
+
+/*
+ * Turn verify mode on (enabled != 0; off by default).
+ *
+ * With verify on, every block entry -- translation AND cache hit -- is, before
+ * it runs for real, shadow-executed by the interpreter from the same pre-block
+ * machine state; the interpreter's memory writes are recorded and undone so the
+ * JIT still runs the block over the original bytes, and the two whole-machine
+ * results are then compared field by field (x86p_cpu_diff) and byte for byte
+ * over every region the shadow wrote. The first disagreement stops the run with
+ * kX86pRunVerifyDivergence and `reason` names the block address and the first
+ * divergent field. Re-entries are re-checked because a wrong emitter can be
+ * right for the register values a block saw when it was first translated and
+ * wrong for the ones a later entry brings -- so the cost is one interpreter pass
+ * per block ENTRY, not per distinct block. Blocks the shadow cannot cover
+ * soundly (a REP string op, a shadow fault, an undo-log overflow, an early JIT
+ * exit) are skipped and counted (see X86pJitEngineStats). Not a mode to ship.
+ */
+void x86p_jit_engine_set_verify(X86pJitEngine *e, int enabled);
 
 /* Which code-memory mechanism this build resolved. "It worked on my machine"
    and "it worked through the same mechanism as the user's machine" are
