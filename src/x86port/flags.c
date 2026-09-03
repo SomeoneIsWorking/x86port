@@ -123,34 +123,36 @@ int x86p_flag_pf(const X86pFlags *f) {
 }
 
 int x86p_flag_cf(const X86pFlags *f) {
-  uint32_t m;
-  unsigned count;
-  if (!f || f->kind == kX86pFlagsNone) {
+  if (__builtin_expect(!f, 0)) {
     return 0;
   }
-  if (f->kind == kX86pFlagsExplicit) {
-    return (f->a & X86P_CF) != 0;
-  }
-  if (f->kind == kX86pFlagsLogic) {
-    return 0; /* AND/OR/XOR/TEST clear CF outright */
-  }
-  if (f->kind == kX86pFlagsInc || f->kind == kX86pFlagsDec) {
+  switch (f->kind) {
+  case kX86pFlagsSub:
+    if (__builtin_expect(f->w == 4, 1)) {
+      return f->a < f->b;
+    }
+    return (f->a & x86p_width_mask(f->w)) < (f->b & x86p_width_mask(f->w));
+  case kX86pFlagsLogic:
+  case kX86pFlagsNone:
+    return 0;
+  case kX86pFlagsAdd:
+    if (__builtin_expect(f->w == 4, 1)) {
+      return f->r < f->a;
+    }
+    return (f->r & x86p_width_mask(f->w)) < (f->a & x86p_width_mask(f->w));
+  case kX86pFlagsInc:
+  case kX86pFlagsDec:
     /* PRESERVED, not cleared. `inc` between an `add` and an `adc` does not
        clear the carry on hardware, and code really is written that way. */
     return f->carry_in != 0;
-  }
-  m = (f->w == 4) ? 0xFFFFFFFFu : x86p_width_mask(f->w);
-  switch (f->kind) {
-  case kX86pFlagsAdd:
-    return (f->r & m) < (f->a & m);
-  case kX86pFlagsSub:
-    return (f->a & m) < (f->b & m);
+  case kX86pFlagsExplicit:
+    return (f->a & X86P_CF) != 0;
   case kX86pFlagsShl:
   case kX86pFlagsShr:
-  case kX86pFlagsSar:
+  case kX86pFlagsSar: {
     /* Zero cannot arrive here: x86p_flags_set refuses to record a shift by
        zero, because such a shift writes no flags at all. */
-    count = (unsigned)f->b;
+    unsigned count = (unsigned)f->b;
     if (count > (unsigned)(f->w * 8)) {
       /*
        * Shifted entirely out, and the three directions do NOT agree here.
@@ -166,6 +168,7 @@ int x86p_flag_cf(const X86pFlags *f) {
       return (int)((f->a >> ((unsigned)(f->w * 8) - count)) & 1u);
     }
     return (int)((f->a >> (count - 1)) & 1u);
+  }
   default:
     return 0;
   }
