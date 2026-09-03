@@ -242,6 +242,36 @@ static int mov_is_emittable(const X86pInsn *insn) {
   return mov_operand_ok(&insn->operand[0], w, 1) && mov_operand_ok(&insn->operand[1], w, 0);
 }
 
+/*
+ * MOVZX / MOVSX: destination a 16- or 32-bit register, source a narrower
+ * register or memory. A byte source register index above 7 is refused for the
+ * same reason MOV refuses it. The widen is real -- src strictly narrower than
+ * dst -- so a decoder that ever produced a same-width form routes to the
+ * interpreter rather than emitting a no-op extend.
+ */
+static int movx_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *dst;
+  const X86pOperand *src;
+  if (insn->operands != 2) {
+    return 0;
+  }
+  dst = &insn->operand[0];
+  src = &insn->operand[1];
+  if (dst->kind != kX86pOperandReg || (dst->size != 2 && dst->size != 4)) {
+    return 0;
+  }
+  if (src->size != 1 && src->size != 2) {
+    return 0;
+  }
+  if (src->size >= dst->size) {
+    return 0;
+  }
+  if (src->kind == kX86pOperandReg) {
+    return src->size != 1 || (src->reg >= 0 && src->reg < 8);
+  }
+  return src->kind == kX86pOperandMem;
+}
+
 static int can_emit(const X86pInsn *insn) {
   int i;
   /*
@@ -270,6 +300,9 @@ static int can_emit(const X86pInsn *insn) {
     return 1;
   case kX86pInsnMov:
     return mov_is_emittable(insn);
+  case kX86pInsnMovzx:
+  case kX86pInsnMovsx:
+    return movx_is_emittable(insn);
   case kX86pInsnAlu:
     if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluSar) {
       /*
@@ -1163,6 +1196,37 @@ static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 }
 
 /*
+ * MOVZX / MOVSX: a narrow source widened into a wider register.
+ *
+ * The zero-extended load already exists (emit_load_w, w == 1 or 2), so MOVZX is
+ * that load then a store at the destination width. MOVSX is the same load with
+ * the sign bit propagated by a shl/sar pair -- host MOVSX would be one
+ * instruction, but the pair needs no new emitter and the result is identical at
+ * 32 bits. The destination is always a register here (can_emit gate).
+ */
+static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t insn_eip) {
+  const X86pOperand *dst = &insn->operand[0];
+  const X86pOperand *src = &insn->operand[1];
+  const int sw = src->size; /* 1 or 2 */
+  const int dw = dst->size; /* 2 or 4 */
+
+  if (src->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, src, insn_eip, sw);
+    emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, sw);
+  } else {
+    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, sw), sw);
+  }
+
+  if (is_signed) {
+    const uint8_t fill = (uint8_t)(32 - 8 * sw);
+    x86p_emit_shl_r32_imm8(c->e, kX64Rax, fill);
+    x86p_emit_sar_r32_imm8(c->e, kX64Rax, fill);
+  }
+
+  emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, dw), kX64Rax, dw);
+}
+
+/*
  * Prologue: save RBX, park the X86pCpu pointer in it.
  *
  * STACK ALIGNMENT. System V requires RSP to be 16-byte aligned immediately
@@ -1241,6 +1305,54 @@ static uint32_t jit_helper_execute(X86pCpu *cpu, const X86pMem *mem, const X86pI
 _Static_assert(HELPER_CALL_MAX_BYTES <= X86P_JIT_WORST_CASE_INSN_BYTES,
                "an interpreter call no longer fits the per-instruction reservation");
 
+/*
+ * Which instruction kinds still route to the interpreter, by translation
+ * count. Not a correctness signal -- every one of these runs correctly through
+ * jit_helper_execute -- but a ranked work list for "what to teach the emitter
+ * next", read beside the execution-weighted block profile. Translation-time,
+ * so a block entered a million times counts once; pair it with jit.profile.
+ */
+static uint64_t g_helper_hist[kX86pInsnOpCount];
+static uint64_t g_helper_hist_blockend[kX86pInsnOpCount];
+
+void x86p_jit_helper_histogram_reset(void) {
+  memset(g_helper_hist, 0, sizeof g_helper_hist);
+  memset(g_helper_hist_blockend, 0, sizeof g_helper_hist_blockend);
+}
+
+void x86p_jit_helper_histogram_report(char *buf, size_t len) {
+  size_t used = 0;
+  unsigned shown = 0;
+  int done[kX86pInsnOpCount];
+  memset(done, 0, sizeof done);
+  if (!buf || len == 0) {
+    return;
+  }
+  used += (size_t)snprintf(buf, len, "jit helper routing (translation count; run-weight is jit.profile):");
+  for (;;) {
+    int best = -1;
+    uint64_t best_n = 0;
+    int i;
+    for (i = 0; i < (int)kX86pInsnOpCount; i++) {
+      if (!done[i] && g_helper_hist[i] > best_n) {
+        best_n = g_helper_hist[i];
+        best = i;
+      }
+    }
+    if (best < 0 || shown >= 16u || used >= len) {
+      break;
+    }
+    done[best] = 1;
+    shown++;
+    used += (size_t)snprintf(buf + used,
+                             used < len ? len - used : 0,
+                             "\n  %-10s %llu (%llu ended a block)",
+                             x86p_insn_op_name(best),
+                             (unsigned long long)g_helper_hist[best],
+                             (unsigned long long)g_helper_hist_blockend[best]);
+  }
+}
+
 static void emit_helper_call(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   X86pEmitSite over;
@@ -1269,6 +1381,9 @@ static void emit_helper_call(BlockCtx *c, const X86pInsn *insn, uint32_t insn_ei
   failed = x86p_emit_jcc_rel32(e, 0x5u); /* jnz */
   note_helper_fault(c, failed);
   c->helper_calls++;
+  if (insn->op < (uint8_t)kX86pInsnOpCount) {
+    g_helper_hist[insn->op]++;
+  }
 }
 
 /*
@@ -1586,6 +1701,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       pc += insn.length;
       count++;
       if (!helper_insn_is_straight_line(&insn)) {
+        if (insn.op < (uint8_t)kX86pInsnOpCount) {
+          g_helper_hist_blockend[insn.op]++;
+        }
         /* The helper set EIP -- to a branch target, a return address, or the
            next instruction -- and only it knows which. Ending with an epilogue
            that OVERWROTE EIP would turn every helper-executed branch into a
@@ -1644,6 +1762,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
+      break;
+    case kX86pInsnMovzx:
+      emit_movx(&ctx, &insn, 0, pc);
+      break;
+    case kX86pInsnMovsx:
+      emit_movx(&ctx, &insn, 1, pc);
       break;
     case kX86pInsnAluUnary: {
       int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);

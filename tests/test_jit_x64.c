@@ -175,7 +175,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 85u);
+  unsigned pick = (unsigned)(r % 89u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -632,6 +632,30 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[0] = 0x0Fu;
     p[1] = 0x77u;
     return 2;
+  case 85: /* MOVZX r32, r/m16 -- 0F B7 /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0xB7u;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 86: /* MOVSX r32, r/m16 -- 0F BF /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = 0xBFu;
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 87: /* MOVZX r32, byte [base+disp8] -- 0F B6 /r, mod=01. The narrow
+              memory load the register form cannot exercise. */
+    p[0] = 0x0Fu;
+    p[1] = 0xB6u;
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 88: /* MOVSX r32, word [base+disp8] -- 0F BF /r, mod=01. Sign extend AND
+              a two-byte access that can straddle the mapping edge. */
+    p[0] = 0x0Fu;
+    p[1] = 0xBFu;
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
