@@ -54,6 +54,7 @@ typedef enum X86pJitRunStatus {
   kX86pRunBoundRange,
   kX86pRunTranslateFailed, /* the block at this EIP could not be translated */
   kX86pRunOutOfCode,       /* the code region filled and a flush did not help */
+  kX86pRunIntercept,       /* intercepted by consumer: thunk, override, setjmp, return */
   kX86pRunStatusCount      /* MUST stay last: the denominator */
 } X86pJitRunStatus;
 
@@ -138,6 +139,18 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi);
 
 void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out);
+
+/*
+ * An interception predicate called before a block is looked up or executed.
+ * Returns non-zero if the current EIP must not be executed by the JIT (e.g. it
+ * is a host thunk, native override, setjmp frame, or return sentinel).
+ *
+ * When this returns non-zero, x86p_jit_engine_run immediately returns
+ * kX86pRunIntercept with cpu->eip untouched.
+ */
+typedef int (*X86pJitInterceptFn)(const X86pCpu *cpu, void *user);
+
+void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user);
 
 /* Which code-memory mechanism this build resolved. "It worked on my machine"
    and "it worked through the same mechanism as the user's machine" are
