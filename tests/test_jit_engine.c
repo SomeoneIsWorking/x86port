@@ -728,8 +728,9 @@ static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
   CHECK(eng != NULL);
-  if (!eng)
+  if (!eng) {
     return;
+  }
 
   g_disp_thunk = GUEST_BASE + 5u;
   g_disp_unwind = GUEST_BASE + 7u;
@@ -740,8 +741,7 @@ static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
   /* No dispatch handler: the interception point unwinds the run, as before. */
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) ==
-        kX86pRunIntercept);
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunIntercept);
   CHECK(cpu.eip == GUEST_BASE + 5u);
   CHECK(cpu.reg[kX86pEax] == 1u);
   CHECK(g_disp_calls == 0);
@@ -751,8 +751,7 @@ static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
   x86p_jit_engine_set_dispatch(eng, dispatch_thunk_or_unwind, NULL);
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) ==
-        kX86pRunIntercept);
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunIntercept);
   CHECK(cpu.eip == GUEST_BASE + 7u); /* stopped at the sentinel, not the thunk */
   CHECK(g_disp_calls == 1);          /* the thunk ran exactly once */
   CHECK(cpu.reg[kX86pEax] == 0x12u); /* mov eax,1; +0x10 in the handler; inc */
@@ -773,17 +772,65 @@ static void test_inline_dispatch_that_never_advances_still_ends_the_slice(void) 
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
   CHECK(eng != NULL);
-  if (!eng)
+  if (!eng) {
     return;
+  }
 
   g_disp_calls = 0;
   x86p_jit_engine_set_intercept(eng, intercept_always, NULL);
   x86p_jit_engine_set_dispatch(eng, dispatch_stuck, NULL);
 
   seed(&cpu);
-  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, sizeof reason) ==
-        kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, sizeof reason) == kX86pRunBudget);
   CHECK(g_disp_calls == 64); /* one per step, then the budget stops it */
+
+  x86p_jit_engine_destroy(eng);
+}
+
+/*
+ * The block-entry profile is execution-weighted: a block a spin re-enters two
+ * hundred times must outweigh a block entered once, which is exactly what
+ * x86p_jit_engine_stats cannot show.
+ */
+static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  X86pJitProfileEntry top[4];
+  char reason[256];
+  uint32_t n;
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0x40; /* INC EAX -- the block entered once */
+  g_guest[1] = 0xEB; /* JMP $ at +1 -- the block the spin re-enters */
+  g_guest[2] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+
+  x86p_jit_engine_set_profile(eng, 1, 64u);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(x86p_jit_profile_total_hits(x86p_jit_engine_profile(eng)) == st.blocks_entered);
+  CHECK(x86p_jit_profile_distinct(x86p_jit_engine_profile(eng)) == 2u);
+
+  n = x86p_jit_profile_top(x86p_jit_engine_profile(eng), top, 4u);
+  CHECK(n == 2u);
+  CHECK(top[0].guest_eip == GUEST_BASE + 1u); /* the spin, not the INC */
+  CHECK(top[0].entries > 190u);
+  CHECK(top[1].guest_eip == GUEST_BASE && top[1].entries == 1u);
+
+  /* Turning it off frees the table and detaches it. */
+  x86p_jit_engine_set_profile(eng, 0, 0u);
+  CHECK(x86p_jit_engine_profile(eng) == NULL);
 
   x86p_jit_engine_destroy(eng);
 }
@@ -806,6 +853,7 @@ int main(void) {
   RUN(test_verify_reports_an_in_block_self_modification);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
+  RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;

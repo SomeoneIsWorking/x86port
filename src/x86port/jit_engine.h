@@ -27,6 +27,7 @@
 #define X86PORT_JIT_ENGINE_H
 
 #include "cpu.h"
+#include "jit_profile.h"
 #include "jit_x64.h"
 
 #include <stddef.h>
@@ -236,6 +237,27 @@ void x86p_jit_engine_set_cache(X86pJitEngine *e, int enabled);
  * exit) are skipped and counted (see X86pJitEngineStats). Not a mode to ship.
  */
 void x86p_jit_engine_set_verify(X86pJitEngine *e, int enabled);
+
+/*
+ * Attach or remove an execution-weighted block-entry histogram (off by
+ * default). With it on, every block entry bumps a saturating counter keyed by
+ * the block's guest address -- the number x86p_jit_engine_stats cannot give,
+ * because there a block entered once and a block entered ten million times
+ * weigh the same. `slot_hint` sizes the table for that many distinct block
+ * addresses before it starts dropping new keys (and counting the drops).
+ *
+ * This is the profiler for "where does a running guest spend its time":
+ * x86p_jit_profile_top over x86p_jit_engine_profile() names the blocks whose
+ * emitters, or whose per-instruction helper calls, are worth improving first.
+ * Cheap enough to
+ * leave on for a session (one masked load + compare on the hot path), still a
+ * diagnostic and not a shipping default.
+ */
+void x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hint);
+
+/* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
+   the next set_profile call or engine destruction. */
+const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e);
 
 /* Which code-memory mechanism this build resolved. "It worked on my machine"
    and "it worked through the same mechanism as the user's machine" are
