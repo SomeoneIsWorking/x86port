@@ -92,7 +92,7 @@ int x86p_flag_zf(const X86pFlags *f) {
   if (f->kind == kX86pFlagsExplicit) {
     return (f->a & X86P_ZF) != 0;
   }
-  return (f->r & x86p_width_mask(f->w)) == 0;
+  return (f->w == 4) ? (f->r == 0) : ((f->r & x86p_width_mask(f->w)) == 0);
 }
 
 int x86p_flag_sf(const X86pFlags *f) {
@@ -102,7 +102,7 @@ int x86p_flag_sf(const X86pFlags *f) {
   if (f->kind == kX86pFlagsExplicit) {
     return (f->a & X86P_SF) != 0;
   }
-  return msb(f->r, f->w);
+  return (f->w == 4) ? (int)((f->r >> 31) & 1u) : msb(f->r, f->w);
 }
 
 int x86p_flag_pf(const X86pFlags *f) {
@@ -131,19 +131,20 @@ int x86p_flag_cf(const X86pFlags *f) {
   if (f->kind == kX86pFlagsExplicit) {
     return (f->a & X86P_CF) != 0;
   }
-  m = x86p_width_mask(f->w);
+  if (f->kind == kX86pFlagsLogic) {
+    return 0; /* AND/OR/XOR/TEST clear CF outright */
+  }
+  if (f->kind == kX86pFlagsInc || f->kind == kX86pFlagsDec) {
+    /* PRESERVED, not cleared. `inc` between an `add` and an `adc` does not
+       clear the carry on hardware, and code really is written that way. */
+    return f->carry_in != 0;
+  }
+  m = (f->w == 4) ? 0xFFFFFFFFu : x86p_width_mask(f->w);
   switch (f->kind) {
   case kX86pFlagsAdd:
     return (f->r & m) < (f->a & m);
   case kX86pFlagsSub:
     return (f->a & m) < (f->b & m);
-  case kX86pFlagsLogic:
-    return 0; /* AND/OR/XOR/TEST clear CF outright */
-  case kX86pFlagsInc:
-  case kX86pFlagsDec:
-    /* PRESERVED, not cleared. `inc` between an `add` and an `adc` does not
-       clear the carry on hardware, and code really is written that way. */
-    return f->carry_in != 0;
   case kX86pFlagsShl:
   case kX86pFlagsShr:
   case kX86pFlagsSar:
@@ -179,19 +180,20 @@ int x86p_flag_of(const X86pFlags *f) {
   if (f->kind == kX86pFlagsExplicit) {
     return (f->a & X86P_OF) != 0;
   }
-  m = x86p_width_mask(f->w);
+  if (f->kind == kX86pFlagsLogic || f->kind == kX86pFlagsSar) {
+    return 0;
+  }
+  sa = (f->w == 4) ? (int)((f->a >> 31) & 1u) : msb(f->a, f->w);
+  sb = (f->w == 4) ? (int)((f->b >> 31) & 1u) : msb(f->b, f->w);
+  sr = (f->w == 4) ? (int)((f->r >> 31) & 1u) : msb(f->r, f->w);
+  m = (f->w == 4) ? 0xFFFFFFFFu : x86p_width_mask(f->w);
   sign_bit = (uint32_t)1u << (f->w * 8 - 1);
-  sa = msb(f->a, f->w);
-  sb = msb(f->b, f->w);
-  sr = msb(f->r, f->w);
   switch (f->kind) {
   case kX86pFlagsAdd:
     /* Two like signs that produced the other sign. */
     return (sa == sb) && (sr != sa);
   case kX86pFlagsSub:
     return (sa != sb) && (sr != sa);
-  case kX86pFlagsLogic:
-    return 0;
   case kX86pFlagsInc:
     return (f->r & m) == sign_bit; /* wrapped to the most negative value */
   case kX86pFlagsDec:
@@ -207,8 +209,6 @@ int x86p_flag_of(const X86pFlags *f) {
        1792 of 1792), which is what an interpreter should reproduce -- not
        msb(a), which was the reading before hardware was consulted. */
     return (f->b == 1) ? sa : 0;
-  case kX86pFlagsSar:
-    return 0; /* an arithmetic right shift cannot overflow */
   default:
     return 0;
   }
@@ -252,7 +252,25 @@ int x86p_flag_af(const X86pFlags *f) {
 }
 
 uint32_t x86p_eflags(const X86pFlags *f) {
+  if (!f || f->kind == kX86pFlagsNone) {
+    return X86P_EFLAGS_FIXED;
+  }
+  if (f->kind == kX86pFlagsExplicit) {
+    return (f->a & X86P_ARITH_FLAGS) | X86P_EFLAGS_FIXED;
+  }
   uint32_t v = X86P_EFLAGS_FIXED;
+  if (f->kind == kX86pFlagsLogic) {
+    if (x86p_flag_zf(f)) {
+      v |= X86P_ZF;
+    }
+    if (x86p_flag_sf(f)) {
+      v |= X86P_SF;
+    }
+    if (x86p_flag_pf(f)) {
+      v |= X86P_PF;
+    }
+    return v;
+  }
   if (x86p_flag_cf(f)) {
     v |= X86P_CF;
   }

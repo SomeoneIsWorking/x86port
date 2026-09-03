@@ -63,5 +63,47 @@ int x86p_cond_eflags(X86pCond cc, uint32_t eflags) {
 }
 
 int x86p_cond(X86pCond cc, const X86pFlags *f) {
-  return x86p_cond_eflags(cc, x86p_eflags(f));
+  if (!f || f->kind == kX86pFlagsNone) {
+    return x86p_cond_eflags(cc, X86P_EFLAGS_FIXED);
+  }
+  if (f->kind == kX86pFlagsExplicit) {
+    return x86p_cond_eflags(cc, f->a);
+  }
+  switch (cc) {
+  case kX86pCondO:
+    return x86p_flag_of(f);
+  case kX86pCondNO:
+    return !x86p_flag_of(f);
+  case kX86pCondB:
+    return x86p_flag_cf(f);
+  case kX86pCondNB:
+    return !x86p_flag_cf(f);
+  case kX86pCondZ:
+    return x86p_flag_zf(f);
+  case kX86pCondNZ:
+    return !x86p_flag_zf(f);
+  case kX86pCondBE:
+    return x86p_flag_zf(f) || x86p_flag_cf(f);
+  case kX86pCondA:
+    return !x86p_flag_zf(f) && !x86p_flag_cf(f);
+  case kX86pCondS:
+    return x86p_flag_sf(f);
+  case kX86pCondNS:
+    return !x86p_flag_sf(f);
+  case kX86pCondP:
+    return x86p_flag_pf(f);
+  case kX86pCondNP:
+    return !x86p_flag_pf(f);
+  case kX86pCondL:
+    return x86p_flag_sf(f) != x86p_flag_of(f);
+  case kX86pCondGE:
+    return x86p_flag_sf(f) == x86p_flag_of(f);
+  case kX86pCondLE:
+    return x86p_flag_zf(f) || (x86p_flag_sf(f) != x86p_flag_of(f));
+  case kX86pCondG:
+    return !x86p_flag_zf(f) && (x86p_flag_sf(f) == x86p_flag_of(f));
+  case kX86pCondCount:
+    break;
+  }
+  return 0;
 }
