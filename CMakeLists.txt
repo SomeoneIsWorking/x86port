@@ -52,6 +52,7 @@ add_library(x86port STATIC
   src/x86port/simd_float.c
   src/x86port/three_dnow.c
   src/x86port/decode.c
+  src/x86port/decode_cache.c
   src/x86port/engine.c
   src/x86port/flags.c
   src/x86port/alu.c
@@ -126,6 +127,11 @@ add_executable(test_decode tests/test_decode.c)
 target_link_libraries(test_decode PRIVATE x86port)
 target_compile_options(test_decode PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_decode COMMAND test_decode)
+
+add_executable(test_decode_cache tests/test_decode_cache.c)
+target_link_libraries(test_decode_cache PRIVATE x86port)
+target_compile_options(test_decode_cache PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_decode_cache COMMAND test_decode_cache)
 
 add_executable(test_engine tests/test_engine.c)
 target_link_libraries(test_engine PRIVATE x86port)

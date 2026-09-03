@@ -22,6 +22,7 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "decode_cache.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +79,16 @@ typedef struct X86pStepReport {
  * and should not be doing that.
  */
 X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *report);
+
+/*
+ * As x86p_step, answering the decode from a caller-owned cache.
+ *
+ * The cache is the interpreter's largest single saving (see decode_cache.h)
+ * and it is exact: an entry is used only while the guest bytes at that address
+ * still match the ones decoded. A NULL cache is the uncached path, so the two
+ * can be run against each other.
+ */
+X86pStepStatus x86p_step_cached(X86pCpu *cpu, const X86pMem *mem, X86pDecodeCache *cache, X86pStepReport *report);
 
 /*
  * Execute an ALREADY DECODED instruction whose address is cpu->eip.

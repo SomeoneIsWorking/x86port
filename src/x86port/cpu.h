@@ -179,6 +179,14 @@ int x86p_mem_write(const X86pMem *m, uint32_t addr, int w, uint32_t value);
  * job, not this module's.
  */
 int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n);
+
+/* How many of the `max` bytes starting at `addr` are inside the mapping: `max`
+   when the whole span is, fewer at the end of it, 0 when `addr` itself is not.
+   The instruction fetch asks this ONCE instead of probing byte by byte -- a
+   perfectly good instruction can end one byte before the end of a mapping, so
+   the fetch may not demand all fifteen bytes, and asking fifteen times cost
+   more than the decode it fed. */
+uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max);
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n);
 
 /* Whether an access of `w` bytes at `addr` is wholly mapped. Exposed so a
