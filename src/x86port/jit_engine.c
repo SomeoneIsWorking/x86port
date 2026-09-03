@@ -15,6 +15,8 @@ struct X86pJitEngine {
   size_t used;
   JcBlockCache *cache;
   X86pJitEngineStats stats;
+  X86pJitInterceptFn intercept;
+  void *intercept_user;
 };
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
@@ -41,6 +43,8 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
     return "translation failed";
   case kX86pRunOutOfCode:
     return "out of code memory";
+  case kX86pRunIntercept:
+    return "intercepted by consumer";
   case kX86pRunStatusCount:
     break;
   }
@@ -131,6 +135,13 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   }
   *out = e->stats;
   out->code_bytes_used = e->used;
+}
+
+void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user) {
+  if (e) {
+    e->intercept = fn;
+    e->intercept_user = user;
+  }
 }
 
 /*
@@ -265,6 +276,9 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
   }
 
   while (steps < max_steps) {
+    if (e->intercept && e->intercept(cpu, e->intercept_user)) {
+      return kX86pRunIntercept;
+    }
     void *host = jc_block_lookup(e->cache, cpu->eip);
     X86pJitExit exit;
     uint32_t before_eip = cpu->eip;

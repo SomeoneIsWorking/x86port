@@ -503,6 +503,59 @@ static void test_the_same_run_through_dual_mapping(void) {
   (void)jc_code_select_mechanism(NULL);
 }
 
+static int intercept_at_target(const X86pCpu *cpu, void *user) {
+  uint32_t target = *(const uint32_t *)user;
+  return cpu->eip == target;
+}
+
+static void test_intercept_stops_before_block(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  char reason[256];
+  uint32_t intercept_target = GUEST_BASE + 8u;
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  /* mov eax, 42 */
+  g_guest[0] = 0xB8;
+  g_guest[1] = 0x2A;
+  g_guest[2] = 0x00;
+  g_guest[3] = 0x00;
+  g_guest[4] = 0x00;
+  /* jmp short +1 (from 7 -> 8) */
+  g_guest[5] = 0xEB;
+  g_guest[6] = 0x01;
+  /* offset 7: nop */
+  g_guest[7] = 0x90;
+  /* offset 8: jmp $ */
+  g_guest[8] = 0xEB;
+  g_guest[9] = 0xFE;
+
+  seed(&cpu);
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+
+  x86p_jit_engine_set_intercept(eng, intercept_at_target, &intercept_target);
+
+  /* Run: should execute block 1 and stop on intercept before block 2 */
+  X86pJitRunStatus st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  CHECK(st == kX86pRunIntercept);
+  CHECK(cpu.eip == intercept_target);
+  CHECK(cpu.reg[kX86pEax] == 42u);
+
+  /* Clear intercept and run again: should execute until budget */
+  x86p_jit_engine_set_intercept(eng, NULL, NULL);
+  st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  CHECK(st == kX86pRunBudget);
+  CHECK(cpu.eip == intercept_target);
+
+  x86p_jit_engine_destroy(eng);
+}
+
 int main(void) {
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND on this host: this suite cannot run and claims nothing\n");
@@ -516,6 +569,7 @@ int main(void) {
   RUN(test_a_guest_memory_fault_stops_the_run_and_says_so);
   RUN(test_a_rewound_arena_does_not_leave_stale_cache_entries);
   RUN(test_the_same_run_through_dual_mapping);
+  RUN(test_intercept_stops_before_block);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;
