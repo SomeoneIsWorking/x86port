@@ -141,6 +141,11 @@ static int32_t flag_off(size_t field) {
 #define FLAG_W flag_off(offsetof(X86pFlags, w))
 #define FLAG_CARRY_IN flag_off(offsetof(X86pFlags, carry_in))
 
+/* The X86pX87 sub-struct, and where the fields the JIT touches live in it. */
+static int32_t x87_off(void) {
+  return (int32_t)offsetof(X86pCpu, x87);
+}
+
 /* ---- can this instruction be emitted? ----------------------------------- */
 
 /*
@@ -272,6 +277,34 @@ static int movx_is_emittable(const X86pInsn *insn) {
   return src->kind == kX86pOperandMem;
 }
 
+/*
+ * FLD, and only FLD, for the first x87 backend.
+ *
+ * A load is the one x87 instruction with no rounding and no reverse-operand
+ * trap: widening a 32- or 64-bit float to the register's 80 bits is exact for
+ * every value, NaNs and denormals included, so `fld dword`/`fld qword` on the
+ * host produces bit-for-bit what x86p_x87_from_f32/f64 produce. The emitted
+ * code then calls x86p_x87_push (or x86p_x87_get for the FLD ST(i) form)
+ * directly -- the same functions the interpreter uses -- so stack-overflow
+ * flags, tags and TOP stay that module's business. FLD m80 stays on the helper
+ * (its own byte-assembly path), as does FILD (integer source, x87_mem_int).
+ *
+ * Every other x87 instruction -- stores (host narrowing follows the control
+ * word, the interpreter's (float) cast does not), arithmetic, compares --
+ * keeps going through emit_helper_call until a later phase.
+ */
+static int x87_load_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o;
+  if (insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int || insn->operands != 1) {
+    return 0;
+  }
+  o = &insn->operand[0];
+  if (o->kind == kX86pOperandSt) {
+    return o->reg >= 0 && o->reg < X86P_X87_REGS;
+  }
+  return o->kind == kX86pOperandMem && (o->size == 4 || o->size == 8) && !o->addr16;
+}
+
 static int can_emit(const X86pInsn *insn) {
   int i;
   /*
@@ -360,6 +393,8 @@ static int can_emit(const X86pInsn *insn) {
        happens, so operand_is_mem32's width rule does not apply -- only that
        the operand really is a memory reference to compute. */
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
+  case kX86pInsnX87:
+    return x87_load_is_emittable(insn);
   default:
     return 0;
   }
@@ -1227,6 +1262,60 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
 }
 
 /*
+ * FLD -- push a float onto the x87 stack.
+ *
+ * The value is widened to 80 bits by the host `fld` (exact for every 32- and
+ * 64-bit float) and handed to x86p_x87_push, which owns the overflow flags,
+ * the tag and TOP exactly as it does for the interpreter. The FLD ST(i) form
+ * reads the source with x86p_x87_get first and pushes nothing when that
+ * register is empty -- the interpreter's own order, because the push would
+ * renumber the position being read.
+ *
+ * A 16-byte scratch slot is opened on the stack for the long double: System V
+ * passes an 80-bit value to a function in memory, and x86p_x87_get writes its
+ * result there. `sub rsp, 16` keeps the 16-byte alignment a CALL needs. The
+ * memory form's bounds check runs BEFORE the sub, so the fault stub -- which
+ * pops RBX and returns assuming the post-prologue RSP -- is never reached with
+ * the slot still open.
+ */
+static void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  const X86pOperand *o = &insn->operand[0];
+
+  if (o->kind == kX86pOperandMem) {
+    const int w = o->size; /* 4 or 8 -- can_emit gate */
+    emit_mem_prepare_w(c, o, insn_eip, w);
+    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+    /* fld dword [r11] (D9 /0) or fld qword [r11] (DD /0), then fstp tbyte
+       [rsp] (DB /7): the widen-and-spill that leaves the x87 stack balanced. */
+    x86p_emit_x87_m(e, (w == 4) ? 0xD9u : 0xDDu, 0u, HOSTPTR_REG, 0);
+    x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, 0);
+    x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+    x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_push);
+    x86p_emit_call_r64(e, kX64Rax);
+    x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+    return;
+  }
+
+  /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o->reg);
+  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_get);
+  x86p_emit_call_r64(e, kX64Rax);
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  {
+    X86pEmitSite skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: source register was empty */
+    x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+    x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_push);
+    x86p_emit_call_r64(e, kX64Rax);
+    x86p_emit_bind(e, skip);
+  }
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+}
+
+/*
  * Prologue: save RBX, park the X86pCpu pointer in it.
  *
  * STACK ALIGNMENT. System V requires RSP to be 16-byte aligned immediately
@@ -1782,6 +1871,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
     case kX86pInsnLea:
       emit_lea(&ctx, &insn);
+      break;
+    case kX86pInsnX87:
+      /* Only FLD reaches here (x87_load_is_emittable); it writes no EFLAGS, so
+         last_kind -- the predecessor for the next carry-in -- is unchanged. */
+      emit_x87_load(&ctx, &insn, pc);
       break;
     case kX86pInsnPush:
       emit_push(&ctx, &insn, pc);

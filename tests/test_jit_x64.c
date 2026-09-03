@@ -175,7 +175,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 89u);
+  unsigned pick = (unsigned)(r % 90u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -656,6 +656,13 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
     p[3] = memdisp;
     return 4;
+  case 89: /* FLD qword [base+disp8] -- DD /0. The 64-bit source the dword FLD
+              (case 61) cannot reach: a different escape opcode, an 8-byte
+              access, and the double->extended widen. */
+    p[0] = 0xDDu;
+    p[1] = (uint8_t)(0x40u | (0u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */

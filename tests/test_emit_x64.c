@@ -443,6 +443,98 @@ static void test_ret(void) {
   }
 }
 
+static void test_alu_r64_imm8_stack_adjust(void) {
+  static const struct {
+    X86pHostAlu op;
+    ZydisMnemonic want;
+    int8_t imm;
+  } kCases[] = {
+      {kX64Sub, ZYDIS_MNEMONIC_SUB, 16}, {kX64Add, ZYDIS_MNEMONIC_ADD, 16}, {kX64Sub, ZYDIS_MNEMONIC_SUB, -8}};
+  size_t i;
+  for (i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
+    uint8_t buf[16];
+    X86pEmit e;
+    Decoded d;
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_alu_r64_imm8(&e, kCases[i].op, kX64Rsp, kCases[i].imm);
+    d = emit_and_decode(&e);
+    if (d.ok) {
+      CHECK(d.insn.mnemonic == kCases[i].want);
+      CHECK(reg_id(d.ops[0].reg.value) == kX64Rsp);
+      CHECK(ZydisRegisterGetClass(d.ops[0].reg.value) == ZYDIS_REGCLASS_GPR64);
+      CHECK((int64_t)d.ops[1].imm.value.s == kCases[i].imm);
+    }
+  }
+}
+
+static void test_or_m16_imm16_sets_status_bits(void) {
+  uint8_t buf[16];
+  X86pEmit e;
+  Decoded d;
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_or_m16_imm16(&e, kX64Rbx, 0x8c, 0x0241u); /* IE | SF | C1 */
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_OR);
+    CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+    CHECK(d.ops[0].size == 16);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64Rbx);
+    CHECK((int32_t)d.ops[0].mem.disp.value == 0x8c);
+    CHECK((uint64_t)d.ops[1].imm.value.u == 0x0241u);
+  }
+}
+
+/* The x87 forms the FLD backend lays down: fld dword/qword [r11], fstp tbyte
+   [rsp], fld st(i). Decoded rather than byte-matched for the same reason the
+   rest of this file is -- the REX.B for r11 and the SIB for rsp are exactly the
+   traps a hand-written expectation shares. */
+static void test_x87_forms(void) {
+  uint8_t buf[16];
+  X86pEmit e;
+  Decoded d;
+  int i;
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_x87_m(&e, 0xD9u, 0u, kX64R11, 0); /* fld dword [r11] */
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_FLD);
+    CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+    CHECK(d.ops[0].size == 32);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64R11);
+  }
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_x87_m(&e, 0xDDu, 0u, kX64R11, 0); /* fld qword [r11] */
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_FLD);
+    CHECK(d.ops[0].size == 64);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64R11);
+  }
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_x87_m(&e, 0xDBu, 7u, kX64Rsp, 0); /* fstp tbyte [rsp] */
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_FSTP);
+    CHECK(d.ops[0].size == 80);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64Rsp);
+    CHECK(d.ops[0].mem.index == ZYDIS_REGISTER_NONE);
+  }
+
+  for (i = 0; i < 8; i++) {
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_x87_reg(&e, 0xD9u, (uint8_t)(0xC0u | i)); /* fld st(i) */
+    d = emit_and_decode(&e);
+    if (d.ok) {
+      CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_FLD);
+      CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER);
+      CHECK(reg_id(d.ops[0].reg.value) == i); /* ST(i) ids run 0..7 */
+    }
+  }
+}
+
 /* ---- the negative: overflow is reported, not truncated ------------------ */
 
 static void test_overflow_is_sticky_and_never_writes_past_the_end(void) {
@@ -492,6 +584,9 @@ int main(void) {
   RUN(test_test_r32_r32);
   RUN(test_cmovcc_every_condition);
   RUN(test_push_pop_every_register);
+  RUN(test_alu_r64_imm8_stack_adjust);
+  RUN(test_or_m16_imm16_sets_status_bits);
+  RUN(test_x87_forms);
   RUN(test_ret);
   RUN(test_overflow_is_sticky_and_never_writes_past_the_end);
 

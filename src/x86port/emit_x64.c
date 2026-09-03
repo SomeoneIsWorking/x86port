@@ -321,6 +321,44 @@ void x86p_emit_store16_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t
   put(e, (uint8_t)((imm >> 8) & 0xFFu));
 }
 
+void x86p_emit_alu_r64_imm8(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, int8_t imm) {
+  /* REX.W 83 /op ib -- the sign-extended-imm8 form, which is all a stack
+     adjustment (sub rsp, 16 / add rsp, 16) ever needs. */
+  rex(e, 1, kX64Rax, dst);
+  put(e, 0x83u);
+  put(e, (uint8_t)(0xC0u | (((unsigned)op & 7u) << 3) | ((unsigned)dst & 7u)));
+  put(e, (uint8_t)imm);
+}
+
+void x86p_emit_or_m16_imm16(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t imm) {
+  /* 66 81 /1 iw -- OR of a 16-bit memory field with an immediate, for setting
+     the x87 status-word fault bits without a read/modify/write in registers. */
+  put(e, 0x66u);
+  rex(e, 0, kX64Rax, base);
+  put(e, 0x81u);
+  modrm_mem(e, (X86pHostReg)1, base, disp); /* /1 = OR */
+  put(e, (uint8_t)(imm & 0xFFu));
+  put(e, (uint8_t)((imm >> 8) & 0xFFu));
+}
+
+void x86p_emit_x87_m(X86pEmit *e, uint8_t opcode, unsigned digit, X86pHostReg base, int32_t disp) {
+  /* An x87 instruction with a memory operand: one escape opcode (D8..DF) then a
+     ModRM whose reg field is the opcode extension. REX.B is still needed when
+     the base is r8..r15 (the JIT's host-pointer register is r11). x87 has no
+     REX.W form, so W stays 0. */
+  rex(e, 0, kX64Rax, base);
+  put(e, opcode);
+  modrm_mem(e, (X86pHostReg)(digit & 7u), base, disp);
+}
+
+void x86p_emit_x87_reg(X86pEmit *e, uint8_t opcode, uint8_t modrm) {
+  /* The register-to-register x87 forms are a fixed opcode and a fixed ModRM
+     byte (e.g. FLD ST(i) is D9 C0+i). No operands to encode -- the caller has
+     the byte from the manual. */
+  put(e, opcode);
+  put(e, modrm);
+}
+
 static X86pEmitSite make_site(X86pEmit *e) {
   X86pEmitSite s;
   s.at = e->len;
