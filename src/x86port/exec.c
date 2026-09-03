@@ -1074,9 +1074,13 @@ static void execute(Ctx *c) {
 }
 
 X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *report) {
+  return x86p_step_cached(cpu, mem, NULL, report);
+}
+
+X86pStepStatus x86p_step_cached(X86pCpu *cpu, const X86pMem *mem, X86pDecodeCache *cache, X86pStepReport *report) {
   uint8_t bytes[X86P_MAX_INSN_LEN];
   X86pInsn insn;
-  uint32_t avail, i;
+  uint32_t avail;
   uint32_t fault_addr = 0u;
   X86pStepStatus st;
 
@@ -1098,16 +1102,8 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
    * code the guest executes -- a fault the guest never took, which is worse
    * than the one it did.
    */
-  avail = 0;
-  for (i = 0; i < X86P_MAX_INSN_LEN; i++) {
-    uint32_t b;
-    if (!x86p_mem_read(mem, cpu->eip + i, 1, &b)) {
-      break;
-    }
-    bytes[i] = (uint8_t)b;
-    avail++;
-  }
-  if (avail == 0) {
+  avail = x86p_mem_readable_span(mem, cpu->eip, X86P_MAX_INSN_LEN);
+  if (avail == 0 || !x86p_mem_read_bytes(mem, cpu->eip, bytes, avail)) {
     if (report) {
       report->status = kX86pStepFetchFault;
       report->fault_addr = cpu->eip;
@@ -1115,7 +1111,7 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
     return kX86pStepFetchFault;
   }
 
-  if (!x86p_decode(bytes, avail, &insn)) {
+  if (!x86p_decode_cached(cache, cpu->eip, bytes, avail, &insn)) {
     if (report) {
       report->status = kX86pStepDecodeFailed;
       report->fault_addr = cpu->eip;

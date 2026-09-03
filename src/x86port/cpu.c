@@ -74,6 +74,19 @@ int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n) 
   return 1;
 }
 
+uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max) {
+  uint32_t off, room;
+  if (!m || m->size == 0u || max == 0u || addr < m->lo) {
+    return 0u;
+  }
+  off = addr - m->lo;
+  if (off >= m->size) {
+    return 0u;
+  }
+  room = m->size - off;
+  return room < max ? room : max;
+}
+
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n) {
   if (!src || !span_ok(m, addr, n)) {
     return 0;
