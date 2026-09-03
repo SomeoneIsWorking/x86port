@@ -179,9 +179,62 @@ static void test_the_oracle_can_fail(void) {
 #define HAVE_HW_ORACLE 0
 #endif
 
+static void test_x86p_cond_matches_eflags(void) {
+  static const uint32_t test_values[] = {0, 1, 2, 0x7F, 0x80, 0xFF, 0x7FFF, 0x8000, 0xFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
+  const int nvals = (int)(sizeof test_values / sizeof test_values[0]);
+  int cc, k, w_idx, i, j;
+  static const int widths[] = {1, 2, 4};
+  unsigned long long tested = 0;
+
+  /* Explicit flags state */
+  for (cc = 0; cc < (int)kX86pCondCount; cc++) {
+    for (i = 0; i < 64; i++) {
+      X86pFlags f;
+      uint32_t fl = ((i & 1) ? X86P_CF : 0) | ((i & 2) ? X86P_PF : 0) | ((i & 4) ? X86P_AF : 0) |
+                    ((i & 8) ? X86P_ZF : 0) | ((i & 16) ? X86P_SF : 0) | ((i & 32) ? X86P_OF : 0);
+      x86p_flags_set_explicit(&f, fl | X86P_EFLAGS_FIXED);
+      tested++;
+      CHECK_EQ_U(x86p_cond((X86pCond)cc, &f), x86p_cond_eflags((X86pCond)cc, x86p_eflags(&f)));
+    }
+  }
+
+  /* Various operations and operand pairs */
+  for (k = (int)kX86pFlagsNone; k < (int)kX86pFlagsKindCount; k++) {
+    if (k == (int)kX86pFlagsExplicit) {
+      continue;
+    }
+    for (w_idx = 0; w_idx < 3; w_idx++) {
+      int w = widths[w_idx];
+      for (i = 0; i < nvals; i++) {
+        for (j = 0; j < nvals; j++) {
+          X86pFlags f;
+          uint32_t a = test_values[i];
+          uint32_t b = test_values[j];
+          uint32_t r = a + b;
+          if (k == kX86pFlagsShl || k == kX86pFlagsShr || k == kX86pFlagsSar) {
+            b = (b % (uint32_t)(w * 8)) + 1; /* non-zero shift */
+          }
+          if (k == kX86pFlagsNone) {
+            memset(&f, 0, sizeof f);
+          } else {
+            memset(&f, 0, sizeof f);
+            x86p_flags_set(&f, (X86pFlagKind)k, a, b, r, w);
+          }
+          for (cc = 0; cc < (int)kX86pCondCount; cc++) {
+            tested++;
+            CHECK_EQ_U(x86p_cond((X86pCond)cc, &f), x86p_cond_eflags((X86pCond)cc, x86p_eflags(&f)));
+          }
+        }
+      }
+    }
+  }
+  printf("    tested %llu condition queries across multiple flag kinds, all match eflags\n", tested);
+}
+
 int main(void) {
   RUN(test_every_condition_is_named);
   RUN(test_complement_pairs);
+  RUN(test_x86p_cond_matches_eflags);
 #if HAVE_HW_ORACLE
   RUN(test_hw_all_conditions_exhaustive);
   RUN(test_the_oracle_can_fail);
