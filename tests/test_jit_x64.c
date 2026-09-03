@@ -11,10 +11,12 @@
  *
  * WHY THE WHOLE MACHINE AND NOT THE DESTINATION REGISTER. A backend that
  * clobbers a scratch register, forgets that CMP writes no result, or leaves
- * carry_in stale produces exactly the right destination value and a corrupted
- * machine. Comparing eight registers, EIP, the raw lazy-flag tuple AND all six
- * derived flags is what turns those into failures instead of into a bug found
- * three months later in a game.
+ * carry_in stale where an INC or DEC will read it produces exactly the right
+ * destination value and a corrupted machine. Comparing eight registers, EIP,
+ * the raw lazy-flag tuple AND all six derived flags is what turns those into
+ * failures instead of into a bug found three months later in a game. (The one
+ * relaxation: raw carry_in is a dead cache except under kind Inc/Dec, so it is
+ * compared only there -- see same_state. The derived CF check stays strict.)
  *
  * PROGRAMS ARE GENERATED, NOT HAND-PICKED. Hand-written cases test the
  * instructions their author thought of, in the order they thought of, and every
@@ -791,23 +793,34 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
     printf("    FAIL %s: EIP interp=%08X jit=%08X\n", what, a->eip, b->eip);
     ok = 0;
   }
-  if (a->flags.kind != b->flags.kind || a->flags.a != b->flags.a || a->flags.b != b->flags.b ||
-      a->flags.r != b->flags.r || a->flags.w != b->flags.w || a->flags.carry_in != b->flags.carry_in) {
-    printf("    FAIL %s: lazy flags interp=(k%u %08X %08X %08X w%u c%u) jit=(k%u %08X %08X %08X w%u c%u)\n",
-           what,
-           a->flags.kind,
-           a->flags.a,
-           a->flags.b,
-           a->flags.r,
-           a->flags.w,
-           a->flags.carry_in,
-           b->flags.kind,
-           b->flags.a,
-           b->flags.b,
-           b->flags.r,
-           b->flags.w,
-           b->flags.carry_in);
-    ok = 0;
+  /*
+   * `carry_in` is a cache read only when kind is Inc/Dec (flags.c). Dead-flag-
+   * store elimination in jit_x64.c can leave it stale behind the block's last
+   * flag write when that write's predecessor tuple was elided -- unobservable,
+   * since the derived FLAG(x86p_flag_cf, ...) check below stays strict. Match
+   * cpu_compare.c: compare the raw carry_in only where it is live.
+   */
+  {
+    const int carry_live = (a->flags.kind == kX86pFlagsInc || a->flags.kind == kX86pFlagsDec);
+    if (a->flags.kind != b->flags.kind || a->flags.a != b->flags.a || a->flags.b != b->flags.b ||
+        a->flags.r != b->flags.r || a->flags.w != b->flags.w ||
+        (carry_live && a->flags.carry_in != b->flags.carry_in)) {
+      printf("    FAIL %s: lazy flags interp=(k%u %08X %08X %08X w%u c%u) jit=(k%u %08X %08X %08X w%u c%u)\n",
+             what,
+             a->flags.kind,
+             a->flags.a,
+             a->flags.b,
+             a->flags.r,
+             a->flags.w,
+             a->flags.carry_in,
+             b->flags.kind,
+             b->flags.a,
+             b->flags.b,
+             b->flags.r,
+             b->flags.w,
+             b->flags.carry_in);
+      ok = 0;
+    }
   }
 #define FLAG(fn, name)                                                                                                 \
   if (fn(&a->flags) != fn(&b->flags)) {                                                                                \

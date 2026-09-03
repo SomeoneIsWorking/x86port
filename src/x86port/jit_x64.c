@@ -637,6 +637,107 @@ static int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, 
 }
 
 /*
+ * DEAD FLAG STORE ELIMINATION.
+ *
+ * Most guest arithmetic never has its flags read: `add / add / cmp / jl` writes
+ * three flag tuples and only the last one matters. This scans forward from the
+ * instruction AFTER `pc` and returns 1 when the tuple that instruction wrote is
+ * provably overwritten before anything can observe it -- so its six stores (and
+ * its carry-in computation) can be skipped entirely.
+ *
+ * It only says "dead" for a later full-width inlined ALU flag write (or NEG)
+ * with register/immediate operands: that overwrites every EFLAGS bit and cannot
+ * fault. It stops -- conservatively "not dead" -- at the first thing that could
+ * read flags (Jcc, INC/DEC which preserve CF, ADC/SBB, a helper), could fault
+ * mid-block and hand a stale tuple to the interpreter (any memory operand), or
+ * ends the block (branch, ret, unsupported, interception point, unmapped).
+ * Register moves and NOPs are transparent and scanned through.
+ *
+ * Safety of the carry-in: the block's LAST flag writer is never dead (the scan
+ * from it hits the block boundary), so it always stores. If ITS predecessor was
+ * elided, its carry_in is computed from an older kind -- but a wrong carry_in is
+ * only observable for kind Inc/Dec, and the predecessor of an Inc/Dec is never
+ * elided (this scan returns 0 at Inc/Dec). cpu_compare.c states the matching
+ * rule for the differential.
+ *
+ * The killer must be an instruction this block will ACTUALLY EMIT: `count` and
+ * the remaining code budget cut the scan short exactly where the emit loop
+ * would stop, so a store is never dropped on the strength of a successor that
+ * ends up in the next block instead.
+ */
+static int flag_write_is_dead(const X86pMem *mem,
+                              uint32_t pc,
+                              uint32_t eip,
+                              X86pJitBoundaryFn boundary,
+                              void *boundary_user,
+                              uint32_t count,
+                              size_t code_len,
+                              size_t code_cap) {
+  int step;
+  for (step = 0; step < 8; step++) {
+    uint8_t bytes[X86P_MAX_INSN_LEN];
+    uint32_t avail = 0;
+    uint32_t i;
+    X86pInsn insn;
+
+    /* Would the emit loop still be running when it reached this instruction? */
+    if (count + 1u + (uint32_t)step >= MAX_INSNS) {
+      return 0;
+    }
+    if (code_len + (size_t)(step + 2) * WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
+      return 0;
+    }
+
+    for (i = 0; i < (uint32_t)X86P_MAX_INSN_LEN; i++) {
+      uint32_t byte;
+      if (!x86p_mem_read(mem, pc + i, 1, &byte)) {
+        break;
+      }
+      bytes[i] = (uint8_t)byte;
+      avail++;
+    }
+    if (avail == 0 || !x86p_decode(bytes, avail, &insn)) {
+      return 0;
+    }
+    if (pc != eip && boundary && boundary(pc, boundary_user)) {
+      return 0;
+    }
+
+    if (insn.op == (uint8_t)kX86pInsnAlu) {
+      X86pHostAlu host;
+      X86pFlagKind kind;
+      int writes_dest;
+      if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest) && insn.operand[0].kind != kX86pOperandMem &&
+          insn.operand[1].kind != kX86pOperandMem) {
+        return 1;
+      }
+      return 0; /* shift / ADC / SBB / memory ALU: reads CF or can fault */
+    }
+    if (insn.op == (uint8_t)kX86pInsnAluUnary) {
+      if (insn.alu == (uint8_t)kX86pAluNeg && insn.operand[0].kind != kX86pOperandMem) {
+        return 1; /* NEG rewrites every flag */
+      }
+      if (insn.alu == (uint8_t)kX86pAluNot && insn.operand[0].kind != kX86pOperandMem) {
+        pc += insn.length; /* NOT writes no flags -- transparent */
+        continue;
+      }
+      return 0; /* INC / DEC preserve (read) CF; memory forms can fault */
+    }
+    if (insn.op == (uint8_t)kX86pInsnNop) {
+      pc += insn.length;
+      continue;
+    }
+    if (insn.op == (uint8_t)kX86pInsnMov && insn.operand[0].kind == kX86pOperandReg &&
+        insn.operand[1].kind != kX86pOperandMem) {
+      pc += insn.length; /* reg <- reg/imm : no flags, no fault */
+      continue;
+    }
+    return 0;
+  }
+  return 0;
+}
+
+/*
  * Store `carry_in`: the CF the flag state held BEFORE this operation overwrites
  * it. x86p_flags_set records it because INC and DEC preserve CF, and guest code
  * really does put an INC between an ADD and an ADC.
@@ -736,6 +837,7 @@ static void emit_alu_inline(BlockCtx *c,
                             X86pFlagKind kind,
                             int writes_dest,
                             int last_kind,
+                            int flags_dead,
                             uint32_t insn_eip) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
@@ -746,8 +848,14 @@ static void emit_alu_inline(BlockCtx *c,
    * leave every flag field exactly as it was. Writing carry_in before the check
    * left the flags half-updated on a fault: a divergence that only appears
    * three instructions later, when something finally reads CF.
+   *
+   * `flags_dead` (from flag_write_is_dead) means a later instruction rewrites
+   * every EFLAGS bit before anything reads them: the whole tuple, carry_in
+   * included, is skipped. The native arithmetic and its write-back stay.
    */
-  c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
+  if (!flags_dead) {
+    c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
+  }
 
   /*
    * The memory operand, whichever side it is on, is prepared ONCE and its
@@ -760,16 +868,22 @@ static void emit_alu_inline(BlockCtx *c,
 
   if (dst->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, dst, insn_eip, w);
-    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    if (!flags_dead) {
+      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    }
     emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
     emit_read_alu_src(c, kX64Rdx, src, w);
   } else if (src->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, src, insn_eip, w);
-    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    if (!flags_dead) {
+      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    }
     emit_load_w(c->e, kX64Rdx, HOSTPTR_REG, 0, w);
     emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
   } else {
-    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    if (!flags_dead) {
+      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    }
     emit_read_alu_src(c, kX64Rdx, src, w);
     emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
   }
@@ -788,11 +902,13 @@ static void emit_alu_inline(BlockCtx *c,
     x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
   }
 
-  x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
-  x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
-  x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+  if (!flags_dead) {
+    x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
+    x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
+    x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
+    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
+    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+  }
 
   if (writes_dest) {
     if (dst->kind == kX86pOperandMem) {
@@ -896,7 +1012,7 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
  *
  * Returns the flag kind recorded, or -1 for NOT, which records none.
  */
-static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, uint32_t insn_eip) {
+static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int flags_dead, uint32_t insn_eip) {
   const X86pOperand *o = &insn->operand[0];
   const int w = o->size;
   const int is_mem = (o->kind == kX86pOperandMem);
@@ -923,14 +1039,20 @@ static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kin
     return -1;
   }
 
-  c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
+  if (!flags_dead) {
+    c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
+  }
 
   if (is_mem) {
     emit_mem_prepare_w(c, o, insn_eip, w);
-    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    if (!flags_dead) {
+      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    }
     emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
   } else {
-    x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    if (!flags_dead) {
+      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
+    }
     emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(o->reg, w), w);
   }
 
@@ -957,16 +1079,18 @@ static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kin
   /* NEG's operands are (0, a); INC and DEC's are (a, 1). The tuple must be
      what x86p_alu_unary would have stored, because every derived flag reads it
      and so does the next instruction's carry-in. */
-  if (kind == kX86pFlagsSub) {
-    x86p_emit_store32_imm(c->e, CPU_REG, FLAG_A, 0u);
-    x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rsi);
-  } else {
-    x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
-    x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
+  if (!flags_dead) {
+    if (kind == kX86pFlagsSub) {
+      x86p_emit_store32_imm(c->e, CPU_REG, FLAG_A, 0u);
+      x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rsi);
+    } else {
+      x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
+      x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
+    }
+    x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
+    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
+    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
   }
-  x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-  x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
 
   if (is_mem) {
     emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
@@ -1522,10 +1646,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_mov(&ctx, &insn, pc);
       break;
     case kX86pInsnAluUnary: {
-      int k = emit_alu_unary_inline(&ctx, &insn, last_kind, pc);
+      int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+      int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       /* NOT records no flags, so the PREVIOUS instruction is still the
-         predecessor for the next one's carry-in. */
-      if (k >= 0) {
+         predecessor for the next one's carry-in -- and so is an INC/DEC/NEG
+         whose tuple was elided: the last stored kind is what memory holds. */
+      if (k >= 0 && !dead) {
         last_kind = k;
       }
       break;
@@ -1544,8 +1670,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, pc);
-        last_kind = (int)kind;
+        int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+        emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
+        /* A dead tuple was not stored, so the predecessor for the next
+           carry-in is still the last kind actually written to memory. */
+        if (!dead) {
+          last_kind = (int)kind;
+        }
       } else {
         emit_alu(&e, &insn);
         if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluSar) {
