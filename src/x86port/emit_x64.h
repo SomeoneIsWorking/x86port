@@ -238,6 +238,26 @@ void x86p_emit_load16_zx(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t
 void x86p_emit_store16_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
 void x86p_emit_store16_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t imm);
 
+/* <alu> r64, imm8 (sign-extended) -- REX.W 83 /op ib. Only ever an address or
+   stack-pointer adjustment; guest values are never 64-bit. */
+void x86p_emit_alu_r64_imm8(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, int8_t imm);
+
+/* or word [base + disp], imm16 -- set bits in a 16-bit memory field in place,
+   for the x87 status word's stack-fault flags. */
+void x86p_emit_or_m16_imm16(X86pEmit *e, X86pHostReg base, int32_t disp, uint16_t imm);
+
+/*
+ * x87 instructions, the two shapes the JIT emits them in.
+ *
+ * `x87_m` is an escape opcode (D8..DF) plus a memory operand whose ModRM.reg
+ * field carries the opcode-extension digit -- FLD m32 is D9 /0, FSTP m80 is
+ * DB /7. `x87_reg` is a fixed opcode and a fixed second byte for the
+ * register forms (FLD ST(i) is D9, C0+i). The caller holds the encoding from
+ * the manual; this only lays the bytes down with the right REX for the base.
+ */
+void x86p_emit_x87_m(X86pEmit *e, uint8_t opcode, unsigned digit, X86pHostReg base, int32_t disp);
+void x86p_emit_x87_reg(X86pEmit *e, uint8_t opcode, uint8_t modrm);
+
 /*
  * FORWARD JUMPS, with the destination filled in later.
  *
