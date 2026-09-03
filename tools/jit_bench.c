@@ -401,10 +401,12 @@ int main(int argc, char **argv) {
   printf("\n  jit is %.2fx faster than the interpreter\n", t_interp / t_jit);
   printf("  jit is %.2fx the cost of native+flags  <-- THE SCORE (1.00 would match static recomp)\n",
          t_jit / t_native_flags);
-  printf("\nNOTE: the baseline stores every flag, as the JIT does. A real recompiler also gets\n"
-         "DEAD FLAG-WRITE ELIMINATION free from the C compiler -- with flags never read, this\n"
-         "kernel's baseline drops to 0.05 ns/insn. The JIT does not eliminate dead flag writes\n"
-         "yet, and on flag-light code that is the remaining gap, not the per-op cost below.\n");
+  printf("\nNOTE: native+flags stores every flag unconditionally. The JIT now DOES eliminate\n"
+         "dead flag writes (flag_write_is_dead in jit_x64.c): a lazy tuple whose bits a later\n"
+         "in-block instruction overwrites before any read is not stored at all. This kernel\n"
+         "never reads its flags, so the JIT drops nearly all of them -- which is why it can\n"
+         "score below 1.00x here. On flag-heavy code where flags ARE read the elimination does\n"
+         "not fire and the per-op cost below is what remains.\n");
   printf("\nnative+flags is the static-recompilation stand-in: the same operations, maintaining\n"
          "the same guest flags, which is what a recompiler's generated C has to do. The flag-free\n"
          "column is a floor no correct x86 implementation can reach and is shown only for scale.\n");
