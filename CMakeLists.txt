@@ -65,6 +65,7 @@ add_library(x86port STATIC
   src/x86port/x87_transcendental.c
   src/x86port/emit_x64.c
   src/x86port/jit_x64.c
+  src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
 target_include_directories(x86port PUBLIC src/x86port)
 target_link_libraries(x86port PUBLIC jitcommon PRIVATE Zydis m)
@@ -89,6 +90,12 @@ target_link_libraries(test_jit_engine PRIVATE x86port)
 target_include_directories(test_jit_engine PRIVATE src)
 target_compile_options(test_jit_engine PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_jit_engine COMMAND test_jit_engine)
+
+add_executable(test_jit_profile tests/test_jit_profile.c)
+target_link_libraries(test_jit_profile PRIVATE x86port)
+target_include_directories(test_jit_profile PRIVATE src/x86port)
+target_compile_options(test_jit_profile PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_jit_profile COMMAND test_jit_profile)
 
 add_executable(x86p_jit_coverage tools/jit_coverage.c)
 target_link_libraries(x86p_jit_coverage PRIVATE x86port)

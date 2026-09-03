@@ -57,6 +57,7 @@ struct X86pJitEngine {
   int verify_log_overflow;
   X86pVerifyMeta *verify_meta;
   uint32_t verify_meta_cap; /* power of two */
+  X86pJitProfile *profile;  /* diagnostic: block-entry histogram, or NULL */
 };
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
@@ -160,6 +161,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   jc_code_region_destroy(&e->code);
   free(e->verify_log);
   free(e->verify_meta);
+  x86p_jit_profile_destroy(e->profile);
   free(e);
 }
 
@@ -222,6 +224,28 @@ void x86p_jit_engine_set_verify(X86pJitEngine *e, int enabled) {
     }
   }
   e->verify = (enabled && e->verify_log) ? 1 : 0;
+}
+
+void x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hint) {
+  if (!e) {
+    return;
+  }
+  if (!enabled) {
+    x86p_jit_profile_destroy(e->profile);
+    e->profile = NULL;
+    return;
+  }
+  if (!e->profile) {
+    e->profile = x86p_jit_profile_create(slot_hint);
+    if (!e->profile) {
+      fprintf(stderr, "x86p_jit_engine: block profile needs memory it could not get\n");
+      abort();
+    }
+  }
+}
+
+const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e) {
+  return e ? e->profile : NULL;
 }
 
 /* ── verify: shadow-interpret a block and undo its memory writes ──────────── */
@@ -535,8 +559,7 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
 
   while (steps < max_steps) {
     if (e->intercept && e->intercept(cpu, e->intercept_user)) {
-      if (e->dispatch &&
-          e->dispatch(cpu, e->dispatch_user) == kX86pDispatchContinue) {
+      if (e->dispatch && e->dispatch(cpu, e->dispatch_user) == kX86pDispatchContinue) {
         /* Handled in place; the run stays on this stack. Counts as a step so a
            handler that does not advance eip still ends the slice. */
         steps++;
@@ -621,6 +644,9 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
     *(void **)&fn = host;
     exit = (X86pJitExit)fn(cpu);
     e->stats.blocks_entered++;
+    if (e->profile) {
+      x86p_jit_profile_hit(e->profile, before_eip);
+    }
     steps++;
 
     if (verify_compare && exit != kX86pJitExitBlockEnd) {
