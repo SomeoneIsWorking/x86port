@@ -334,14 +334,26 @@ static int x87_arith_is_emittable(const X86pInsn *insn) {
 
 /*
  * FST / FSTP to a stack position (not memory). Both slots are 80-bit, so there
- * is no narrowing and no control-word question -- unlike the memory store
- * forms, whose (float)/(double) narrowing the interpreter does NOT round the
- * x87 way, so they stay on the helper.
+ * is no narrowing and no control-word question.
  */
 static int x87_store_reg_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
   return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandSt &&
          o0->reg >= 0 && o0->reg < X86P_X87_REGS;
+}
+
+/*
+ * FST / FSTP to a 32- or 64-bit memory float. x86p_x87_to_f32/f64 own the
+ * narrowing (now RC-correct), so the emitted code calls them -- and calls
+ * x86p_x87_get first, because the interpreter tests ST(0) for emptiness BEFORE
+ * it touches memory: an empty ST(0) is a whole no-op there, no store and no
+ * fault even if the address is bad. So the get and the narrowing run first, and
+ * only then the bounds check.
+ */
+static int x87_store_mem_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandMem &&
+         (o0->size == 4 || o0->size == 8) && !o0->addr16;
 }
 
 static int can_emit(const X86pInsn *insn) {
@@ -433,7 +445,8 @@ static int can_emit(const X86pInsn *insn) {
        the operand really is a memory reference to compute. */
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
-    return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn);
+    return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
+           x87_store_mem_is_emittable(insn);
   default:
     return 0;
   }
@@ -1452,6 +1465,58 @@ static void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
 }
 
 /*
+ * FST m32/m64 / FSTP m32/m64.
+ *
+ * ORDER MATTERS. The interpreter reads ST(0) and, only if it is not empty,
+ * narrows and writes memory. An empty ST(0) never touches memory, so it never
+ * faults on a bad address. This emits the same order: x86p_x87_get into a stack
+ * slot, then -- if it succeeded -- x86p_x87_to_f32/f64 (which now round by the
+ * guest control word), then the bounds check, then the store, then the pop.
+ *
+ * The scratch slot is released BEFORE emit_mem_prepare_w so its fault stub sees
+ * the post-prologue RSP; the narrowed bits survive that in R9, which the
+ * address path (RAX/RDI/R10/R11) does not touch.
+ */
+static void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  const X86pOperand *o0 = &insn->operand[0];
+  const int w = o0->size; /* 4 or 8 -- gate */
+  X86pEmitSite empty;
+  X86pEmitSite done;
+  int i;
+
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  x87_lea_self(e);
+  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x87_call(e, (const void *)&x86p_x87_get);
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  empty = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty -> no store, no pop, no fault */
+
+  x87_lea_self(e);
+  x87_call(e, (w == 4) ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64); /* value at [rsp] */
+  x86p_emit_mov_r64_r64(e, kX64R9, kX64Rax);
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+
+  emit_mem_prepare_w(c, o0, insn_eip, w);
+  if (w == 4) {
+    x86p_emit_store32(e, HOSTPTR_REG, 0, kX64R9);
+  } else {
+    x86p_emit_store64(e, HOSTPTR_REG, 0, kX64R9);
+  }
+  for (i = 0; i < (int)insn->x87_pops; i++) {
+    x87_lea_self(e);
+    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x87_call(e, (const void *)&x86p_x87_pop);
+  }
+  done = x86p_emit_jmp_rel32(e);
+
+  x86p_emit_bind(e, empty);
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+  x86p_emit_bind(e, done);
+}
+
+/*
  * Prologue: save RBX, park the X86pCpu pointer in it.
  *
  * STACK ALIGNMENT. System V requires RSP to be 16-byte aligned immediately
@@ -2009,13 +2074,15 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_lea(&ctx, &insn);
       break;
     case kX86pInsnX87:
-      /* FLD, the FADD/FSUB/FMUL/FDIV family, and FST/FSTP-to-register reach
-         here; none write EFLAGS, so last_kind -- the predecessor for the next
-         carry-in -- is unchanged. */
+      /* FLD, the FADD/FSUB/FMUL/FDIV family, and FST/FSTP (to register or
+         memory) reach here; none write EFLAGS, so last_kind -- the predecessor
+         for the next carry-in -- is unchanged. */
       if (x87_arith_is_emittable(&insn)) {
         emit_x87_arith(&ctx, &insn, pc);
       } else if (x87_store_reg_is_emittable(&insn)) {
         emit_x87_store_reg(&ctx, &insn);
+      } else if (x87_store_mem_is_emittable(&insn)) {
+        emit_x87_store_mem(&ctx, &insn, pc);
       } else {
         emit_x87_load(&ctx, &insn, pc);
       }

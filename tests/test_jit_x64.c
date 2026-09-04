@@ -175,7 +175,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 96u);
+  unsigned pick = (unsigned)(r % 99u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -696,6 +696,23 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[0] = 0xDCu;
     p[1] = (uint8_t)(0xE8u | ((r >> 12) & 7u));
     return 2;
+  case 96: /* FST dword [base+disp8] -- D9 /2. Store WITHOUT the pop: TOP is
+              unchanged, and the narrowed bytes land in guest memory (the
+              full-image memcmp catches a wrong RC or a wrong width). */
+    p[0] = 0xD9u;
+    p[1] = (uint8_t)(0x40u | (2u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 97: /* FST qword [base+disp8] -- DD /2. Eight-byte narrowing store. */
+    p[0] = 0xDDu;
+    p[1] = (uint8_t)(0x40u | (2u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 98: /* FSTP qword [base+disp8] -- DD /3. Narrowing store and a pop. */
+    p[0] = 0xDDu;
+    p[1] = (uint8_t)(0x40u | (3u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
