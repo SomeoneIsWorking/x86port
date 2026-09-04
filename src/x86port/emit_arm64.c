@@ -145,7 +145,22 @@ static void materialize_address(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base,
   uint32_t mag;
   int neg;
   if (disp == 0) {
-    x86p_a64_emit_mov_x_x(e, dst, base);
+    /*
+     * NOT x86p_a64_emit_mov_x_x (ORR dst,XZR,base): ORR's register field
+     * treats 31 as XZR unconditionally, so "mov dst,SP" via that alias
+     * silently produces dst=0 instead of the stack pointer -- SP's dual
+     * identity (kA64Reg's own header comment) applies to a load/store base
+     * or an ADD/SUB immediate operand, NOT to a plain register-register ALU
+     * instruction. ADD dst,base,#0 is the one instruction class that reads
+     * 31 as SP here, so it is the only correct way to copy a possibly-SP
+     * base with zero displacement. Measured: every `lea64(dst, kA64Sp, 0)`
+     * call (the x87 backend's scratch-slot address, its only SP-based
+     * caller) silently materialized dst=0 and corrupted every long-double
+     * marshaled through it, with no compile-time or encoder-test signal --
+     * task 2's bitfield-decoder suite checked each instruction's bit layout
+     * in isolation, never this address-of-SP case at runtime.
+     */
+    add_sub_imm(e, 1, 0, dst, base, 0u, 0);
     return;
   }
   neg = disp < 0;

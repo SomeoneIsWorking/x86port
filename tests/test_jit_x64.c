@@ -37,6 +37,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#endif
+
 static int g_checks;
 static int g_failed;
 static int g_test_failed;
@@ -133,10 +137,56 @@ static X86pMem guest_mem(void) {
  * translator takes a caller-owned buffer and never publishes it itself, so this
  * test exercises the same translate() a real caller would; wiring it to a
  * JcCodeRegion changes the allocation and nothing else.
+ *
+ * On Apple Silicon a plain RWX mmap is refused outright (hardware W^X): the
+ * mapping needs MAP_JIT, and even then the calling thread starts execute-only
+ * and must lift its own write protection before the translator can write into
+ * it -- see jit-common's code_memory.cpp for the same two calls, done there
+ * for the same reason.
  */
 static void *code_alloc(size_t n) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  void *p = mmap(NULL, n, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT, -1, 0);
+  if (p != MAP_FAILED) {
+    pthread_jit_write_protect_np(0);
+  }
+#else
   void *p = mmap(NULL, n, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
   return (p == MAP_FAILED) ? NULL : p;
+}
+
+/*
+ * A MAP_JIT page is writable XOR executable, per calling thread, never both:
+ * lift write protection before x86p_jit_translate writes into `code`, restore
+ * it before x86p_jit_enter fetches instructions from it, every round -- doing
+ * this once at allocation is not enough, because the second round's translate
+ * would then be writing into a page this same thread just made execute-only.
+ * A no-op everywhere this trick does not apply.
+ */
+static void code_writable(void) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(0);
+#endif
+}
+
+/*
+ * Restore execute permission, AND tell the instruction fetch unit the bytes
+ * underneath it changed. AArch64's instruction and data caches are NOT
+ * coherent with each other: writing fresh bytes through the data path (every
+ * store x86p_jit_translate makes) leaves them invisible to instruction fetch
+ * until something explicit says otherwise, so without this call the CPU can
+ * -- and, measured here, does -- execute a STALE previous round's code that
+ * happened to still be resident in i-cache at this same address, rather than
+ * the block just translated. jit-common's code_memory.cpp does the same two
+ * calls for the same reason on the product path; this is the test harness's
+ * own unmanaged buffer, so it repeats them here.
+ */
+static void code_executable(void *code, size_t bytes) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(1);
+#endif
+  __builtin___clear_cache((char *)code, (char *)code + bytes);
 }
 
 /* ---- guest program generation -------------------------------------------- */
@@ -1035,6 +1085,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
+    code_writable();
     st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       /* The generator produced a shape this backend refuses BY NAME -- a
@@ -1125,6 +1176,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     interp_st = run_interp(&ci, &mem, blk.insns);
     memcpy(g_after_interp, g_guest, GUEST_SIZE);
     memcpy(g_guest, g_before, GUEST_SIZE);
+    code_executable(code, blk.host_bytes);
     jit_exit = x86p_jit_enter(&blk, &cj);
 
     /*
@@ -1341,6 +1393,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
+    code_writable();
     st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       g_refused++;
@@ -1368,6 +1421,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     interp_st = run_interp(&ci, &mem, want);
     memcpy(g_after_interp, g_guest, GUEST_SIZE);
     memcpy(g_guest, g_before, GUEST_SIZE);
+    code_executable(code, blk.host_bytes);
     jit_exit = x86p_jit_enter(&blk, &cj);
     g_single_compares++;
     g_checks++;
@@ -1422,6 +1476,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
+  code_writable();
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
@@ -1451,6 +1506,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   g_guest[6] = 0x53u;
   g_guest[7] = 0xC0u;
 
+  code_writable();
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
   if (st != kX86pJitOk) {
@@ -1462,6 +1518,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   CHECK(blk.stopper != NULL && strcmp(blk.stopper, "RCPPS") == 0);
 
   seed_cpu(&cpu, 99u);
+  code_executable(code, blk.host_bytes);
   exit = x86p_jit_enter(&blk, &cpu);
   CHECK(exit == kX86pJitExitUnsupported);
   CHECK(cpu.reg[kX86pEax] == 0x11223344u);
@@ -1492,6 +1549,7 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   /* A buffer too small for even the prologue plus one instruction. The result
      must be a refusal -- a truncated block would end without a RET. */
   reason[0] = '\0';
+  code_writable();
   st = x86p_jit_translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOutOfSpace || st == kX86pJitUnsupportedAtEntry);
   CHECK(reason[0] != '\0');
@@ -1510,6 +1568,7 @@ static void test_fetch_fault_at_an_unmapped_eip(void) {
     return;
   }
   reason[0] = '\0';
+  code_writable();
   st = x86p_jit_translate(&mem, GUEST_BASE + GUEST_SIZE + 0x1000u, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitFetchFault);
   CHECK(reason[0] != '\0');

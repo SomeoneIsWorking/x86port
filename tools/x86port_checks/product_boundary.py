@@ -34,8 +34,11 @@ def global_symbols(nm: Path, archive: Path, *, defined_only: bool) -> set[str]:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
         raise RuntimeError(f"{nm} could not inspect {archive}: {detail}")
+    # Mach-O (Darwin) nm prefixes every C symbol with a leading underscore;
+    # ELF (Linux) nm does not. Strip it so the same symbol names match on
+    # both, rather than tuning this check to one platform's convention.
     return {
-        line.split()[-1]
+        line.split()[-1].removeprefix("_")
         for line in result.stdout.splitlines()
         if line.split() and not line.rstrip().endswith(":")
     }
