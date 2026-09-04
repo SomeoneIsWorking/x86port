@@ -121,6 +121,15 @@ int x87_constant_is_emittable(const X86pInsn *insn) {
   }
 }
 
+/* FNSTSW AX is the only register form. The decoder exposes the architecturally
+   fixed AX as an explicit 16-bit operand; the memory form remains outside this
+   predicate. */
+int x87_status_ax_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  return insn->x87 == (uint8_t)kX86pX87InsnStoreStatus && insn->operands == 1 && o0->kind == kX86pOperandReg &&
+         o0->reg == kX86pEax && o0->size == 2;
+}
+
 /* ---- shared emission helpers ----------------------------------------- */
 
 /* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
@@ -138,6 +147,17 @@ void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
   x87_lea_self(c->e);
   x86p_emit_mov_r32_imm32(c->e, kX64Rsi, insn->x87);
   x87_call(c->e, (const void *)&x86p_x87_push_constant);
+}
+
+/* FNSTSW AX. x86p_x87_status is the one owner that replaces any stale TOP
+   bits in the stored status field with the live stack pointer. A 16-bit store
+   into the guest EAX slot preserves its upper half exactly like
+   x86p_reg_write(..., width=2), and none of this materialises or changes the
+   separate integer EFLAGS model. */
+void emit_x87_status_ax(BlockCtx *c) {
+  x87_lea_self(c->e);
+  x87_call(c->e, (const void *)&x86p_x87_status);
+  x86p_emit_store16_reg(c->e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rax);
 }
 
 /* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The

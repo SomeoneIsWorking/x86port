@@ -126,7 +126,8 @@ static int flags_equal(const X86pFlags *left, const X86pFlags *right) {
          left->w == right->w && left->carry_in == right->carry_in;
 }
 
-static void compare_one_success(Fixture *fixture, X86pCpu initial, uint32_t instruction_len, int flags_unchanged) {
+static int compare_one_success_result(
+    Fixture *fixture, X86pCpu initial, uint32_t instruction_len, int flags_unchanged, X86pCpu *result) {
   X86pCpu oracle = initial;
   X86pCpu jit = initial;
   X86pFlags flags_before = initial.flags;
@@ -144,7 +145,7 @@ static void compare_one_success(Fixture *fixture, X86pCpu initial, uint32_t inst
   CHECK(translation == kX86pJitOk);
   if (translation != kX86pJitOk) {
     printf("  translation: %s\n", reason);
-    return;
+    return 0;
   }
   CHECK(block.insns == 1u);
   CHECK(block.guest_len == instruction_len);
@@ -156,6 +157,14 @@ static void compare_one_success(Fixture *fixture, X86pCpu initial, uint32_t inst
   if (flags_unchanged) {
     CHECK(flags_equal(&jit.flags, &flags_before));
   }
+  if (result) {
+    *result = jit;
+  }
+  return 1;
+}
+
+static void compare_one_success(Fixture *fixture, X86pCpu initial, uint32_t instruction_len, int flags_unchanged) {
+  (void)compare_one_success_result(fixture, initial, instruction_len, flags_unchanged, NULL);
 }
 
 static void
@@ -790,6 +799,52 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   CHECK(strstr(reason, "FCOMP") != NULL);
 }
 
+static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixture) {
+  X86pCpu initial;
+  X86pCpu result;
+  X86pInsn decoded;
+  X86pJitBlock block;
+  X86pJitStatus translation;
+  char reason[256] = {0};
+  unsigned top;
+
+  for (top = 0u; top < X86P_X87_REGS; top++) {
+    uint16_t expected;
+
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0xDFu;
+    fixture->guest[1] = 0xE0u; /* FNSTSW AX: the X-Men 2 frontier encoding. */
+    append_stopper(fixture->guest + 2u);
+    CHECK(x86p_decode(fixture->guest, 2u, &decoded) == 2u);
+    CHECK(decoded.operands == 1);
+    CHECK(decoded.operand[0].kind == kX86pOperandReg);
+    CHECK(decoded.operand[0].reg == kX86pEax);
+    CHECK(decoded.operand[0].size == 2);
+    initial = explicit_cpu(top & 31u);
+    initial.reg[kX86pEax] = UINT32_C(0xA5A50000) | top;
+    initial.x87.status = (uint16_t)(X86P_X87_IE | X86P_X87_ZE | X86P_X87_SF | X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 |
+                                    X86P_X87_C3 | (7u << X86P_X87_TOP_SHIFT));
+    initial.x87.top = (uint8_t)top;
+    result = initial;
+    expected = x86p_x87_status(&initial.x87);
+    if (compare_one_success_result(fixture, initial, 2u, 1, &result)) {
+      X86pCpu x87_expected = result;
+      CHECK(result.reg[kX86pEax] == (UINT32_C(0xA5A50000) | expected));
+      x87_expected.x87 = initial.x87;
+      CHECK(x86p_cpu_diff(&x87_expected, &result, NULL, NULL) == 0u);
+    }
+  }
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xDDu;
+  fixture->guest[1] = 0x3Du; /* FNSTSW word [disp32]: not part of the AX milestone. */
+  put_u32(fixture->guest + 2u, kGuestBase + kDataOffset);
+  append_stopper(fixture->guest + 6u);
+  translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
+  CHECK(translation == kX86pJitUnsupportedAtEntry);
+  CHECK(strstr(reason, "FNSTSW") != NULL);
+}
+
 int main(void) {
   Fixture fixture;
 
@@ -813,6 +868,7 @@ int main(void) {
   test_xchg32_register_memory_alias_and_fault(&fixture);
   test_x87_constant_loads_and_full_stack(&fixture);
   test_x87_memory_compare_status_pop_nan_and_fault(&fixture);
+  test_x87_store_status_ax_projection_and_memory_refusal(&fixture);
   jc_code_region_destroy(&fixture.code);
   printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87\n",
          g_checks,

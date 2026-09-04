@@ -75,9 +75,11 @@ CDQ sign edges, MUL r/m32 widening and flag behavior, unsigned and signed DIV
 r/m32 faults, two- and three-operand
 IMUL result and flag behavior, REP string progress and termination, XCHG r/m32
 ordering, all seven x87 constant loads including stack overflow, and memory-form
-FCOM/FCOMP status, NaN, pop, empty-stack, and fault behavior. Gap: title-required
-emitter, exception, and interrupt coverage is incomplete, and the backend has
-not yet passed representative consumer gameplay conformance.
+FCOM/FCOMP status, NaN, pop, empty-stack, and fault behavior. FNSTSW AX is
+differentially covered across all TOP values and preserves upper EAX, integer
+flags, and x87 state. Gap: title-required emitter, exception, and interrupt
+coverage is incomplete, and the backend has not yet passed representative
+consumer gameplay conformance.
 
 ### S005 — product execution selection and fallback
 

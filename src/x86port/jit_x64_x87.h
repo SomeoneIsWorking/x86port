@@ -8,8 +8,9 @@
  * the shared x86p_x87_* semantic helpers, so the status word, tags and TOP stay
  * that module's business and the test oracle can check operand plumbing
  * independently. Integer-source forms (FILD/FIST/FICOM...), FLD m80,
- * register/implicit compares and FLDCW/FNSTSW are refused until they have
- * native emitters.
+ * register/implicit compares, FLDCW and memory-form FNSTSW are refused until
+ * they have native emitters. FNSTSW AX is emitted through the canonical status
+ * accessor.
  */
 #ifndef X86PORT_JIT_X64_X87_H
 #define X86PORT_JIT_X64_X87_H
@@ -25,6 +26,7 @@ int x87_compare_mem_is_emittable(const X86pInsn *insn);
 int x87_store_reg_is_emittable(const X86pInsn *insn);
 int x87_store_mem_is_emittable(const X86pInsn *insn);
 int x87_constant_is_emittable(const X86pInsn *insn);
+int x87_status_ax_is_emittable(const X86pInsn *insn);
 
 /* Emit one X87 instruction. The caller has already checked the matching
    predicate. None of these write EFLAGS. */
@@ -34,5 +36,6 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn);
 void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_constant(BlockCtx *c, const X86pInsn *insn);
+void emit_x87_status_ax(BlockCtx *c);
 
 #endif /* X86PORT_JIT_X64_X87_H */

@@ -362,7 +362,8 @@ static int can_emit(const X86pInsn *insn) {
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
     return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
-           x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn);
+           x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) ||
+           x87_status_ax_is_emittable(insn);
   default:
     return 0;
   }
@@ -1731,6 +1732,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_x87_store_mem(&ctx, &insn, pc);
       } else if (x87_constant_is_emittable(&insn)) {
         emit_x87_constant(&ctx, &insn);
+      } else if (x87_status_ax_is_emittable(&insn)) {
+        emit_x87_status_ax(&ctx);
       } else {
         emit_x87_load(&ctx, &insn, pc);
       }
