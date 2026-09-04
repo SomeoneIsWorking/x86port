@@ -38,6 +38,19 @@ product target and verify its actual gameplay link and selector.
 | S014 | X-Men 2 consumes the canonical JIT-only product boundary and passes representative gameplay conformance | partial | S005, S008, S009 | G001, G002, G004 |
 | S015 | Little Fighter 2 consumes the canonical JIT-only product boundary and passes representative gameplay conformance | missing | S005, S008, S009 | G001, G002, G004 |
 
+## Host CI support
+
+The CI workflow runs the full asset-free CMake test graph against the pinned
+`jit-common` checkout, including product/oracle link inspection and synthetic
+JIT execution:
+
+| Host | State | Evidence or exact gap |
+| --- | --- | --- |
+| Linux x86-64 | supported | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. |
+| Windows x86-64 | unsupported | The current top-level CMake graph unconditionally links the POSIX `m` library into `x86port_runtime`; Windows has no such library, so the native x64 product cannot link and a Windows job would fail before exercising it. Portability must be fixed at that owner before adding a Windows job. |
+| macOS x86-64 | supported | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the complete CTest graph against the x64 emitter. |
+| macOS arm64 / Android arm64-v8a | unsupported | `src/x86port` only emits x86-64 host code. The missing ARM64 backend is S007; bounded fallback cannot qualify a host backend, so no configure-only or interpreter-only job is published. |
+
 ## Evidence and exact gaps
 
 ### S001 — runtime decoder
