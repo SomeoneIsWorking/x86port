@@ -6,18 +6,16 @@
  *
  * WHAT IS INLINED AND WHAT IS CALLED, AND WHY THAT SPLIT.
  * Data movement is emitted inline: a guest register is a slot in X86pCpu, so
- * reading one is a load and writing one is a store. Arithmetic is NOT emitted
- * inline; it calls x86p_alu, the same function the interpreter calls.
+ * reading one is a load and writing one is a store. Some arithmetic calls the
+ * narrow x86p_alu semantic owner rather than duplicating its flag rules.
  *
  * That is a deliberate choice and not a placeholder for "real" code generation.
  * This framework's flags are lazy -- (kind, a, b, r, w) plus a carry_in derived
- * from the PREVIOUS flag state -- and the interpreter is the declared authority
- * on what an instruction means (S043). An emitter that reimplemented the flag
+ * from the PREVIOUS flag state. An emitter that reimplemented the flag
  * derivation inline would be a SECOND authority on it, free to disagree, and
  * the disagreement would surface as a branch taken differently thousands of
  * instructions later. Calling the one implementation makes the two engines
- * identical by construction rather than by agreement, which is exactly what
- * makes the differential test below meaningful instead of circular.
+ * identical by construction rather than by agreement.
  *
  * The win over interpreting is still real and is the whole point: decode,
  * operand resolution, and the dispatch switch happen ONCE per block at
@@ -26,11 +24,10 @@
  * arithmetic with native host flags is a later, measurable optimisation --
  * and it is safe to attempt precisely because the differential exists first.
  *
- * A REFUSAL IS NAMED AND IS NOT A FAILURE. Most of x86-32 is not translatable
+ * A REFUSAL IS NAMED. Most of x86-32 is not translatable
  * yet. An instruction this build cannot emit ends the block cleanly, with the
- * guest EIP left pointing AT it, so the caller can hand it to the interpreter
- * and translate again from the next address. That is the normal mixed-engine
- * arrangement, not an error path -- but it is COUNTED and the instruction is
+ * guest EIP left pointing AT it, and the product dispatcher returns an
+ * unsupported status. It never enters an interpreter. The refusal is COUNTED and the instruction is
  * NAMED, because "the JIT ran the block" and "the JIT emitted a prologue,
  * refused the first instruction, and returned" must never look alike.
  */
@@ -54,23 +51,21 @@ typedef enum X86pJitExit {
   /*
    * A guest memory access was outside the mapping. EIP is left AT the faulting
    * instruction, not past it, so the caller can deliver the fault or hand the
-   * instruction to the interpreter. Distinct from Unsupported because "this
-   * build cannot translate it" and "the guest did something invalid" want
-   * opposite responses.
+   * instruction. Distinct from Unsupported because "this build cannot
+   * translate it" and "the guest did something invalid" are different
+   * outcomes.
    */
   kX86pJitExitMemoryFault,
   /*
-   * #DE, raised inside a helper-executed instruction. EIP is left AT it, as
-   * for a memory fault.
+   * #DE raised by emitted code or a narrow semantic helper. EIP is left AT it,
+   * as for a memory fault.
    *
    * A separate exit rather than folding into MemoryFault: the guest must
    * RECEIVE a divide error, and a caller that could not tell the two apart
    * would deliver a page fault for a division by zero.
    */
   kX86pJitExitDivideError,
-  /* Not gaps: outcomes. See exec.h -- an INT3 in a game binary usually means
-     execution reached alignment padding, and saying so is more useful than
-     saying the translator gave up. */
+  /* Architectural outcomes produced by emitted instructions. */
   kX86pJitExitInterrupt,
   kX86pJitExitProtectionFault,
   kX86pJitExitBoundRange,
@@ -117,7 +112,7 @@ typedef struct X86pJitBlock {
   uint32_t insns;     /* guest instructions translated. ZERO IS NEVER OK. */
   size_t host_bytes;  /* host bytes written */
   /* Whether the block ends in a translated branch. A caller can tell from this
-     that the block has a known successor and needs no interpreter step, and a
+     that the block has a known successor and needs no dispatcher refusal, and a
      TEST can tell that its branch path ran at all -- without it, a suite whose
      generator stopped producing branches would keep reporting success. */
   int ends_in_branch;
@@ -137,16 +132,6 @@ typedef struct X86pJitBlock {
    * information it had.
    */
   unsigned flag_helper_calls;
-  /*
-   * How many instructions in the block were executed by calling the
-   * interpreter rather than emitted as host code.
-   *
-   * Published because it is the difference between a JIT and a threaded
-   * interpreter, and guest state cannot see it: routing EVERY instruction
-   * through the helper would be entirely correct and pass every differential.
-   * A test that did not watch this number could not tell the two apart.
-   */
-  unsigned helper_calls;
 } X86pJitBlock;
 
 /*
@@ -223,30 +208,10 @@ int x86p_jit_available(void);
  */
 int x86p_jit_can_translate(const X86pInsn *insn);
 
-/*
- * Would this instruction become HOST CODE, as opposed to a call into the
- * interpreter?
- *
- * The distinction x86p_jit_can_translate deliberately hides, exported because
- * two callers need it and neither should reimplement it. The corpus tool wants
- * the ranked list of families still worth an emitter -- which is now a
- * performance queue rather than a coverage one. The differential wants to
- * bound the carry-in helper calls in a block, and a helper-executed
- * instruction writes flags this build did not choose, so it cannot derive the
- * next one's carry-in; taking that count from the block itself would be the
- * block grading its own work.
- */
+/* Equivalent to x86p_jit_can_translate. Retained as the explicit corpus-query
+ * spelling: every translated instruction is host code or a narrow semantic
+ * helper, never a guest-instruction dispatcher. */
 int x86p_jit_emits_natively(const X86pInsn *insn);
-
-/*
- * Ranked tally of which instruction kinds the translator handed to the
- * interpreter, by TRANSLATION count (a block is counted once however often it
- * runs -- read this beside the execution-weighted jit.profile). A work list for
- * the emitter, not a correctness signal. `report` writes at most `len` bytes
- * including the NUL; `reset` zeroes it (call once at engine start).
- */
-void x86p_jit_helper_histogram_reset(void);
-void x86p_jit_helper_histogram_report(char *buf, size_t len);
 
 #ifdef __cplusplus
 } /* extern "C" */

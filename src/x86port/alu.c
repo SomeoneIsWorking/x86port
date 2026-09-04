@@ -1,8 +1,17 @@
 /* alu.c -- see alu.h for why result and flags are one call. */
 #include "alu.h"
+#include "diagnostic.h"
 
-#include <stdio.h>
-#include <stdlib.h>
+uint32_t x86p_sign_extend(uint32_t value, int from_bytes) {
+  switch (from_bytes) {
+  case 1:
+    return (uint32_t)(int32_t)(int8_t)(value & 0xFFu);
+  case 2:
+    return (uint32_t)(int32_t)(int16_t)(value & 0xFFFFu);
+  default:
+    return value;
+  }
+}
 
 static const char *kOpNames[] = {
     "ADD", "OR", "ADC", "SBB", "AND", "SUB", "XOR", "CMP", "TEST", "SHL", "SHR", "SAR", "ROL", "ROR", "RCL", "RCR"};
@@ -27,8 +36,7 @@ const char *x86p_alu_unary_name(X86pAluUnOp op) {
 
 static void require_width(int w, const char *who) {
   if (w != 1 && w != 2 && w != 4) {
-    fprintf(stderr, "%s: operand width %d is not 1, 2 or 4\n", who, w);
-    abort();
+    x86p_diagnostic_fatalf("alu", "%s: operand width %d is not 1, 2 or 4", who, w);
   }
 }
 
@@ -54,8 +62,7 @@ uint32_t x86p_alu(X86pAluOp op, uint32_t a, uint32_t b, int w, X86pFlags *f) {
   uint32_t m, r, count, nbits;
   require_width(w, "x86p_alu");
   if (!f) {
-    fprintf(stderr, "x86p_alu: no flag state; every operation here writes flags\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu: no flag state; every operation here writes flags");
   }
   m = x86p_width_mask(w);
   nbits = bits(w);
@@ -192,19 +199,15 @@ uint32_t x86p_alu(X86pAluOp op, uint32_t a, uint32_t b, int w, X86pFlags *f) {
   case kX86pAluOpCount:
     break;
   }
-  fprintf(stderr,
-          "x86p_alu: operation %u is not one of the %u this build knows\n",
-          (unsigned)op,
-          (unsigned)kX86pAluOpCount);
-  abort();
+  x86p_diagnostic_fatalf(
+      "alu", "x86p_alu: operation %u is not one of the %u this build knows", (unsigned)op, (unsigned)kX86pAluOpCount);
 }
 
 uint32_t x86p_alu_unary(X86pAluUnOp op, uint32_t a, int w, X86pFlags *f) {
   uint32_t m, r;
   require_width(w, "x86p_alu_unary");
   if (!f) {
-    fprintf(stderr, "x86p_alu_unary: no flag state\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu_unary: no flag state");
   }
   m = x86p_width_mask(w);
   a &= m;
@@ -230,11 +233,10 @@ uint32_t x86p_alu_unary(X86pAluUnOp op, uint32_t a, int w, X86pFlags *f) {
   case kX86pAluUnOpCount:
     break;
   }
-  fprintf(stderr,
-          "x86p_alu_unary: operation %u is not one of the %u this build knows\n",
-          (unsigned)op,
-          (unsigned)kX86pAluUnOpCount);
-  abort();
+  x86p_diagnostic_fatalf("alu",
+                         "x86p_alu_unary: operation %u is not one of the %u this build knows",
+                         (unsigned)op,
+                         (unsigned)kX86pAluUnOpCount);
 }
 
 /*
@@ -259,8 +261,7 @@ void x86p_alu_mul(uint32_t a, uint32_t b, int w, uint32_t *lo, uint32_t *hi, X86
   uint32_t m;
   require_width(w, "x86p_alu_mul");
   if (!lo || !hi || !f) {
-    fprintf(stderr, "x86p_alu_mul: lo, hi and flags are all required outputs\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu_mul: lo, hi and flags are all required outputs");
   }
   m = x86p_width_mask(w);
   full = (uint64_t)(a & m) * (uint64_t)(b & m);
@@ -276,8 +277,7 @@ void x86p_alu_imul(uint32_t a, uint32_t b, int w, uint32_t *lo, uint32_t *hi, X8
   uint32_t m, nb;
   require_width(w, "x86p_alu_imul");
   if (!lo || !hi || !f) {
-    fprintf(stderr, "x86p_alu_imul: lo, hi and flags are all required outputs\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu_imul: lo, hi and flags are all required outputs");
   }
   m = x86p_width_mask(w);
   nb = bits(w);
@@ -304,8 +304,7 @@ int x86p_alu_div(uint32_t hi, uint32_t lo, uint32_t d, int w, uint32_t *quot, ui
   uint64_t num, q;
   require_width(w, "x86p_alu_div");
   if (!quot || !rem || !f) {
-    fprintf(stderr, "x86p_alu_div: quot, rem and flags are all required outputs\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu_div: quot, rem and flags are all required outputs");
   }
   m = x86p_width_mask(w);
   d &= m;
@@ -336,8 +335,7 @@ int x86p_alu_idiv(uint32_t hi, uint32_t lo, uint32_t d, int w, uint32_t *quot, u
   int64_t qmin, qmax;
   require_width(w, "x86p_alu_idiv");
   if (!quot || !rem || !f) {
-    fprintf(stderr, "x86p_alu_idiv: quot, rem and flags are all required outputs\n");
-    abort();
+    x86p_diagnostic_fatalf("alu", "x86p_alu_idiv: quot, rem and flags are all required outputs");
   }
   m = x86p_width_mask(w);
   nb = bits(w);
@@ -353,6 +351,11 @@ int x86p_alu_idiv(uint32_t hi, uint32_t lo, uint32_t d, int w, uint32_t *quot, u
     if (num & sign_bit) {
       num -= (int64_t)1 << (nb * 2);
     }
+  }
+  /* C cannot represent INT64_MIN / -1 and leaves it undefined, while the
+     guest architecture requires a precise #DE. Refuse before host division. */
+  if (num == INT64_MIN && sd == -1) {
+    return 0;
   }
   q = num / sd; /* C truncates toward zero, which is what IDIV does */
   r = num % sd;

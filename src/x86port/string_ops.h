@@ -45,6 +45,10 @@ typedef enum X86pStringStatus {
  */
 X86pStringStatus x86p_string_execute(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr);
 
+/* Translation-time shape gate shared with the runtime helper, so the JIT
+   cannot admit a prefix/operation combination the semantic owner refuses. */
+int x86p_string_is_supported(X86pStringOp op, X86pRepKind rep, int width);
+
 const char *x86p_string_status_name(X86pStringStatus s);
 const char *x86p_string_op_name(X86pStringOp op);
 

@@ -370,17 +370,13 @@ static void execute(Ctx *c) {
   }
 
   case kX86pX87InsnConstZero:
-    x86p_x87_push(f, 0.0L);
-    return;
   case kX86pX87InsnConstOne:
-    x86p_x87_push(f, 1.0L);
-    return;
   case kX86pX87InsnConstPi:
-    /* The hardware's own 80-bit constant, written to the full 64-bit
-       significand. A `double`-precision literal here would be a different
-       number in the last eleven bits, and every angle computed from it would
-       drift. */
-    x86p_x87_push(f, 3.14159265358979323846264338327950288L);
+  case kX86pX87InsnConstLog2E:
+  case kX86pX87InsnConstLog2T:
+  case kX86pX87InsnConstLn2:
+  case kX86pX87InsnConstLog102:
+    (void)x86p_x87_push_constant(f, (X86pX87Insn)in->x87);
     return;
 
   case kX86pX87InsnStoreStatus: {
@@ -438,25 +434,6 @@ static void execute(Ctx *c) {
 
   case kX86pX87InsnInit:
     x86p_x87_reset(f);
-    return;
-
-  /*
-   * The four remaining hardware constants. Written to the full 64-bit
-   * significand for the same reason FLDPI is: a `double` literal is a
-   * different number in the last eleven bits, and everything computed from it
-   * drifts.
-   */
-  case kX86pX87InsnConstLog2E:
-    x86p_x87_push(f, 1.44269504088896340735992468100189214L);
-    return;
-  case kX86pX87InsnConstLog2T:
-    x86p_x87_push(f, 3.32192809488736234787031942948939018L);
-    return;
-  case kX86pX87InsnConstLn2:
-    x86p_x87_push(f, 0.693147180559945309417232121458176568L);
-    return;
-  case kX86pX87InsnConstLog102:
-    x86p_x87_push(f, 0.301029995663981195213738894724493027L);
     return;
 
   case kX86pX87InsnCmov: {

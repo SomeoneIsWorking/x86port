@@ -64,19 +64,13 @@ typedef struct MemPlan {
  */
 typedef struct BlockCtx {
   X86pEmit *e;
+  const X86pMem *mem;
   unsigned flag_helper_calls;
   MemPlan plan;
   X86pEmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
-  /*
-   * Sites where a helper reported a non-Ok status. They go to a DIFFERENT stub
-   * from the bounds-check faults: that stub decides the exit code and the guest
-   * EIP itself, whereas the helper has already set both.
-   */
-  X86pEmitSite helper_faults[MAX_INSNS];
-  unsigned nhelper_faults;
-  unsigned helper_calls;
-  const X86pMem *mem;
+  X86pEmitSite divide_faults[MAX_INSNS];
+  unsigned ndivide_faults;
 } BlockCtx;
 
 /*

@@ -91,6 +91,24 @@ int x87_store_mem_is_emittable(const X86pInsn *insn) {
          (o0->size == 4 || o0->size == 8) && !o0->addr16;
 }
 
+int x87_constant_is_emittable(const X86pInsn *insn) {
+  if (insn->operands != 0) {
+    return 0;
+  }
+  switch ((X86pX87Insn)insn->x87) {
+  case kX86pX87InsnConstZero:
+  case kX86pX87InsnConstOne:
+  case kX86pX87InsnConstPi:
+  case kX86pX87InsnConstLog2E:
+  case kX86pX87InsnConstLog2T:
+  case kX86pX87InsnConstLn2:
+  case kX86pX87InsnConstLog102:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
 /* ---- shared emission helpers ----------------------------------------- */
 
 /* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
@@ -102,6 +120,12 @@ static void x87_lea_self(X86pEmit *e) {
 static void x87_call(X86pEmit *e, const void *fn) {
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)fn);
   x86p_emit_call_r64(e, kX64Rax);
+}
+
+void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
+  x87_lea_self(c->e);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, insn->x87);
+  x87_call(c->e, (const void *)&x86p_x87_push_constant);
 }
 
 /* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The

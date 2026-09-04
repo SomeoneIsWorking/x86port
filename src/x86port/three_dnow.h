@@ -2,8 +2,8 @@
  * three_dnow.h -- 3DNow! semantics, as pure functions over a register pair.
  *
  * WHY THIS EXISTS, AND WHY IT IS FIRST. Measured on pc/xmen2 (jit-common I004):
- * the static translator left 8,234 instructions untranslated across its emitted
- * corpus, and 7,410 of them -- 90.0% -- are 3DNow!. They arrive as exactly 2,440
+ * 8,234 instructions were unsupported across the coverage corpus, and 7,410 of
+ * them -- 90.0% -- are 3DNow!. They arrive as exactly 2,440
  * sites each in libIGGfx_003, cgD3D8_000 and XMen2_011, which is one
  * 3DNow!-compiled Alchemy math library statically linked three times rather than
  * three separate problems. Twenty opcodes cover every one of those sites.

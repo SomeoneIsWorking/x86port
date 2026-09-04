@@ -2,13 +2,11 @@
  * alu.h -- the integer ALU: what an operation PRODUCES and what it does to the
  * flags, decided together, in one place.
  *
- * WHY THEY ARE ONE CALL. `pc/xmen2`'s substrate computes the result at the call
- * site and then records the flags with a separate `SETFLAGS(C, FK_..., ...)`
- * macro. That is two facts about one instruction, kept in two places, at 400,614
- * sites -- and nothing checks that the kind passed to the second matches the
- * arithmetic done in the first. Pairing SUB's result with FK_ADD is a silent,
- * correct-looking line. Here the operation owns both, so the pairing cannot be
- * got wrong by a caller and does not need to be reviewed at every site.
+ * WHY THEY ARE ONE CALL. Computing a result and recording flags separately is
+ * two facts about one instruction, and nothing then guarantees that the flag
+ * kind matches the arithmetic. Pairing SUB's result with ADD flags is a
+ * silent, correct-looking error. Here the operation owns both, so a caller
+ * cannot split the invariant.
  *
  * SCOPE, MEASURED. These 24 operations are 400,614 of the 2,168,629 instructions
  * in the shipped corpus -- 18.47%. They were not chosen by intuition: the
@@ -61,6 +59,12 @@ typedef enum X86pAluOp {
   kX86pAluRcr,
   kX86pAluOpCount /* MUST stay last */
 } X86pAluOp;
+
+/* Widen an integer operand from `from_bytes` bytes with x86 sign extension.
+ * This is shared instruction semantics used by both the runtime translator and
+ * the separately built test oracle; keeping it here prevents either execution
+ * path from carrying its own copy of the rule. */
+uint32_t x86p_sign_extend(uint32_t value, int from_bytes);
 
 typedef enum X86pAluUnOp {
   kX86pAluNot = 0, /* the only one of the four that writes NO flags */

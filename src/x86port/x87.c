@@ -175,6 +175,37 @@ int x86p_x87_push(X86pX87 *f, long double v) {
   return 1;
 }
 
+int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
+  long double value;
+
+  switch (instruction) {
+  case kX86pX87InsnConstZero:
+    value = 0.0L;
+    break;
+  case kX86pX87InsnConstOne:
+    value = 1.0L;
+    break;
+  case kX86pX87InsnConstPi:
+    value = 3.14159265358979323846264338327950288L;
+    break;
+  case kX86pX87InsnConstLog2E:
+    value = 1.44269504088896340735992468100189214L;
+    break;
+  case kX86pX87InsnConstLog2T:
+    value = 3.32192809488736234787031942948939018L;
+    break;
+  case kX86pX87InsnConstLn2:
+    value = 0.693147180559945309417232121458176568L;
+    break;
+  case kX86pX87InsnConstLog102:
+    value = 0.301029995663981195213738894724493027L;
+    break;
+  default:
+    return 0;
+  }
+  return x86p_x87_push(f, value);
+}
+
 int x86p_x87_pop(X86pX87 *f, long double *out) {
   int p;
   if (!f) {

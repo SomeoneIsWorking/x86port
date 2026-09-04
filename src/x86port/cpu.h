@@ -3,12 +3,9 @@
  * to it: touch a register, touch memory.
  *
  * REGISTERS ARE AN ARRAY, INDEXED THE WAY THE ENCODING INDEXES THEM. The
- * substrate has named fields (`uint32_t eax, ecx, edx, ...`) and the generated
- * code names one per site, which works when a translator resolves the register
- * at build time and does not when an interpreter resolves it at run time from
- * three bits of a ModRM byte. The order here IS the encoding order, so a
- * decoded register number is an index and never a lookup table that can drift
- * from the manual.
+ * decoder resolves a register at runtime from three bits of a ModRM byte. The
+ * order here IS the encoding order, so a decoded register number is an index
+ * and never a lookup table that can drift from the manual.
  *
  * THE TWO TRAPS THIS FILE EXISTS TO GET RIGHT:
  *

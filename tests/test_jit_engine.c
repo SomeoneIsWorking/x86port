@@ -2,9 +2,9 @@
  * test_jit_engine.c -- the dispatch loop, against the interpreter.
  *
  * The translator's own differential runs ONE block from a seeded state. This
- * runs a whole program: block boundaries, cache hits on re-entry, the
- * interpreter fallback for an instruction with no emitter, and the code region
- * filling and being flushed. Those are the things the loop owns and the
+ * runs a whole program: block boundaries, cache hits on re-entry, refusal for
+ * an instruction with no emitter, and the code region filling and being
+ * flushed. Those are the things the loop owns and the
  * per-block differential cannot see.
  *
  * The two engines must stop at the same guest point or comparing them means
@@ -86,24 +86,20 @@ static int same_cpu(const X86pCpu *a, const X86pCpu *b) {
 }
 
 /*
- * A loop, so blocks are re-entered and the cache is exercised, containing an
- * instruction with no emitter, so the interpreter fallback is exercised too. A
- * program made only of translatable instructions would leave the fallback path
- * -- the thing that makes partial coverage safe -- entirely untested.
+ * A loop of translatable instructions, so blocks are re-entered and the cache
+ * is exercised without relying on the separately linked oracle at runtime.
  *
  *   0:  B9 0A 00 00 00    MOV ECX, 10
  *   5:  01 C8             ADD EAX, ECX
- *   7:  9C                PUSHFD          <- no emitter; the interpreter owns it
- *   8:  9D                POPFD           <- likewise
- *   9:  81 E9 01 00 00 00 SUB ECX, 1
- *   15: 75 F4             JNZ 5
- *   17: EB FE             JMP 17          <- the agreed stopping point
+ *   7:  81 E9 01 00 00 00 SUB ECX, 1
+ *   13: 75 F6             JNZ 5
+ *   15: EB FE             JMP 15          <- the agreed stopping point
  */
-#define SPIN_OFF 17u
+#define SPIN_OFF 15u
 
 static void write_program(void) {
   static const uint8_t prog[] = {
-      0xB9, 0x0A, 0x00, 0x00, 0x00, 0x01, 0xC8, 0x9C, 0x9D, 0x81, 0xE9, 0x01, 0x00, 0x00, 0x00, 0x75, 0xF4, 0xEB, 0xFE};
+      0xB9, 0x0A, 0x00, 0x00, 0x00, 0x01, 0xC8, 0x81, 0xE9, 0x01, 0x00, 0x00, 0x00, 0x75, 0xF6, 0xEB, 0xFE};
   memset(g_guest, 0x90, sizeof g_guest);
   memcpy(g_guest, prog, sizeof prog);
 }
@@ -164,35 +160,14 @@ static void test_engine_matches_interpreter_on_a_looping_program(void) {
   CHECK(memcmp(g_saved, g_guest, sizeof g_guest) == 0 || 1);
 
   x86p_jit_engine_stats(eng, &st);
-  /* Denominators. A run that translated nothing and interpreted everything
-     ends in exactly the same guest state, so agreement alone is no evidence
-     that this file did anything. */
+  /* Denominators: agreement alone does not prove that translated code ran. */
   CHECK(st.blocks_translated > 0u);
   CHECK(st.blocks_entered > st.blocks_translated); /* the cache was HIT */
-  /*
-   * NO fallback steps, and this is the point of the helper route.
-   *
-   * PUSHFD has no x86-64 emitter here, and it used to END the block: the
-   * engine exited, stepped the interpreter once, and translated again from the
-   * next address -- every time round the loop. It is now executed by a call
-   * from INSIDE the block, so the loop is one block entered repeatedly and the
-   * dispatch loop never steps at all.
-   *
-   * Asserted as an equality rather than a bound: "fell back less often" would
-   * still pass if a future change quietly reintroduced the split.
-   */
-  CHECK(st.fallback_steps == 0u);
-  CHECK(st.fallback_after_block == 0u);
-  /* And the instructions really did go through the helper rather than the
-     block having silently skipped them. */
-  CHECK(st.guest_insns_via_helper > 0u);
   CHECK(st.guest_insns_translated > 0u);
-  printf("    %llu block(s) translated, %llu entered, %llu fallback step(s), %llu via helper, %llu "
-         "byte(s) of code, via %s\n",
+  CHECK(st.translate_refusals == 0u);
+  printf("    %llu block(s) translated, %llu entered, %llu byte(s) of code, via %s\n",
          (unsigned long long)st.blocks_translated,
          (unsigned long long)st.blocks_entered,
-         (unsigned long long)st.fallback_steps,
-         (unsigned long long)st.guest_insns_via_helper,
          (unsigned long long)st.code_bytes_used,
          x86p_jit_engine_mechanism());
 
@@ -624,33 +599,18 @@ static void test_boundary_ends_a_block_before_a_flagged_address(void) {
   x86p_jit_engine_destroy(eng);
 }
 
-/*
- * Verify mode must actually be able to REPORT a divergence, or "0 divergences"
- * over a real run means nothing. A block that writes its own not-yet-executed
- * bytes is the honest case: the JIT runs the translation made from the original
- * bytes, the interpreter runs the modified ones, and the two legitimately
- * disagree until the consumer invalidates. The shadow-run cross-check catches it
- * and stops with kX86pRunVerifyDivergence.
- */
-static void test_verify_reports_an_in_block_self_modification(void) {
+/* The product must refuse an instruction with no emitter without changing the
+ * machine or entering the separately linked oracle. */
+static void test_unsupported_instruction_is_a_product_refusal(void) {
   X86pMem mem = guest_mem();
   X86pCpu cpu;
+  X86pCpu before;
   X86pJitEngine *eng;
+  X86pJitEngineStats stats;
   char reason[256];
 
   memset(g_guest, 0x90, sizeof g_guest);
-  /* MOV byte [GUEST_BASE+8], 0x90  -- turns the second INC below into a NOP */
-  g_guest[0] = 0xC6;
-  g_guest[1] = 0x05;
-  g_guest[2] = (uint8_t)((GUEST_BASE + 8u) & 0xFFu);
-  g_guest[3] = (uint8_t)(((GUEST_BASE + 8u) >> 8) & 0xFFu);
-  g_guest[4] = (uint8_t)(((GUEST_BASE + 8u) >> 16) & 0xFFu);
-  g_guest[5] = (uint8_t)(((GUEST_BASE + 8u) >> 24) & 0xFFu);
-  g_guest[6] = 0x90;
-  g_guest[7] = 0x40; /* INC EAX */
-  g_guest[8] = 0x40; /* INC EAX -- the interpreter sees this become 0x90 */
-  g_guest[9] = 0xEB; /* JMP $ */
-  g_guest[10] = 0xFE;
+  g_guest[0] = 0x9C; /* PUSHFD: shared oracle semantics exist; no x64 emitter */
 
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
@@ -658,18 +618,16 @@ static void test_verify_reports_an_in_block_self_modification(void) {
   if (!eng) {
     return;
   }
-  x86p_jit_engine_set_verify(eng, 1);
-
   seed(&cpu);
-  cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunVerifyDivergence);
-  CHECK(strstr(reason, "verify") != NULL);
-  printf("    verify said: %s\n", reason);
+  before = cpu;
+  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunUnsupported);
+  CHECK(memcmp(&cpu, &before, sizeof cpu) == 0);
+  CHECK(strstr(reason, "PUSHF") != NULL);
+  x86p_jit_engine_stats(eng, &stats);
+  CHECK(stats.blocks_entered == 0u);
+  CHECK(stats.translate_refusals == 1u);
 
   x86p_jit_engine_destroy(eng);
-
-  /* Restore the byte the test scribbled for the next test. */
-  g_guest[8] = 0x40;
 }
 
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
@@ -813,7 +771,7 @@ static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
     return;
   }
 
-  x86p_jit_engine_set_profile(eng, 1, 64u);
+  CHECK(x86p_jit_engine_set_profile(eng, 1, 64u, reason, sizeof reason));
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
   CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
@@ -829,7 +787,7 @@ static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
   CHECK(top[1].guest_eip == GUEST_BASE && top[1].entries == 1u);
 
   /* Turning it off frees the table and detaches it. */
-  x86p_jit_engine_set_profile(eng, 0, 0u);
+  CHECK(x86p_jit_engine_set_profile(eng, 0, 0u, reason, sizeof reason));
   CHECK(x86p_jit_engine_profile(eng) == NULL);
 
   x86p_jit_engine_destroy(eng);
@@ -850,7 +808,7 @@ int main(void) {
   RUN(test_the_same_run_through_dual_mapping);
   RUN(test_intercept_stops_before_block);
   RUN(test_boundary_ends_a_block_before_a_flagged_address);
-  RUN(test_verify_reports_an_in_block_self_modification);
+  RUN(test_unsupported_instruction_is_a_product_refusal);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

@@ -228,6 +228,10 @@ typedef enum X86pX87Insn {
   kX86pX87InsnCount         /* MUST stay last */
 } X86pX87Insn;
 
+/* Push one of FLD1/FLDZ/FLDPI/FLDL2E/FLDL2T/FLDLG2/FLDLN2's exact extended
+   constants. Returns 0 for a non-constant kind or a full stack. */
+int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction);
+
 const char *x86p_x87_insn_name(X86pX87Insn insn);
 
 /*
