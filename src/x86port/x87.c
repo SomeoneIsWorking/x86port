@@ -1,6 +1,7 @@
 /* x87.c -- see x87.h for why ST(i) is a position and not a register. */
 #include "x87.h"
 
+#include <fenv.h>
 #include <float.h>
 #include <math.h>
 #include <string.h>
@@ -430,20 +431,81 @@ long double x86p_x87_from_f64(uint64_t bits) {
   return (long double)v;
 }
 
-uint32_t x86p_x87_to_f32(const X86pX87 *f, long double v) {
-  float out = (float)v;
-  uint32_t bits;
-  (void)f;
-  memcpy(&bits, &out, sizeof bits);
+/*
+ * Narrow an 80-bit value to 32- or 64-bit under the GUEST's rounding control.
+ *
+ * `FST m32` rounds the significand to single the same way FADD rounds a result:
+ * per the RC field of the control word. A plain `(float)v` cast always rounds
+ * to nearest-even -- the store-side twin of the truncation bug
+ * x86p_x87_to_int documents, right only for values that were already
+ * representable. On an x86 host the real FPU does it exactly with the guest
+ * control word loaded and the host's restored straight after, because this
+ * framework runs inside someone else's process.
+ */
+#if defined(X86P_X87_HOST_FPU)
+static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
+  uint16_t saved;
+  if (is64) {
+    double out;
+    uint64_t bits;
+    __asm__ volatile("fnstcw %0\n\tfldcw %3\n\tfldt %2\n\tfstpl %1\n\tfldcw %0"
+                     : "=m"(saved), "=m"(out)
+                     : "m"(v), "m"(cw)
+                     : "st", "memory");
+    memcpy(&bits, &out, sizeof bits);
+    return bits;
+  } else {
+    float out;
+    uint32_t bits;
+    __asm__ volatile("fnstcw %0\n\tfldcw %3\n\tfldt %2\n\tfstps %1\n\tfldcw %0"
+                     : "=m"(saved), "=m"(out)
+                     : "m"(v), "m"(cw)
+                     : "st", "memory");
+    memcpy(&bits, &out, sizeof bits);
+    return bits;
+  }
+}
+#else
+static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
+  /* No x87 unit: steer the standard rounding direction for the narrowing
+     conversion, which C99 Annex F ties to the current mode. Restored after,
+     like the host-FPU path. */
+  const int save = fegetround();
+  uint64_t bits = 0;
+  switch (cw & X86P_X87_RC_MASK) {
+  case X86P_X87_RC_DOWN:
+    fesetround(FE_DOWNWARD);
+    break;
+  case X86P_X87_RC_UP:
+    fesetround(FE_UPWARD);
+    break;
+  case X86P_X87_RC_TRUNCATE:
+    fesetround(FE_TOWARDZERO);
+    break;
+  default:
+    fesetround(FE_TONEAREST);
+    break;
+  }
+  if (is64) {
+    double out = (double)v;
+    memcpy(&bits, &out, sizeof out);
+  } else {
+    float out = (float)v;
+    uint32_t narrow;
+    memcpy(&narrow, &out, sizeof out);
+    bits = narrow;
+  }
+  fesetround(save);
   return bits;
+}
+#endif
+
+uint32_t x86p_x87_to_f32(const X86pX87 *f, long double v) {
+  return (uint32_t)host_narrow(v, f ? f->control : X86P_X87_CW_INIT, 0);
 }
 
 uint64_t x86p_x87_to_f64(const X86pX87 *f, long double v) {
-  double out = (double)v;
-  uint64_t bits;
-  (void)f;
-  memcpy(&bits, &out, sizeof bits);
-  return bits;
+  return host_narrow(v, f ? f->control : X86P_X87_CW_INIT, 1);
 }
 
 /*
