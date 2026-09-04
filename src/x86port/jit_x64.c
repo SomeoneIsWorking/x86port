@@ -341,6 +341,8 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnDiv:
   case kX86pInsnIdiv:
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
+  case kX86pInsnMul:
+    return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
   case kX86pInsnImul:
     return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
            operand_is_reg32(&insn->operand[0]) &&
@@ -1017,6 +1019,32 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
   note_divide_fault(c, failed);
 }
 
+/* The shipping emitter calls the canonical widening-multiply semantics after
+   capturing the explicit operand. Capturing first is essential for MUL EAX
+   and MUL EDX: both implicit destination registers are overwritten. */
+static void jit_mul32(X86pCpu *cpu, uint32_t operand) {
+  uint32_t low = 0u;
+  uint32_t high = 0u;
+
+  x86p_alu_mul(cpu->reg[kX86pEax], operand, 4, &low, &high, &cpu->flags);
+  cpu->reg[kX86pEax] = low;
+  cpu->reg[kX86pEdx] = high;
+}
+
+static void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *operand = &insn->operand[0];
+
+  if (operand->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, operand, insn_eip, 4);
+    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+  } else {
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(operand->reg));
+  }
+  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_mul32);
+  x86p_emit_call_r64(c->e, kX64Rax);
+}
+
 static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
   uint32_t low = 0u;
   uint32_t high = 0u;
@@ -1672,6 +1700,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnIdiv:
       emit_div32(&ctx, &insn, pc, 1);
+      break;
+    case kX86pInsnMul:
+      emit_mul32(&ctx, &insn, pc);
+      /* The semantic owner materialises CF/OF into explicit flags. */
+      last_kind = -1;
       break;
     case kX86pInsnImul:
       emit_imul32(&ctx, &insn, pc);

@@ -27,9 +27,10 @@
  * A REFUSAL IS NAMED. Most of x86-32 is not translatable
  * yet. An instruction this build cannot emit ends the block cleanly, with the
  * guest EIP left pointing AT it, and the product dispatcher returns an
- * unsupported status. It never enters an interpreter. The refusal is COUNTED and the instruction is
- * NAMED, because "the JIT ran the block" and "the JIT emitted a prologue,
- * refused the first instruction, and returned" must never look alike.
+ * unsupported status. This backend never dispatches another engine itself.
+ * The refusal is COUNTED and the instruction is NAMED, because "the JIT ran
+ * the block" and "the JIT emitted a prologue, refused the first instruction,
+ * and returned" must never look alike.
  */
 #ifndef X86PORT_JIT_X64_H
 #define X86PORT_JIT_X64_H

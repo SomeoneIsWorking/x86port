@@ -7,9 +7,12 @@
  * instruction it cannot emit. This does all three, and it is the smallest piece
  * that can execute a guest program end to end.
  *
- * THERE IS NO FALLBACK. A block that stops on an instruction the backend has
- * no emitter for leaves guest EIP on that instruction and returns a named
- * unsupported status. The separately built test oracle is not linked here.
+ * THIS DIRECT ENGINE HAS NO FALLBACK EDGE. A block that stops on an
+ * instruction the backend has no emitter for leaves guest EIP on that
+ * instruction and returns a named unsupported status. A future product
+ * dispatcher may compose the separately linked bounded fallback described in
+ * AGENTS.md; the separately built interpreter-only diagnostic is not linked
+ * here.
  *
  * WHAT IT COUNTS, AND WHY EVERY COUNTER HAS A DENOMINATOR. "The JIT is working"
  * is not observable from a program that finished. A run that translated

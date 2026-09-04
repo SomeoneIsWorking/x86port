@@ -15,8 +15,10 @@ to every consumer.
 
 Success conditions:
 
-- The consumer-facing library and gameplay executable contain the JIT/dynarec
-  path and shared semantic helpers, but no interpreter dispatcher or selector.
+- The consumer-facing library and gameplay executable default to the
+  JIT/dynarec path with no explicit interpreter selector. A bounded fallback
+  may execute only blocks whose compilation was refused or whose emitted code
+  is unsafe, and reports its reason and execution counts.
 - Native overrides are selected by complete runtime image identity and guest
   address, and can call the original guest body through the JIT without
   recursion.
@@ -29,7 +31,9 @@ Success conditions:
 
 Constraints and non-goals:
 
-- An interpreter is permitted only as a separately built test oracle.
+- Interpreter-only execution is permitted only as a separately built diagnostic
+  oracle. A bounded product fallback is not an alternate engine or profiling
+  pass and cannot establish gameplay/performance conformance.
 - `x86port` contains no title-specific addresses, Win32 policy, or presentation
   behavior.
 - Runtime native overrides are intentional product ownership, not an escape
@@ -40,7 +44,8 @@ Contributing state items: S001–S009, S013–S015.
 ## G002 — Every declared host has a real product JIT backend
 
 The same x86-32 product contract works on each released host architecture
-without interpretation as a compatibility fallback.
+with a real dynarec backend; bounded instruction fallback cannot substitute for
+a missing backend.
 
 Why it matters: host support is an executable-code-generation capability, not a
 build-system label.
@@ -53,7 +58,7 @@ Success conditions:
   exceptions, interrupts, invalidation, and bounded exits are verified on each
   host class.
 - An unavailable backend is reported by name and the product refuses to start;
-  it never degrades to the test interpreter.
+  it never degrades to interpreter-only execution.
 - Runtime-populated caches are disposable, identity-bound user data and are not
   required by a fresh install.
 
@@ -75,8 +80,9 @@ Success conditions:
 - The separately linked interpreter oracle and hardware/emulator comparisons
   exercise the shipping decoder, state, memory, and semantic helpers rather
   than test-only copies.
-- JIT differentials stop at the first whole-machine divergence and prove that
-  translated blocks, rather than interpreter fallbacks, executed.
+- JIT differentials stop at the first whole-machine divergence, report fallback
+  blocks/instructions by reason, and prove that the interval used for JIT or
+  performance claims executed translated blocks.
 - Configuration and mutable runtime state are instance-owned so multiple game
   instances cannot corrupt each other.
 

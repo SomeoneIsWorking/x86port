@@ -6,13 +6,12 @@ in `migration.md`.
 
 ## Comparison baseline
 
-The replacement baseline is `shared/recomp-x86`: an offline pipeline that used
-maintainer analysis output to emit large guest C corpora and compile them into
-each title. The intended `x86port` product instead consumes the user's original
-binary and dynamically translates non-native guest code at runtime. The present
-worktree is also compared against the stricter product boundary: interpreter
-code may exist only in separately built tests, not in the framework library a
-game links.
+The replacement baseline is an offline generated-source pipeline that emitted
+large guest C corpora and compiled them into each title. The intended `x86port`
+product instead consumes the user's original binary and dynamically translates
+non-native guest code at runtime. Explicit interpreter-only execution is a
+diagnostic; a product fallback, once implemented, is bounded to refused or
+unsafe JIT blocks and must report its reason and counts.
 
 ## Current focus
 
@@ -27,7 +26,7 @@ product target and verify its actual gameplay link and selector.
 | S002 | CPU state, memory, flags, integer, SIMD, and x87 semantics provide one reusable model | partial | S001 | G001, G003 |
 | S003 | A test-only interpreter oracle exercises the shared decoder and semantic model | verified | S001, S002 | G003 |
 | S004 | The x64 backend translates and executes runtime basic blocks | partial | S001, S002 | G001, G002, G003 |
-| S005 | The product library and gameplay selector contain no interpreter | partial | S002, S004 | G001, G002 |
+| S005 | Dynarec is the product default; bounded fallback is controlled and explicit interpreter mode is diagnostic-only | partial | S002, S004 | G001, G002 |
 | S006 | Static Substrate and offline guest-code generation are absent from x86port interfaces and workflows | verified | — | G001, G004 |
 | S007 | An ARM64 product JIT backend is available | missing | S002 | G001, G002 |
 | S008 | Runtime dispatch supports image-aware native overrides and scoped original calls through the JIT | partial | S004, S005 | G001, G002, G003 |
@@ -70,22 +69,25 @@ uses the oracle archive as a positive and controlled-negative symbol fixture.
 The x64 emitter, block translator, dispatcher, profiling, interception, and
 differential tests exist. Native integer and x87 emission are exercised by the
 whole-machine differential, and unsupported translations return a named
-product refusal without interpreter fallback or dispatcher calls. Focused
+product refusal without entering the test-oracle dispatcher. Focused
 differentials cover all SETcc conditions and byte destinations, LEAVE ordering,
-CDQ sign edges, unsigned and signed DIV r/m32 faults, two- and three-operand
+CDQ sign edges, MUL r/m32 widening and flag behavior, unsigned and signed DIV
+r/m32 faults, two- and three-operand
 IMUL result and flag behavior, REP string progress and termination, XCHG r/m32
 ordering, and all seven x87 constant loads including stack overflow. Gap:
 title-required emitter, exception, and interrupt coverage is incomplete, and
 the backend has not yet passed representative consumer gameplay conformance.
 
-### S005 — interpreter-free product link
+### S005 — product execution selection and fallback
 
-`x86port_runtime` is the concrete JIT-only product target and `x86port` is its
+`x86port_runtime` is the concrete dynarec product target and `x86port` is its
 compatibility-free CMake alias. A product-only fixture executes translated
 blocks and receives a named unsupported refusal; archive inspection proves the
-product neither defines nor references interpreter dispatch/selector symbols.
-Gap: X-Men 2 and Little Fighter 2 have not both passed the same audit against
-their actual gameplay executables and selectors.
+current product neither defines nor references the interpreter-only oracle or
+an explicit engine selector. Gap: the permitted bounded fallback owner,
+typed-entry reasons, counters, and return-to-JIT tests are not implemented, and
+X-Men 2 and Little Fighter 2 have not both passed the selector/fallback audit
+against their actual gameplay executables.
 
 ### S006 — no static execution path
 
@@ -98,8 +100,8 @@ legacy option. Consumer removal is tracked by their own state and S014/S015.
 
 Missing capability: implement and qualify runtime ARM64 code emission,
 executable-memory publication, instruction-cache coherence, ABI transitions,
-invalidation, and product conformance. Interpretation is not an acceptable
-fallback on ARM64.
+invalidation, and product conformance. A bounded instruction fallback cannot
+substitute for a missing ARM64 backend.
 
 ### S008 — native and original dispatch
 
@@ -124,6 +126,9 @@ standalone tools may retain private command-line or environment parsing at
 their own boundary.
 
 ### S011 — diagnostic boundary
+
+Evidence: `src/x86port/diagnostic.{h,c}` and the source-policy and diagnostic
+tests exercise the shipping diagnostic boundary and its negative cases.
 
 `src/x86port/diagnostic.{h,c}` owns the configurable C sink and the default
 standard-error presentation. Semantic owners route violated programming

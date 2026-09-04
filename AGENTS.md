@@ -19,21 +19,24 @@ options.
 - A gameplay product has one guest execution path: native overrides where the
   title owns behavior, and runtime JIT/dynarec translation for every remaining
   guest instruction.
-- The interpreter is a test oracle only. It must live in a separately built
-  test target and must not be linked into the product library or a consuming
-  gameplay executable.
-- A gameplay build has no interpreter selector, environment switch, fallback,
-  instruction-step escape, or JIT-emitted call into the interpreter dispatcher.
-  Pure semantic helpers may be shared by the JIT and test oracle when they own
-  one instruction rule and do not dispatch guest execution.
+- The zero-argument product starts in dynarec mode and offers every cold block
+  to the JIT. A bounded interpreter fallback may run only after typed failed or
+  unsupported compilation, or when executing emitted code would be unsafe; it
+  records the reason, guest PC, block count, and instruction count before
+  returning to JIT dispatch.
+- A gameplay build has no explicit interpreter selector, environment switch,
+  profiling-first interpretation, missing-backend fallback, or silent
+  instruction-step escape. Interpreter-only execution lives in a separately
+  built diagnostic target. Pure semantic helpers remain shared owners rather
+  than duplicated implementations.
 - There is no `Substrate` engine and no offline guest-code generation. Build,
   install, provisioning, and release paths must not emit guest C/C++, object
   files, precompiled guest bodies, seed tables, or generated dispatch maps.
 - A runtime-populated code cache is disposable user data. It is never a
   fresh-install prerequisite or a checked-in product input.
 - The x64 backend is the current implementation. ARM64 product translation is
-  required and currently absent; lack of that backend is a refusal, never a
-  reason to ship interpretation.
+  required and currently absent; lack of a host backend is a refusal, never a
+  reason to interpret the whole product.
 
 The product/test link boundary now satisfies this contract at framework level:
 `x86port_runtime` has no interpreter selector or interpreter dispatch edge, and
@@ -74,8 +77,9 @@ conformance gaps.
   through logging. Tests and tools may write their own reports; consuming games
   adapt the library sink to their project logger.
 - Failures preserve valid state and are returned with a named status and useful
-  context. Unknown instructions, unavailable host backends, invalid mappings,
-  and executable-memory publication failures are refusals, not fallbacks.
+  context. Unknown instructions and unsafe emitted execution may enter only the
+  bounded, counted fallback; unavailable host backends, invalid mappings, and
+  executable-memory publication failures remain refusals.
 - C11 is the library baseline. Agent verification uses Clang, all touched C/C++
   is formatted with the tracked `.clang-format`, and the normal verifier must
   include format, clang-tidy, structure, portability, and tests without
@@ -84,12 +88,15 @@ conformance gaps.
 ## Verification discipline
 
 - The product-link gate must inspect the actual consumer-facing library or
-  executable and prove the interpreter dispatcher and selector are absent.
+  executable and prove explicit interpreter selection and the test-oracle
+  dispatcher are absent; any bounded product fallback has separate entry-edge
+  and telemetry tests.
 - JIT evidence reports nonzero translated block execution, cache/invalidation
   behavior, and every refusal with a denominator. A successful final CPU state
   alone does not prove that translated code ran.
-- Differential tests use the separately linked interpreter oracle and stop at
-  the first divergence. They do not make the interpreter a shipping fallback.
+- Differential tests use the separately linked interpreter-only oracle and stop
+  at the first divergence. Gameplay and performance claims exclude fallback
+  intervals even when their results match that oracle.
 - Exercise executable-memory publication, instruction-cache coherence,
   invalidation, native dispatch, scoped original calls, exceptions, interrupts,
   and bounded exits on every supported host architecture.
