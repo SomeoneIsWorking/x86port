@@ -280,6 +280,32 @@ static uint16_t hw_compare(long double a, long double b) {
   return sw;
 }
 
+/* FST m32 / FST m64 on the real unit, under the guest control word: the store
+   narrows the significand per the RC field exactly as FADD narrows a result. */
+static uint32_t hw_narrow32(long double v, uint16_t cw) {
+  uint16_t saved;
+  float out;
+  uint32_t bits;
+  __asm__ volatile("fnstcw %0\n\tfldcw %3\n\tfldt %2\n\tfstps %1\n\tfldcw %0"
+                   : "=m"(saved), "=m"(out)
+                   : "m"(v), "m"(cw)
+                   : "st", "memory");
+  memcpy(&bits, &out, sizeof bits);
+  return bits;
+}
+
+static uint64_t hw_narrow64(long double v, uint16_t cw) {
+  uint16_t saved;
+  double out;
+  uint64_t bits;
+  __asm__ volatile("fnstcw %0\n\tfldcw %3\n\tfldt %2\n\tfstpl %1\n\tfldcw %0"
+                   : "=m"(saved), "=m"(out)
+                   : "m"(v), "m"(cw)
+                   : "st", "memory");
+  memcpy(&bits, &out, sizeof bits);
+  return bits;
+}
+
 /*
  * The value corpus. The named values are the ones with special behaviour; the
  * rest are generated, because the interesting failures in floating point are
@@ -517,6 +543,64 @@ static void test_hw_compare_flags(void) {
   }
 }
 
+/*
+ * FST m32 / FST m64 must round the stored value by the control word's RC field,
+ * not always to nearest. `x86p_x87_to_int` already does this; the float stores
+ * were a bare `(float)v` cast until this was fixed.
+ *
+ * Two checks. First, hand-computed anchors on a value exactly halfway between
+ * two floats (1 + 1/2 ulp): nearest-even keeps the even mantissa, and up/down/
+ * truncate each go their own way with the sign flipping which of up/down rounds
+ * away. These do not depend on the host FPU. Second, the routing sweep against
+ * the real unit: like test_hw_arithmetic it cannot fail on the rounding itself
+ * on an x86 host, but it fails loudly if the control word never reaches the
+ * narrowing or the width is picked wrong.
+ */
+static void test_fst_rounds_by_the_control_word(void) {
+  const long double up = 1.0L + ldexpl(1.0L, -24); /* exactly between 1.0f and nextafterf(1.0f,2) */
+  const uint32_t one = 0x3F800000u;                /* 1.0f */
+  const uint32_t one_plus = 0x3F800001u;           /* nextafterf(1.0f, 2) */
+  const uint16_t base = (uint16_t)(0x007Fu | X86P_X87_PC_EXTENDED);
+  X86pX87 f;
+  int c, i;
+  unsigned long cases = 0, mismatch = 0;
+
+  x86p_x87_reset(&f);
+
+  f.control = (uint16_t)((base & ~X86P_X87_RC_MASK) | X86P_X87_RC_NEAREST);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, up), one); /* ties to even */
+  CHECK_EQ_U(x86p_x87_to_f32(&f, -up), one | 0x80000000u);
+  f.control = (uint16_t)((base & ~X86P_X87_RC_MASK) | X86P_X87_RC_UP);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, up), one_plus);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, -up), one | 0x80000000u); /* toward +inf */
+  f.control = (uint16_t)((base & ~X86P_X87_RC_MASK) | X86P_X87_RC_DOWN);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, up), one);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, -up), one_plus | 0x80000000u); /* toward -inf */
+  f.control = (uint16_t)((base & ~X86P_X87_RC_MASK) | X86P_X87_RC_TRUNCATE);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, up), one);
+  CHECK_EQ_U(x86p_x87_to_f32(&f, -up), one | 0x80000000u);
+
+  for (c = 0; c < NCONTROLS; c++) {
+    for (i = 0; i < NVALS; i++) {
+      x86p_x87_reset(&f);
+      f.control = kControls[c].cw;
+      cases += 2;
+      if (x86p_x87_to_f32(&f, g_vals[i]) != hw_narrow32(g_vals[i], kControls[c].cw)) {
+        mismatch++;
+      }
+      if (x86p_x87_to_f64(&f, g_vals[i]) != hw_narrow64(g_vals[i], kControls[c].cw)) {
+        mismatch++;
+      }
+    }
+  }
+  printf("    FST m32/m64  %6lu store(s) vs the host unit, %lu mismatch(es)\n", cases, mismatch);
+  g_checks++;
+  if (mismatch) {
+    g_failed++;
+  }
+  CHECK_EQ_U(mismatch, 0u);
+}
+
 /* The oracle must be shown lying: FSUB modelled without the reverse flag. */
 static void test_the_oracle_can_fail(void) {
   int i, j;
@@ -569,6 +653,7 @@ int main(void) {
   RUN(test_hw_arithmetic);
   RUN(test_portable_path_divergence);
   RUN(test_hw_compare_flags);
+  RUN(test_fst_rounds_by_the_control_word);
   RUN(test_the_oracle_can_fail);
 #else
   printf("test hardware_oracle\n  SKIP -- host is not x86, so no x87 result or "
