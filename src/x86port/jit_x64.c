@@ -305,6 +305,45 @@ static int x87_load_is_emittable(const X86pInsn *insn) {
   return o->kind == kX86pOperandMem && (o->size == 4 || o->size == 8) && !o->addr16;
 }
 
+/*
+ * FADD / FSUB / FMUL / FDIV, their R (operand-swap) and P (pop) variants, in
+ * the three operand shapes arith_operands (x87_exec.c) recognises: `Fop m32/m64`
+ * accumulating into ST(0), `Fop ST(0), ST(i)` written short as one operand, and
+ * `FopP ST(i), ST(0)` with two. The integer-source forms (FIADD ...,
+ * x87_mem_int) keep their own path. The emitted code still calls
+ * x86p_x87_arith, so the reverse flag, the ZE/IE/SF bits, the divide-by-zero
+ * infinity and the result tag stay that one function's business.
+ */
+static int x87_arith_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  if (insn->x87 != (uint8_t)kX86pX87InsnArith || insn->x87_mem_int) {
+    return 0;
+  }
+  if ((unsigned)insn->x87_op >= (unsigned)kX86pX87OpCount) {
+    return 0;
+  }
+  if (insn->operands == 2 && o0->kind == kX86pOperandSt && insn->operand[1].kind == kX86pOperandSt) {
+    return o0->reg >= 0 && o0->reg < X86P_X87_REGS && insn->operand[1].reg >= 0 &&
+           insn->operand[1].reg < X86P_X87_REGS;
+  }
+  if (insn->operands == 1 && o0->kind == kX86pOperandSt) {
+    return o0->reg >= 0 && o0->reg < X86P_X87_REGS;
+  }
+  return insn->operands == 1 && o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+}
+
+/*
+ * FST / FSTP to a stack position (not memory). Both slots are 80-bit, so there
+ * is no narrowing and no control-word question -- unlike the memory store
+ * forms, whose (float)/(double) narrowing the interpreter does NOT round the
+ * x87 way, so they stay on the helper.
+ */
+static int x87_store_reg_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandSt &&
+         o0->reg >= 0 && o0->reg < X86P_X87_REGS;
+}
+
 static int can_emit(const X86pInsn *insn) {
   int i;
   /*
@@ -394,7 +433,7 @@ static int can_emit(const X86pInsn *insn) {
        the operand really is a memory reference to compute. */
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
-    return x87_load_is_emittable(insn);
+    return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn);
   default:
     return 0;
   }
@@ -1278,6 +1317,26 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
  * pops RBX and returns assuming the post-prologue RSP -- is never reached with
  * the slot still open.
  */
+/* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
+static void x87_lea_self(X86pEmit *e) {
+  x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+}
+
+/* mov rax, imm64(fn); call rax. */
+static void x87_call(X86pEmit *e, const void *fn) {
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)fn);
+  x86p_emit_call_r64(e, kX64Rax);
+}
+
+/* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The
+   widen-and-spill leaves the host x87 stack balanced and an 80-bit copy of the
+   memory float at [rsp], which is where System V wants an outgoing long double
+   argument and where the interpreter's read_float lands the same bits. */
+static void x87_widen_mem_to_scratch(X86pEmit *e, int w) {
+  x86p_emit_x87_m(e, (w == 4) ? 0xD9u : 0xDDu, 0u, HOSTPTR_REG, 0);
+  x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, 0);
+}
+
 static void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   const X86pOperand *o = &insn->operand[0];
@@ -1286,32 +1345,109 @@ static void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
     const int w = o->size; /* 4 or 8 -- can_emit gate */
     emit_mem_prepare_w(c, o, insn_eip, w);
     x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-    /* fld dword [r11] (D9 /0) or fld qword [r11] (DD /0), then fstp tbyte
-       [rsp] (DB /7): the widen-and-spill that leaves the x87 stack balanced. */
-    x86p_emit_x87_m(e, (w == 4) ? 0xD9u : 0xDDu, 0u, HOSTPTR_REG, 0);
-    x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, 0);
-    x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
-    x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_push);
-    x86p_emit_call_r64(e, kX64Rax);
+    x87_widen_mem_to_scratch(e, w);
+    x87_lea_self(e);
+    x87_call(e, (const void *)&x86p_x87_push);
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
     return;
   }
 
   /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-  x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+  x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o->reg);
   x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
-  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_get);
-  x86p_emit_call_r64(e, kX64Rax);
+  x87_call(e, (const void *)&x86p_x87_get);
   x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
   {
     X86pEmitSite skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: source register was empty */
-    x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
-    x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_x87_push);
-    x86p_emit_call_r64(e, kX64Rax);
+    x87_lea_self(e);
+    x87_call(e, (const void *)&x86p_x87_push);
     x86p_emit_bind(e, skip);
   }
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+}
+
+/*
+ * FADD / FSUB / FMUL / FDIV (+R, +P). The source operand is widened to 80 bits
+ * into a 16-byte stack slot -- from memory with a host `fld`, or from a stack
+ * register with x86p_x87_get -- and x86p_x87_arith runs the real op under the
+ * guest control word. System V passes the long double `src` in memory, so the
+ * slot IS the outgoing argument; `reverse` follows in ECX.
+ *
+ * A named source register that is empty is a stack fault that arith_operands
+ * turns into a whole no-op -- no arithmetic, no pop -- so that path jumps
+ * straight to the stack cleanup.
+ */
+static void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  const X86pOperand *o0 = &insn->operand[0];
+  const int two_op = (insn->operands == 2);
+  const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
+  X86pEmitSite skip;
+  int have_skip = 0;
+  int i;
+
+  if (o0->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, o0, insn_eip, o0->size);
+    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+    x87_widen_mem_to_scratch(e, o0->size);
+  } else {
+    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+    x87_lea_self(e);
+    x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
+    x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+    x87_call(e, (const void *)&x86p_x87_get);
+    x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+    skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: empty source register */
+    have_skip = 1;
+  }
+
+  x87_lea_self(e);
+  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)insn->x87_op);
+  x86p_emit_mov_r32_imm32(e, kX64Rdx, (uint32_t)dst);
+  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)insn->x87_reverse);
+  x87_call(e, (const void *)&x86p_x87_arith); /* src at [rsp] */
+
+  for (i = 0; i < (int)insn->x87_pops; i++) {
+    x87_lea_self(e);
+    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x87_call(e, (const void *)&x86p_x87_pop);
+  }
+
+  if (have_skip) {
+    x86p_emit_bind(e, skip);
+  }
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+}
+
+/*
+ * FST ST(i) / FSTP ST(i): read ST(0), copy it into ST(i), pop when the P form.
+ * Both slots are 80-bit so nothing rounds. An empty ST(0) is a stack fault the
+ * interpreter turns into a no-op.
+ */
+static void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
+  X86pEmit *e = c->e;
+  const X86pOperand *o0 = &insn->operand[0];
+  X86pEmitSite skip;
+  int i;
+
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  x87_lea_self(e);
+  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x87_call(e, (const void *)&x86p_x87_get);
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty */
+  x87_lea_self(e);
+  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o0->reg);
+  x87_call(e, (const void *)&x86p_x87_set); /* value at [rsp] */
+  for (i = 0; i < (int)insn->x87_pops; i++) {
+    x87_lea_self(e);
+    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x87_call(e, (const void *)&x86p_x87_pop);
+  }
+  x86p_emit_bind(e, skip);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
 }
 
@@ -1873,9 +2009,16 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_lea(&ctx, &insn);
       break;
     case kX86pInsnX87:
-      /* Only FLD reaches here (x87_load_is_emittable); it writes no EFLAGS, so
-         last_kind -- the predecessor for the next carry-in -- is unchanged. */
-      emit_x87_load(&ctx, &insn, pc);
+      /* FLD, the FADD/FSUB/FMUL/FDIV family, and FST/FSTP-to-register reach
+         here; none write EFLAGS, so last_kind -- the predecessor for the next
+         carry-in -- is unchanged. */
+      if (x87_arith_is_emittable(&insn)) {
+        emit_x87_arith(&ctx, &insn, pc);
+      } else if (x87_store_reg_is_emittable(&insn)) {
+        emit_x87_store_reg(&ctx, &insn);
+      } else {
+        emit_x87_load(&ctx, &insn, pc);
+      }
       break;
     case kX86pInsnPush:
       emit_push(&ctx, &insn, pc);

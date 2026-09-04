@@ -175,7 +175,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 90u);
+  unsigned pick = (unsigned)(r % 96u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -663,6 +663,39 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0x40u | (0u << 3) | membase);
     p[2] = memdisp;
     return 3;
+  case 90: /* FSUB dword [base+disp8] -- D8 /4. Non-commutative, reverse=0. */
+    p[0] = 0xD8u;
+    p[1] = (uint8_t)(0x40u | (4u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 91: /* FDIVR dword [base+disp8] -- D8 /7. reverse=1: ST(0) = m32 / ST(0),
+              so a backend that dropped the swap differs on every ordered pair. */
+    p[0] = 0xD8u;
+    p[1] = (uint8_t)(0x40u | (7u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 92: /* FADD ST(0), ST(i) -- D8 C0+i. The one-operand short register form,
+              destination ST(0), no pop. */
+    p[0] = 0xD8u;
+    p[1] = (uint8_t)(0xC0u | ((r >> 12) & 7u));
+    return 2;
+  case 93: /* FDIVRP ST(i), ST(0) -- DE F0+i. Two-operand, reverse AND pop:
+              ST(i) = ST(0) / ST(i), then pop. */
+    p[0] = 0xDEu;
+    p[1] = (uint8_t)(0xF0u | ((r >> 12) & 7u));
+    return 2;
+  case 94: /* FST ST(i) -- DD D0+i. Register store WITHOUT the pop, so a backend
+              that always popped leaves TOP one short. */
+    p[0] = 0xDDu;
+    p[1] = (uint8_t)(0xD0u | ((r >> 12) & 7u));
+    return 2;
+  case 95: /* FSUBR ST(i), ST(0) -- DC E8+i. Two-operand, destination ST(i), no
+              pop, reverse=1: the DC/DE reg encodings put FSUBR where FSUB's
+              digit would predict, so a backend that read the digit rather than
+              the decoder's x87_reverse gets the operand order backwards. */
+    p[0] = 0xDCu;
+    p[1] = (uint8_t)(0xE8u | ((r >> 12) & 7u));
+    return 2;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
