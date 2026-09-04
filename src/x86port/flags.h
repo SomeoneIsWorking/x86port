@@ -6,20 +6,15 @@
  * none are read: computing six flags per instruction would dominate an
  * interpreter's inner loop and, in a translator, dominate the emitted code. So
  * an operation records what it DID -- kind, operands, result, width -- and each
- * flag is derived when something asks. This is the model `pc/xmen2`'s shipping
- * substrate already uses (`x86rt.h`, FK_* and FLAG_*), and keeping the same
- * model is deliberate: the interpreter has to be comparable to the substrate
- * instruction by instruction, and two different flag representations would make
- * every divergence report start by asking which one was wrong.
+ * flag is derived when something asks. The interpreter and JIT share this one
+ * representation so differential reports compare execution rather than flag
+ * models.
  *
  * WHY IT IS AN AUTHORITY AND NOT A COPY. Three things are different here.
  *
- *  - AF EXISTS. The substrate has no auxiliary-carry flag at all. It gets away
- *    with it because the instructions that read AF (DAA, DAS, AAA, AAS) are in
- *    the class its own translator annotates as "embedded data decoded as code"
- *    and never executes. An interpreter cannot make that bet: it decodes what
- *    execution actually reaches, and a reference implementation that silently
- *    omits an architectural flag is not a reference. PUSHFD also round-trips
+ *  - AF EXISTS. An interpreter decodes what execution actually reaches, and a
+ *    reference implementation that silently omits an architectural flag is
+ *    not a reference. DAA, DAS, AAA and AAS read AF, and PUSHFD round-trips
  *    the whole word, so an absent AF is observable without ever executing DAA.
  *  - CARRY-IN IS FIRST CLASS. `a - b - c` is not expressible in the lazy triple.
  *    Modelling it as a SUB of `b - c` gets the borrow wrong whenever a != b, and
@@ -31,10 +26,10 @@
  *  - A SHIFT OF ZERO WRITES NOTHING, and that is the INSTRUCTION's rule, not a
  *    derivation. A masked count of zero leaves every flag alone, so the caller
  *    must not record a flag update at all; x86p_flags_set refuses one. The
- *    substrate instead derives CF as `(a >> (count - 1)) & 1`, which shifts by
- *    -1 in that case -- undefined behaviour, whose value on one host is not a
- *    specification -- and derives ZF/SF/PF from the result, which disagreed
- *    with real hardware on every zero-count case measured.
+ *    deriving CF as `(a >> (count - 1)) & 1` would shift by -1 in that case --
+ *    undefined behaviour, whose value on one host is not a specification --
+ *    and deriving ZF/SF/PF from the result disagrees with hardware on every
+ *    zero-count case measured.
  */
 #ifndef X86PORT_FLAGS_H
 #define X86PORT_FLAGS_H
@@ -81,8 +76,8 @@ typedef enum X86pFlagKind {
   kX86pFlagsDec,      /* like Sub but CF is PRESERVED */
   /*
    * Shifts, split by direction because CF is a DIFFERENT BIT for each and the
-   * substrate expresses all three with one formula, `(a >> (count - 1)) & 1`.
-   * That is the SHR reading; it is only right for SHL because the caller hands
+   * three directions cannot share `(a >> (count - 1)) & 1`.
+   * That is the SHR reading; it is only right for SHL if the caller hands
    * it a pre-arranged value, which is an unstated convention between two files
    * -- exactly the kind an authority must not have. Here `a` is always the
    * value BEFORE the shift and `b` the masked count, and the kind says which
@@ -101,8 +96,8 @@ typedef enum X86pFlagKind {
  * wrong for every value above 0x7F.
  *
  * `carry_in` holds the CF that must survive INC and DEC, which do not write it.
- * The substrate returns 0 for those, which is wrong inside a carry-carrying
- * loop: `inc` between an `add` and an `adc` does not clear the carry on
+ * Clearing it is wrong inside a carry-carrying loop: `inc` between an `add` and
+ * an `adc` does not clear the carry on
  * hardware. Nothing analogous is needed for AF, because every kind here states
  * a value for it -- measured, not assumed; see flags.c.
  */

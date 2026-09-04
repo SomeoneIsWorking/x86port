@@ -3,9 +3,8 @@
  *
  * WHY THIS IS ITS OWN MODULE. The conditions are shared by three instruction
  * families that arrive at different times -- Jcc (8.0% of the corpus), SETcc,
- * and CMOVcc, which is the single largest non-3DNow! hole in the static
- * translator's output. Writing the condition three times is how JGE and JNL,
- * which are the same condition, come to disagree.
+ * and CMOVcc. Writing the condition three times is how JGE and JNL, which are
+ * the same condition, come to disagree.
  *
  * The low four bits of a Jcc, SETcc or CMOVcc opcode ARE the condition number,
  * so this enum is indexed by that nibble directly rather than through a table

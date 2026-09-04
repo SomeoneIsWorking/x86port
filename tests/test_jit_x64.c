@@ -72,11 +72,6 @@ static unsigned long g_branch_blocks;
 static unsigned long g_refused;
 static unsigned long g_self_modified;
 static unsigned long g_helper_calls;
-/* Instructions the blocks executed by CALLING the interpreter. A denominator:
-   if the generator stopped producing x87 and the rest of the helper-routed
-   set, every comparison below would still pass and would be testing nothing
-   about that route. */
-static unsigned long g_interp_calls;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -456,16 +451,9 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0xE8u | dst);
     p[2] = (uint8_t)((r >> 20) & 0x1Fu);
     return 3;
-  /*
-   * From here on: instructions with NO x86-64 emitter, executed by a call into
-   * the interpreter from inside the block.
-   *
-   * They are in the generator for the same reason every other shape is. That
-   * route touches state nothing else does -- the x87 stack, EFLAGS as a whole
-   * word -- and it is the route the block takes for 5% of real game code, so
-   * leaving it to the corpus tool would mean the only check on it needed a
-   * copy of a commercial game.
-   */
+  /* Additional coverage candidates. Shapes without an emitter end the block
+     as a named refusal; emitted shapes remain part of whole-state differential
+     coverage. */
   case 54: /* PUSHFD -- 9C. Materialises the WHOLE EFLAGS word from the lazy
               (kind, a, b, r) form, which no emitted instruction does. */
     p[0] = 0x9Cu;
@@ -1068,7 +1056,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
        reported Ok would make no progress and every counter would look fine. */
     CHECK(blk.insns > 0u);
 
-    /* Counted by the independent walk below, and used by the helper-call
+    /* Counted by the independent walk below, and used by the carry-helper
        bound: a shift's flag kind is not knowable until it runs. */
     unsigned unknown_kind_insns = 0u;
 
@@ -1103,13 +1091,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
           break;
         }
         span += di.length;
-        if (di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) {
-          unknown_kind_insns++;
-        } else if (!x86p_jit_emits_natively(&di)) {
-          /* Executed by a call into the interpreter, which writes flags this
-             build did not choose -- so the next instruction's carry-in has no
-             statically known predecessor either. Counted HERE, from an
-             independent decode, rather than taken from the block. */
+        if ((di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) ||
+            di.op == (uint8_t)kX86pInsnImul ||
+            (di.op == (uint8_t)kX86pInsnString &&
+             (di.str == (uint8_t)kX86pStringScas || di.str == (uint8_t)kX86pStringCmps))) {
           unknown_kind_insns++;
         }
       }
@@ -1205,10 +1190,10 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      *
      * Plus one per instruction whose recorded flag kind is not decidable at
      * translation time: a SHIFT, because a count of zero writes no flags at
-     * all and the count can be a register; and anything executed by a call
-     * into the interpreter, because this build did not choose what it writes.
-     * The allowance is per instruction rather than blanket so that a backend
-     * which stopped deriving carry-in ENTIRELY still fails here.
+     * all and the count can be a register, or IMUL, whose narrow semantics
+     * owner materialises the selectively-written flags. The allowance is per
+     * instruction rather than blanket so that a backend which stopped deriving
+     * carry-in entirely still fails here.
      */
     g_checks++;
     if (blk.flag_helper_calls > 1u + unknown_kind_insns) {
@@ -1219,7 +1204,6 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
              1u + unknown_kind_insns);
     }
     g_helper_calls += blk.flag_helper_calls;
-    g_interp_calls += blk.helper_calls;
 
     g_programs++;
     g_guest_insns += blk.insns;
@@ -1555,18 +1539,12 @@ int main(void) {
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
   printf("%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal, %lu on a store into\n"
-         "the program itself;\n%lu instruction(s) run by calling the interpreter; %lu carry-in helper "
-         "call(s) over %lu block(s)\n",
+         "the program itself;\n%lu carry-in helper call(s) over %lu block(s)\n",
          g_single_compares,
          g_refused,
          g_self_modified,
-         g_interp_calls,
          g_helper_calls,
          g_programs);
-  if (g_interp_calls == 0u) {
-    printf("REFUSED: no instruction went through the interpreter call, so that route is unproven\n");
-    g_failed++;
-  }
   if (g_single_compares == 0u) {
     printf("NO single-instruction comparison ran: this suite claims nothing\n");
     return 1;

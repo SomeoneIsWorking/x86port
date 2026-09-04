@@ -1,0 +1,16 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  bugprone-assert-side-effect,
+  bugprone-infinite-loop,
+  bugprone-macro-parentheses,
+  bugprone-misplaced-widening-cast,
+  bugprone-multi-level-implicit-pointer-conversion,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memory-comparison,
+  bugprone-undefined-memory-manipulation,
+  performance-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^.*/src/x86port/.*'
+FormatStyle: file

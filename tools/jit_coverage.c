@@ -115,10 +115,9 @@ static Stopper g_refused[512];
 static unsigned g_refusals;
 static unsigned long g_insn_seen;
 static unsigned long g_insn_refused;
-/* Of the refused, how many the INTERPRETER cannot run either. That is the
-   difference between "needs an emitter" and "needs semantics", and they are
-   different jobs: the first can be routed through the existing authority, the
-   second has no authority to route to. */
+/* Of the refused, how many are not represented by the shared semantic model.
+   Both categories are product refusals; this split identifies the owner of the
+   missing work without creating a runtime fallback. */
 static unsigned long g_insn_no_semantics;
 
 static void
@@ -260,7 +259,6 @@ int main(int argc, char **argv) {
   unsigned long blocks = 0;
   unsigned long diverged = 0;
   unsigned long compared = 0;
-  unsigned long helper_insns = 0;
   unsigned i;
 
   if (argc > 1) {
@@ -333,11 +331,10 @@ int main(int argc, char **argv) {
      * when whole families gained emitters.
      *
      * So this walks the body linearly, translating at each address the
-     * previous block ended on. A refused instruction is stepped OVER and the
-     * walk continues, because the engine does exactly that -- it hands the
-     * instruction to the interpreter and translates again from the next
-     * address -- and abandoning the rest of the function here would report a
-     * coverage this framework does not actually lose.
+     * previous block ended on. A refused instruction is stepped OVER only by
+     * this offline census so later independent instructions are counted. The
+     * product engine refuses at that instruction and never advances through an
+     * interpreter.
      *
      * Linear rather than following branches: a function's bytes are its
      * instructions, and a static walk cannot know which are reachable. That
@@ -388,7 +385,6 @@ int main(int argc, char **argv) {
       blocks_here++;
       blocks++;
       insns_covered += blk.insns;
-      helper_insns += blk.helper_calls;
       if (blk.ends_in_branch) {
         note_stopper("(branch: block ended normally)");
       } else if (blk.stopper == NULL) {
@@ -547,9 +543,6 @@ int main(int argc, char **argv) {
   }
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
-  printf("  of those, via a helper    %lu  (%.2f%% of translated)   <-- NOT host code\n",
-         helper_insns,
-         insns_covered ? 100.0 * (double)helper_insns / (double)insns_covered : 0.0);
   printf("\n  differential on real code: %lu block(s) compared, %lu divergence(s)\n", compared, diverged);
   if (compared == 0) {
     printf("  REFUSED: nothing was compared, so correctness here is unproven\n");
@@ -567,11 +560,11 @@ int main(int argc, char **argv) {
          g_insn_seen,
          g_insn_seen ? 100.0 * (double)g_insn_refused / (double)g_insn_seen : 0.0,
          g_refusals);
-  printf("    of those, %lu have NO SEMANTICS ANYWHERE (%.2f%% of the corpus): the\n",
+  printf("    of those, %lu have no shared semantics (%.2f%% of the corpus)\n",
          g_insn_no_semantics,
          g_insn_seen ? 100.0 * (double)g_insn_no_semantics / (double)g_insn_seen : 0.0);
-  printf("    interpreter cannot run them either, so they need semantics, not an emitter.\n");
-  printf("    The other %lu already have an authority to route to.\n\n", g_insn_refused - g_insn_no_semantics);
+  printf("    The other %lu need JIT emission for semantics already owned by the test oracle.\n\n",
+         g_insn_refused - g_insn_no_semantics);
   if (g_refusals == (unsigned)(sizeof g_refused / sizeof g_refused[0])) {
     printf("    WARNING: the shape table is FULL, so this list is truncated and the\n");
     printf("    distinct-shape count is a floor rather than the real number.\n\n");

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """corpus_extract.py -- turn a Ghidra function export into decoder-diff input.
 
-The export a title's static-recompilation pipeline already produces carries, for
-every instruction, the RAW BYTES beside Ghidra's own mnemonic and length. That
-makes it an offline, byte-level second opinion on x86port's decoder, over the
-whole shipped corpus rather than a hand-picked sample -- which is the only kind
-of evidence that settles "is the decoder right" rather than restating it.
+A title's Ghidra function export carries, for every instruction, the RAW BYTES
+beside Ghidra's own mnemonic and length. That makes it an offline, byte-level
+second opinion on x86port's decoder, over the whole shipped corpus rather than a
+hand-picked sample -- which is the only kind of evidence that settles "is the
+decoder right" rather than restating it.
 
 Emits one instruction per line for tools/decode_diff.c:
 
@@ -48,8 +48,8 @@ def functions(path):
     """Yield (entry_address, hex_bytes_of_whole_function) from one export.
 
     A function's instructions are contiguous, so concatenating their bytes
-    reconstructs its byte image -- which is what a TRANSLATOR needs, as opposed
-    to the flat instruction stream a decoder differ needs. Same refusal
+    reconstructs its byte image -- which is what the JIT coverage census needs,
+    as opposed to the flat instruction stream a decoder differ needs. Same refusal
     discipline: a file that yields no function bodies says so.
     """
     doc = json.loads(path.read_text())

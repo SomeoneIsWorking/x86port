@@ -2,19 +2,16 @@
  * decode.h -- one instruction, from guest bytes to something the engine can act
  * on.
  *
- * THE DECISION THIS SETTLES (jit-common I004). `shared/recomp-x86` has no
- * decoder: its front end is Ghidra and it lifts disassembled mnemonic TEXT,
- * which is why its failures read "mnemonic PFMUL" rather than an opcode byte.
- * A runtime engine cannot work that way -- Ghidra is a maintainer-only tool and
- * can never be a player prerequisite -- so x86port needs its own decode.
+ * A runtime engine decodes the bytes currently mapped in guest memory. It
+ * cannot depend on an offline disassembly database or a maintainer-only tool,
+ * so x86port owns this decode boundary.
  *
  * It BORROWS rather than writes it, and the boundary is deliberate. Decode is
  * mechanical, exhaustively specified, and has no opinion about memory models,
  * threading or code caches, so embedding a proven implementation costs nothing
  * architecturally -- unlike embedding a whole CPU core, which brings all three.
- * Semantics stay ours, because S043's whole point is that we are the authority
- * on what correct means. Zydis (MIT, allocation-free, pre-generated tables, no
- * build-time code generation) is pinned at v4.1.1 in vendor/zydis.
+ * Semantics stay ours: the interpreter is the correctness authority. Zydis
+ * (MIT and allocation-free) is pinned at v4.1.1 in vendor/zydis.
  *
  * AND THE CHOICE IS MEASURED, NOT ASSERTED. pc/xmen2's Ghidra corpus carries
  * the raw bytes of every instruction beside Ghidra's own reading of them --

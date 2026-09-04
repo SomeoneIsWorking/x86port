@@ -46,6 +46,11 @@ static int rep_is_defined(X86pStringOp op, X86pRepKind rep) {
   return rep == kX86pRepRep;
 }
 
+int x86p_string_is_supported(X86pStringOp op, X86pRepKind rep, int width) {
+  return op >= 0 && op < kX86pStringOpCount && rep >= 0 && rep < kX86pRepKindCount &&
+         (width == 1 || width == 2 || width == 4) && rep_is_defined(op, rep);
+}
+
 /* One iteration. Returns 0 and sets *fault on a bad access. */
 static int step_once(X86pCpu *cpu, const X86pMem *mem, X86pStringOp op, int w, int32_t delta, uint32_t *fault) {
   uint32_t esi = cpu->reg[kX86pEsi];
@@ -133,10 +138,7 @@ X86pStringStatus x86p_string_execute(X86pCpu *cpu, const X86pMem *mem, const X86
   op = (X86pStringOp)insn->str;
   rep = (X86pRepKind)insn->rep;
   w = (int)insn->str_width;
-  if (op >= kX86pStringOpCount || (w != 1 && w != 2 && w != 4)) {
-    return kX86pStringUnsupported;
-  }
-  if (!rep_is_defined(op, rep)) {
+  if (!x86p_string_is_supported(op, rep, w)) {
     return kX86pStringUnsupported;
   }
 

@@ -179,17 +179,6 @@ static uint32_t branch_target(Ctx *c, const X86pOperand *o) {
   return read_operand(c, o);
 }
 
-uint32_t x86p_sign_extend(uint32_t v, int from_bytes) {
-  switch (from_bytes) {
-  case 1:
-    return (uint32_t)(int32_t)(int8_t)(v & 0xFFu);
-  case 2:
-    return (uint32_t)(int32_t)(int16_t)(v & 0xFFFFu);
-  default:
-    return v;
-  }
-}
-
 /* The implicit accumulator/data pair the widening multiplies and divides use.
    Named rather than open-coded so the width relationship is stated once: the
    pair is EAX:EDX at dword width, AX:DX at word, and AH:AL -- one register --

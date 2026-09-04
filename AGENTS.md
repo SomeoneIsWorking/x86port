@@ -1,130 +1,105 @@
 # x86port — agent guidance
 
-The x86-32 platform framework: guest execution, the Win32 HLE, and the guest
-graphics frontends, for `pc/xmen2`, `pc/lf2`, and the original Xbox path later.
-It replaces `shared/recomp-x86`.
+`x86port` is the title-neutral x86-32 runtime used by native/dynarec game
+ports. Read the local authorities before changing it:
 
-**Read `shared/jit-common/docs/migration.md` first** — it is the architecture
-this repo sits inside, and `shared/jit-common/docs/project-state.md` (rows
-S040–S047) is the tracker. `docs/` here holds only what is specific to x86.
+- `docs/project-goals.md` — durable outcomes and non-goals;
+- `docs/project-state.md` — what is verified, partial, or missing now;
+- `docs/codemap.md` — responsibility and placement;
+- `docs/migration.md` — ordered implementation and landing gates;
+- `shared/jit-common/docs/migration.md` — the portfolio contract this project
+  implements.
 
-## The thing this repo exists to stop doing
+The local documents replace the previous static-recompiler migration story.
+Do not recreate that story in source comments, tests, plans, or compatibility
+options.
 
-`shared/recomp-x86` translates the guest binary to C at build time. On
-`pc/xmen2` that is 116,500 functions, 89 translation units, 307 MB of generated
-C regenerated every build — and 8,234 instructions it could not translate, each
-a loud abort if reached. See jit-common I004 for the full measurement.
+## Product execution contract
 
-Two facts from that measurement shape this repo:
+- A gameplay product has one guest execution path: native overrides where the
+  title owns behavior, and runtime JIT/dynarec translation for every remaining
+  guest instruction.
+- The interpreter is a test oracle only. It must live in a separately built
+  test target and must not be linked into the product library or a consuming
+  gameplay executable.
+- A gameplay build has no interpreter selector, environment switch, fallback,
+  instruction-step escape, or JIT-emitted call into the interpreter dispatcher.
+  Pure semantic helpers may be shared by the JIT and test oracle when they own
+  one instruction rule and do not dispatch guest execution.
+- There is no `Substrate` engine and no offline guest-code generation. Build,
+  install, provisioning, and release paths must not emit guest C/C++, object
+  files, precompiled guest bodies, seed tables, or generated dispatch maps.
+- A runtime-populated code cache is disposable user data. It is never a
+  fresh-install prerequisite or a checked-in product input.
+- The x64 backend is the current implementation. ARM64 product translation is
+  required and currently absent; lack of that backend is a refusal, never a
+  reason to ship interpretation.
 
-- **`shared/recomp-x86` has no decoder.** Its front end is Ghidra: it consumes
-  a JSON of disassembled *text* and lifts mnemonic strings, which is why its
-  failures read `mnemonic PFMUL`. Its per-instruction semantics are worth
-  seeding from; its decode does not exist to seed from. Ghidra is a
-  maintainer-only tool and can never be a player prerequisite, so this framework
-  needs a decoder of its own. **Settled 2026-09-01: Zydis, pinned at v4.1.1 in
-  `vendor/zydis`** — see "Why Zydis, and how we know" below.
-- **90% of those 8,234 holes are 3DNow!, and it is twenty opcodes.** That is why
-  `src/x86port/three_dnow.c` is the first thing here: it is the largest single
-  piece of coverage, and the only substantial one that does not depend on the
-  decoder decision.
+The product/test link boundary now satisfies this contract at framework level:
+`x86port_runtime` has no interpreter selector or interpreter dispatch edge, and
+unsupported instructions return a named refusal. Treat `docs/project-state.md`
+as authoritative for the remaining emitter, architecture, and real-consumer
+conformance gaps.
 
-## Why Zydis, and how we know
+## Ownership boundaries
 
-Decode is mechanical, exhaustively specified, and has no opinion about memory
-models, threading, or code caches — so embedding a proven implementation costs
-nothing architecturally, unlike embedding a whole CPU core, which brings all
-three. Zydis is MIT, allocation-free, and ships pre-generated tables, so it adds
-no build-time code generation (G001). Semantics stay ours: S043's whole point is
-that we are the authority on what correct means.
+- This repository owns x86-32 CPU state, decode, semantics, runtime translation,
+  executable-image-aware block identity, invalidation, bounded exits, and the
+  title-neutral native-call boundary.
+- Consumers own game identity, title addresses, native implementations, Win32
+  service policy, graphics presentation, audio, input, saves, and packaging.
+  Do not add title-specific addresses or behavior here.
+- Zydis owns instruction decoding only. Guest semantics remain in `x86port`.
+- `jit-common` owns only contracts already demonstrated by at least two platform
+  frameworks. Its current code-memory and block-cache primitives may be
+  consumed; do not move an x86-only interface there speculatively.
+- A missing reusable abstraction is implemented and proven locally first. It
+  moves to `jit-common` only after a second real framework needs the same
+  semantics.
 
-**The choice is measured, not argued.** `pc/xmen2`'s Ghidra export carries the
-raw bytes of every instruction beside Ghidra's own reading of them, which is an
-offline second opinion over the whole shipped corpus:
+## Self-contained engineering guardrails
 
-```sh
-python3 tools/corpus_extract.py ~/repo/pc/xmen2/scratch/recomp | ./build/x86p_decode_diff
-```
+- The repository's structure, configuration, and diagnostics are defined here;
+  no other game project is an architectural template or runtime dependency.
+- Split by responsibility before extending a large source file. First-party
+  source files must stay below 1,200 lines; a file already beyond that limit is
+  extraction territory and must not grow. Do not replace a monolith with
+  numbered fragments or catch-all utility modules.
+- Runtime configuration is explicit, typed, instance-owned, and passed through
+  APIs. Product behavior must not depend on process-global state or environment
+  parsing. Standalone tests and tools may parse their own command line or
+  environment at their boundary.
+- The library has one configurable diagnostic sink boundary. Library code must
+  not scatter `printf`/`fprintf`, silently log-and-continue, or select behavior
+  through logging. Tests and tools may write their own reports; consuming games
+  adapt the library sink to their project logger.
+- Failures preserve valid state and are returned with a named status and useful
+  context. Unknown instructions, unavailable host backends, invalid mappings,
+  and executable-memory publication failures are refusals, not fallbacks.
+- C11 is the library baseline. Agent verification uses Clang, all touched C/C++
+  is formatted with the tracked `.clang-format`, and the normal verifier must
+  include format, clang-tidy, structure, portability, and tests without
+  weakening diagnostics.
 
-Result, 2026-09-01, over **2,168,629 instructions from 20 modules**:
+## Verification discipline
 
-- **0 failed to decode.**
-- **37 length disagreements (0.0017%), and all 37 are the same convention**: the
-  `0x9B` prefix, where Ghidra folds `FWAIT` into the following x87 instruction
-  (`FSTSW` 24, `FSTCW` 11, `FSAVE` 2) and Zydis reports it as the separate
-  instruction it architecturally is. Neither is wrong, and the literal reading
-  is the one an interpreter wants, because the CPU really does execute two
-  instructions there. **It is not special-cased**: an instrument that silences a
-  category cannot tell you when a real defect joins it.
-- 20,790 mnemonic spellings differ (0.96%), all benign synonyms — `JGE`/`JNL`,
-  `JA`/`JNBE`, Ghidra folding `REP` into the mnemonic. Two are worth knowing:
-  Zydis 4.1 renders `PFRSQRT` as `PFSQRT` and `PFRCPIT1` as `PFCPIT1`, each a
-  letter short. `x86p_3dnow_parse` accepts both spellings because of this run.
+- The product-link gate must inspect the actual consumer-facing library or
+  executable and prove the interpreter dispatcher and selector are absent.
+- JIT evidence reports nonzero translated block execution, cache/invalidation
+  behavior, and every refusal with a denominator. A successful final CPU state
+  alone does not prove that translated code ran.
+- Differential tests use the separately linked interpreter oracle and stop at
+  the first divergence. They do not make the interpreter a shipping fallback.
+- Exercise executable-memory publication, instruction-cache coherence,
+  invalidation, native dispatch, scoped original calls, exceptions, interrupts,
+  and bounded exits on every supported host architecture.
+- Boot and menus are checkpoints. Product conformance requires representative
+  interactive gameplay in each consumer, including timing and relevant device
+  state against an independent oracle.
+- This repository is a library, so it has no `run.sh`. Consumers own launchers.
+  Project tests and tools are built only when `x86port` is the top-level CMake
+  project.
 
-## Flags are verified against silicon, not against the manual
-
-`src/x86port/flags.{h,c}` is the authority on what an operation does to EFLAGS,
-and it is the module with the strongest verification here on purpose: almost
-every instruction writes flags, almost none are read, and a wrong one surfaces
-as a branch taken differently a thousand instructions later.
-
-`tests/test_flags.c` EXECUTES each instruction on the host CPU with a controlled
-incoming EFLAGS and compares the real word — exhaustively at byte width, and
-over deterministic boundary-crossed sweeps at 16 and 32 bits. **2,187,776
-comparisons, 0 mismatches**, all six flags. On a non-x86 host it says loudly
-that no oracle ran rather than passing on the hermetic cases alone.
-
-That oracle found four defects no amount of reading found, and the lesson
-generalises to anything else added here:
-
-- **Compare the ISA-UNDEFINED flags too.** "Undefined" describes the
-  specification, not the silicon. This CPU *clears* AF on AND/OR/XOR/TEST and
-  *sets* it on every shift; the model preserved it in both cases, and guest code
-  that saves and restores EFLAGS can see the difference.
-- **Vary every input the model reads, or the sweep has no power.** The first
-  version varied only the incoming CF and reported "0 differ" for the logic
-  ops' AF — a clean bill of health it was in no position to give.
-- **A rule that belongs to the instruction does not become a case in the
-  derivation.** A shift by zero writes no flags, so the caller records nothing
-  and `x86p_flags_set` refuses one; there is no preserving branch for four
-  flags that have no correct value.
-
-## Boundaries
-
-- **Semantics are ours; decode may be borrowed.** The whole point of S043 is
-  that we write the translator, so nothing else can say what correct means —
-  the interpreter is the authority an emitter is checked against. A decoder is a
-  different kind of problem: mechanical, well-specified, with no memory-model or
-  threading opinions to fight, so embedding a proven one is legitimate where
-  embedding a whole CPU core would not be.
-- **No title knowledge.** X-Men Legends II's Alchemy engine, its save format,
-  and its D3D8 usage belong in `pc/xmen2`. A D3D8 *implementation* belongs here;
-  a fast path that makes one screen appear does not.
-- **No build-time code generation, ever.** That is G001. If a change here needs
-  a generator, it is the wrong change.
-
-## Conventions
-
-- C11, Clang for agent verification builds, tracked `.clang-format`.
-- `-Wall -Wextra -Werror` on every target.
-- **A refused instruction must be nameable.** "PFRCP, unimplemented" and
-  "unknown instruction" are different facts about a run, and an engine that
-  cannot tell them apart cannot be debugged. Every enum here ends in a `kCount`
-  that is the denominator an exhaustive check counts against, and every "did it
-  run?" returns a value the caller must consult.
-- **Approximate is not a synonym for implemented.** `PFRCP` is not `1.0f/x`. An
-  operation whose exact result this framework cannot state from a specification
-  is refused by name, not guessed — a fast reciprocal that is subtly wrong
-  surfaces as drift a thousand frames later, and the test that would catch it is
-  the one nobody writes.
-- Subagent allowance: **0** until the user assigns a count.
-
-## Verification
-
-```sh
-cmake -S . -B build -DCMAKE_C_COMPILER=clang && cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
-
-There is no `run.sh`: this is a library, not a product. The launcher contract
-belongs to the consuming title.
+Do not call the current tree verified until the outstanding source edits have
+been integrated, a clean Clang build has been identified as Clang, the focused
+tests pass, and the combined repository gate is run once on the frozen diff.

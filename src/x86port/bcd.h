@@ -2,10 +2,8 @@
  * bcd.h -- the six decimal-adjust instructions: DAA, DAS, AAA, AAS, AAM, AAD.
  *
  * These are the only instructions in the ISA that READ the auxiliary-carry
- * flag, which is why flags.h carries AF at all when the shipping substrate
- * next door does not. `shared/recomp-x86` classifies them as "embedded data
- * decoded as code" and never executes one; an interpreter decodes what
- * execution actually reaches and cannot make that bet.
+ * flag, which is one reason flags.h must carry AF. A runtime engine decodes
+ * what execution reaches and cannot assume uncommon opcodes are data.
  *
  * They are pure functions of AX and EFLAGS, so they are stated here as pure
  * functions of AX and EFLAGS -- no CPU, no memory, nothing to mock. The

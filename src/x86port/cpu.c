@@ -1,8 +1,7 @@
 /* cpu.c -- see cpu.h for the two traps this file exists to get right. */
 #include "cpu.h"
+#include "diagnostic.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 void x86p_cpu_reset(X86pCpu *cpu) {
@@ -206,8 +205,7 @@ uint32_t x86p_reg_read(const X86pCpu *cpu, int index, int w) {
   if (w == 4) {
     return cpu->reg[index];
   }
-  fprintf(stderr, "x86p_reg_read: width %d is not 1, 2 or 4\n", w);
-  abort();
+  x86p_diagnostic_fatalf("cpu", "x86p_reg_read: width %d is not 1, 2 or 4", w);
 }
 
 void x86p_reg_write(X86pCpu *cpu, int index, int w, uint32_t value) {
@@ -238,8 +236,7 @@ void x86p_reg_write(X86pCpu *cpu, int index, int w, uint32_t value) {
     cpu->reg[index] = value;
     return;
   }
-  fprintf(stderr, "x86p_reg_write: width %d is not 1, 2 or 4\n", w);
-  abort();
+  x86p_diagnostic_fatalf("cpu", "x86p_reg_write: width %d is not 1, 2 or 4", w);
 }
 
 const char *x86p_reg_name(int index, int w) {

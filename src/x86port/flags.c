@@ -1,9 +1,6 @@
-/* flags.c -- see flags.h for the model and for the three places it corrects
-   the substrate it was seeded from. */
+/* flags.c -- see flags.h for the model and its measured edge cases. */
 #include "flags.h"
-
-#include <stdio.h>
-#include <stdlib.h>
+#include "diagnostic.h"
 
 uint32_t x86p_width_mask(int w) {
   switch (w) {
@@ -36,15 +33,13 @@ void x86p_flags_set(X86pFlags *f, X86pFlagKind kind, uint32_t a, uint32_t b, uin
   if (w != 1 && w != 2 && w != 4) {
     /* A width outside {1,2,4} is a caller defect with no correct
        interpretation. Guessing one produces flags that look computed. */
-    fprintf(stderr, "x86p_flags_set: operand width %d is not 1, 2 or 4\n", w);
-    abort();
+    x86p_diagnostic_fatalf("flags", "x86p_flags_set: operand width %d is not 1, 2 or 4", w);
   }
   if ((unsigned)kind >= (unsigned)kX86pFlagsKindCount) {
-    fprintf(stderr,
-            "x86p_flags_set: flag kind %u is not one of the %u this build knows\n",
-            (unsigned)kind,
-            (unsigned)kX86pFlagsKindCount);
-    abort();
+    x86p_diagnostic_fatalf("flags",
+                           "x86p_flags_set: flag kind %u is not one of the %u this build knows",
+                           (unsigned)kind,
+                           (unsigned)kX86pFlagsKindCount);
   }
   if ((kind == kX86pFlagsShl || kind == kX86pFlagsShr || kind == kX86pFlagsSar) && b == 0) {
     /*
@@ -57,8 +52,7 @@ void x86p_flags_set(X86pFlags *f, X86pFlagKind kind, uint32_t a, uint32_t b, uin
      * the flag state, so there is nothing correct for this function to record
      * and it says so instead of inventing a preserving case for four flags.
      */
-    fprintf(stderr, "x86p_flags_set: a shift by zero writes no flags; the caller must not record one\n");
-    abort();
+    x86p_diagnostic_fatalf("flags", "x86p_flags_set: a shift by zero writes no flags; the caller must not record one");
   }
   /* Carried across, because the NEXT operation may be one that preserves them.
      Read before the write: `f` is both source and destination. */
@@ -185,6 +179,9 @@ int x86p_flag_of(const X86pFlags *f) {
   }
   if (f->kind == kX86pFlagsLogic || f->kind == kX86pFlagsSar) {
     return 0;
+  }
+  if (f->w != 1 && f->w != 2 && f->w != 4) {
+    x86p_diagnostic_fatalf("flags", "x86p_flag_of: operand width %u is not 1, 2 or 4", (unsigned)f->w);
   }
   sa = (f->w == 4) ? (int)((f->a >> 31) & 1u) : msb(f->a, f->w);
   sb = (f->w == 4) ? (int)((f->b >> 31) & 1u) : msb(f->b, f->w);

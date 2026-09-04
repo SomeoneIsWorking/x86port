@@ -7,21 +7,14 @@
  * instruction it cannot emit. This does all three, and it is the smallest piece
  * that can execute a guest program end to end.
  *
- * THE INTERPRETER IS THE FALLBACK, NOT A SECOND ENGINE. A block that stops on
- * an instruction the backend has no emitter for exits with the guest EIP
- * pointing AT that instruction; the loop then steps the interpreter exactly
- * once and goes back to translating. So coverage is a performance property
- * rather than a correctness one: an unmodelled instruction costs a fallback
- * step, never a wrong answer and never a refusal to run. That is the whole
- * reason this migration can proceed one emitter at a time.
+ * THERE IS NO FALLBACK. A block that stops on an instruction the backend has
+ * no emitter for leaves guest EIP on that instruction and returns a named
+ * unsupported status. The separately built test oracle is not linked here.
  *
  * WHAT IT COUNTS, AND WHY EVERY COUNTER HAS A DENOMINATOR. "The JIT is working"
- * is not observable from a program that finished. A run that translated nothing
- * and interpreted every instruction finishes with exactly the same guest state
- * as one that translated everything, so the only way to tell them apart is to
- * count both and report the ratio. x86p_jit_engine_stats is therefore not
- * optional instrumentation; it is the only evidence that this file did
- * anything.
+ * is not observable from a program that finished. A run that translated
+ * nothing must not look successful, so refusals and translated/entered blocks
+ * are reported explicitly.
  */
 #ifndef X86PORT_JIT_ENGINE_H
 #define X86PORT_JIT_ENGINE_H
@@ -44,20 +37,18 @@ typedef struct X86pJitEngine X86pJitEngine;
 typedef enum X86pJitRunStatus {
   kX86pRunBudget = 0,   /* ran the requested number of instructions, no more */
   kX86pRunDecodeFailed, /* the bytes at EIP are not an instruction */
-  kX86pRunUnsupported,  /* named, but neither backend nor interpreter has it */
+  kX86pRunUnsupported,  /* the product JIT has no route for the instruction */
   kX86pRunFetchFault,   /* EIP itself is not in mapped memory */
   kX86pRunMemoryFault,  /* a guest access was refused; cpu->eip is on it */
   kX86pRunDivideError,  /* #DE: the guest must receive this */
-  /* Traps and faults the guest actually took. Distinct from Unsupported: the
-     instruction is modelled and this is its outcome. See exec.h. */
+  /* Traps and faults the guest actually took. Distinct from Unsupported. */
   kX86pRunInterrupt,
   kX86pRunProtectionFault,
   kX86pRunBoundRange,
-  kX86pRunTranslateFailed,  /* the block at this EIP could not be translated */
-  kX86pRunOutOfCode,        /* the code region filled and a flush did not help */
-  kX86pRunIntercept,        /* intercepted by consumer: thunk, override, setjmp, return */
-  kX86pRunVerifyDivergence, /* verify mode: this block's result disagreed with the interpreter */
-  kX86pRunStatusCount       /* MUST stay last: the denominator */
+  kX86pRunTranslateFailed, /* the block at this EIP could not be translated */
+  kX86pRunOutOfCode,       /* the code region filled and a flush did not help */
+  kX86pRunIntercept,       /* intercepted by consumer: thunk, override, setjmp, return */
+  kX86pRunStatusCount      /* MUST stay last: the denominator */
 } X86pJitRunStatus;
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s);
@@ -65,59 +56,21 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s);
 /*
  * What the run actually did.
  *
- * `blocks_entered` against `fallback_steps` is the number that says whether
- * this engine is doing its job: the first is guest instructions running as
- * translated code, the second is guest instructions the interpreter had to run
- * one at a time.
- *
  * A RETIRED-INSTRUCTION TOTAL IS DELIBERATELY ABSENT. A translated block does
  * not report how many instructions it ran, and the block cache records the
  * guest BYTES it spans rather than the count. Summing translation-time counts
  * would double-count every re-entered block, and charging one per block entry
  * would be a number that looks like an instruction count and is not. So the
- * honest pair above is what is published, and the budget is counted in the same
- * units it is charged in.
+ * translated/entered/refusal counts are what is published, and the budget is
+ * counted in the same units it is charged in.
  */
 typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
   uint64_t blocks_translated;
   uint64_t guest_insns_translated; /* summed at TRANSLATION, where it is known */
-  uint64_t fallback_steps;         /* guest instructions the interpreter ran */
-  /*
-   * Of those, the ones taken straight from a block's unsupported EXIT rather
-   * than after a translation refused the instruction at a block entry. Both
-   * routes reach the interpreter and both are correct, so the split is not
-   * cosmetic: it is the only way to see whether the fast route is being taken
-   * at all. Removing it leaves the loop CORRECT and quietly paying a wasted
-   * translation attempt for every unmodelled instruction in every hot loop --
-   * a defect no state comparison can see.
-   */
-  uint64_t fallback_after_block;
-  uint64_t translate_refusals; /* translations that hit an unmodelled entry */
+  uint64_t translate_refusals;     /* translations that hit an unmodelled entry */
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
-  /*
-   * Guest instructions the blocks execute by CALLING the interpreter rather
-   * than as emitted host code.
-   *
-   * The honest counterweight to the coverage number. Routing every instruction
-   * through the helper would translate 100% of a program and produce a
-   * threaded interpreter; guest state cannot tell the difference, and only
-   * this ratio can. Counted at translation, so it measures the code produced
-   * rather than how often it ran.
-   */
-  uint64_t guest_insns_via_helper;
-  /*
-   * Verify mode only (x86p_jit_engine_set_verify). `verify_blocks_checked` is
-   * blocks whose whole-machine result was compared against a shadow
-   * interpreter run and agreed; `verify_blocks_skipped` is blocks the compare
-   * could not cover soundly -- a REP string op, a shadow step that faulted, or
-   * more shadow writes than the undo log holds -- counted so "0 divergences"
-   * is read against how much was actually checked. A divergence stops the run
-   * with kX86pRunVerifyDivergence rather than being counted here.
-   */
-  uint64_t verify_blocks_checked;
-  uint64_t verify_blocks_skipped;
 } X86pJitEngineStats;
 
 /*
@@ -135,9 +88,8 @@ void x86p_jit_engine_destroy(X86pJitEngine *e);
 
 /*
  * Run until `max_steps` steps have been taken, or something stops the run. A
- * STEP is one block entry or one interpreter instruction -- the two things this
- * loop can do -- so the budget is charged in the units the loop actually
- * measures rather than in an instruction count it would have to invent.
+ * STEP is one block entry or one native interception dispatch, so the budget
+ * is charged in the units the loop actually measures.
  *
  * The consequence, stated because it will otherwise surprise someone: as
  * coverage improves a given budget covers MORE guest instructions, since more
@@ -220,25 +172,6 @@ void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *
 void x86p_jit_engine_set_cache(X86pJitEngine *e, int enabled);
 
 /*
- * Turn verify mode on (enabled != 0; off by default).
- *
- * With verify on, every block entry -- translation AND cache hit -- is, before
- * it runs for real, shadow-executed by the interpreter from the same pre-block
- * machine state; the interpreter's memory writes are recorded and undone so the
- * JIT still runs the block over the original bytes, and the two whole-machine
- * results are then compared field by field (x86p_cpu_diff) and byte for byte
- * over every region the shadow wrote. The first disagreement stops the run with
- * kX86pRunVerifyDivergence and `reason` names the block address and the first
- * divergent field. Re-entries are re-checked because a wrong emitter can be
- * right for the register values a block saw when it was first translated and
- * wrong for the ones a later entry brings -- so the cost is one interpreter pass
- * per block ENTRY, not per distinct block. Blocks the shadow cannot cover
- * soundly (a REP string op, a shadow fault, an undo-log overflow, an early JIT
- * exit) are skipped and counted (see X86pJitEngineStats). Not a mode to ship.
- */
-void x86p_jit_engine_set_verify(X86pJitEngine *e, int enabled);
-
-/*
  * Attach or remove an execution-weighted block-entry histogram (off by
  * default). With it on, every block entry bumps a saturating counter keyed by
  * the block's guest address -- the number x86p_jit_engine_stats cannot give,
@@ -248,12 +181,12 @@ void x86p_jit_engine_set_verify(X86pJitEngine *e, int enabled);
  *
  * This is the profiler for "where does a running guest spend its time":
  * x86p_jit_profile_top over x86p_jit_engine_profile() names the blocks whose
- * emitters, or whose per-instruction helper calls, are worth improving first.
+ * emitters are worth improving first.
  * Cheap enough to
  * leave on for a session (one masked load + compare on the hot path), still a
  * diagnostic and not a shipping default.
  */
-void x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hint);
+int x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hint, char *reason, unsigned reason_len);
 
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */

@@ -5,11 +5,11 @@
 #include "cond.h"
 #include "decode.h"
 #include "emit_x64.h"
-#include "exec.h"
 #include "flags.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
 #include "simd.h"
+#include "string_ops.h"
 #include "three_dnow.h"
 
 #include <stdarg.h>
@@ -38,6 +38,12 @@ const char *x86p_jit_exit_name(X86pJitExit e) {
     return "guest memory fault";
   case kX86pJitExitDivideError:
     return "divide error";
+  case kX86pJitExitInterrupt:
+    return "software interrupt";
+  case kX86pJitExitProtectionFault:
+    return "general-protection fault";
+  case kX86pJitExitBoundRange:
+    return "bound range exceeded";
   case kX86pJitExitCount:
   default:
     return "?";
@@ -85,8 +91,8 @@ static void say(char *buf, unsigned len, const char *fmt, ...) {
 /*
  * Offsets are taken from the real struct, never written down as constants. A
  * hardcoded offset keeps working until a field is added above it, and then the
- * emitted code reads a different register than the interpreter does -- while
- * both still run.
+ * emitted code silently reads a different register than the canonical CPU
+ * layout requires.
  */
 static int32_t reg_off(int index) {
   return (int32_t)(offsetof(X86pCpu, reg) + (size_t)index * sizeof(uint32_t));
@@ -174,8 +180,8 @@ static int is_indirect_branch(const X86pInsn *insn) {
 /*
  * MOV at 8, 16 or 32 bits.
  *
- * A byte-register INDEX above 7 is refused: the interpreter's x86p_reg_write
- * ignores such a write, and reproducing "ignore it" in emitted code would bake
+ * A byte-register INDEX above 7 is refused: reproducing an "ignore it" behavior
+ * in emitted code would bake
  * a guess about an encoding this decoder should never produce. Refusing by name
  * makes it visible if one ever appears.
  */
@@ -216,8 +222,8 @@ static int mov_is_emittable(const X86pInsn *insn) {
  * MOVZX / MOVSX: destination a 16- or 32-bit register, source a narrower
  * register or memory. A byte source register index above 7 is refused for the
  * same reason MOV refuses it. The widen is real -- src strictly narrower than
- * dst -- so a decoder that ever produced a same-width form routes to the
- * interpreter rather than emitting a no-op extend.
+ * dst -- so a decoder that ever produced a same-width form is refused rather
+ * than becoming a no-op extend.
  */
 static int movx_is_emittable(const X86pInsn *insn) {
   const X86pOperand *dst;
@@ -247,7 +253,7 @@ static int movx_is_emittable(const X86pInsn *insn) {
 static int can_emit(const X86pInsn *insn) {
   int i;
   /*
-   * A 16-BIT ADDRESS goes to the interpreter, whatever the instruction is.
+   * A 16-BIT ADDRESS is refused until its wrapping address rule has an emitter.
    *
    * Every emitter here computes the effective address the 32-bit way, and the
    * two agree until a sum crosses 0xFFFF -- so a wrong translation would be
@@ -275,6 +281,13 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnMovzx:
   case kX86pInsnMovsx:
     return movx_is_emittable(insn);
+  case kX86pInsnXchg:
+    return insn->operands == 2 && insn->operand[0].size == 4 && insn->operand[1].size == 4 &&
+           ((operand_is_reg32(&insn->operand[0]) &&
+             (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]))) ||
+            (operand_is_mem32(&insn->operand[0]) && operand_is_reg32(&insn->operand[1])));
+  case kX86pInsnSetcc:
+    return insn->cond < (uint8_t)kX86pCondCount && insn->operands == 1 && mov_operand_ok(&insn->operand[0], 1, 1);
   case kX86pInsnAlu:
     if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluSar) {
       /*
@@ -308,8 +321,8 @@ static int can_emit(const X86pInsn *insn) {
     }
     return mov_is_emittable(insn);
   case kX86pInsnPush:
-    /* A narrow immediate is sign-extended, by x86p_sign_extend -- the
-       interpreter's own rule, called here at translation time so the constant
+    /* A narrow immediate is sign-extended by the canonical x86p_sign_extend
+       rule at translation time so the constant
        folded into the code is the one the semantics owner computes. */
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]) ||
                                    operand_is_imm(&insn->operand[0]));
@@ -321,6 +334,19 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnRet:
     /* RET, or RET imm16 which also releases the caller's arguments. */
     return insn->operands == 0 || (insn->operands == 1 && operand_is_imm(&insn->operand[0]));
+  case kX86pInsnLeave:
+    return insn->operands == 0;
+  case kX86pInsnCdq:
+    return insn->operands == 0;
+  case kX86pInsnDiv:
+  case kX86pInsnIdiv:
+    return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
+  case kX86pInsnImul:
+    return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
+           operand_is_reg32(&insn->operand[0]) &&
+           (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]));
+  case kX86pInsnString:
+    return x86p_string_is_supported((X86pStringOp)insn->str, (X86pRepKind)insn->rep, insn->str_width);
   case kX86pInsnAluUnary:
     if (insn->alu > (uint8_t)kX86pAluDec) {
       return 0;
@@ -334,7 +360,7 @@ static int can_emit(const X86pInsn *insn) {
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
     return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
-           x87_store_mem_is_emittable(insn);
+           x87_store_mem_is_emittable(insn) || x87_constant_is_emittable(insn);
   default:
     return 0;
   }
@@ -355,8 +381,7 @@ static int alu_writes_dest(uint8_t op) {
  *
  * A block embeds the host base, guest low address, and size of the X86pMem it
  * was translated against, so an access is a bounds check and an add rather than
- * a call. This is what static recompilation does too, and it is why memory
- * access can be fast at all. The cost is that a block is only valid for the
+ * a call. The cost is that a block is only valid for the
  * mapping it was translated against: if the guest memory is remapped, moved, or
  * resized, every block must be discarded. The block cache's flush is that
  * mechanism. A caller that remaps without flushing gets a block reading freed
@@ -478,14 +503,6 @@ static void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
 
 /* BlockCtx (per-block emission state) lives in jit_x64_internal.h. */
 
-static void note_helper_fault(BlockCtx *c, X86pEmitSite site) {
-  if (c->nhelper_faults < sizeof c->helper_faults / sizeof c->helper_faults[0]) {
-    c->helper_faults[c->nhelper_faults++] = site;
-    return;
-  }
-  c->e->overflow = 1;
-}
-
 static void note_fault(BlockCtx *c, X86pEmitSite site) {
   if (c->nfaults < sizeof c->faults / sizeof c->faults[0]) {
     c->faults[c->nfaults++] = site;
@@ -494,6 +511,14 @@ static void note_fault(BlockCtx *c, X86pEmitSite site) {
   /* More fault sites than the block can hold. The site is real and now cannot
      be bound, so the buffer is poisoned and the block discarded -- never left
      with a jump to an arbitrary offset. */
+  c->e->overflow = 1;
+}
+
+static void note_divide_fault(BlockCtx *c, X86pEmitSite site) {
+  if (c->ndivide_faults < sizeof c->divide_faults / sizeof c->divide_faults[0]) {
+    c->divide_faults[c->ndivide_faults++] = site;
+    return;
+  }
   c->e->overflow = 1;
 }
 
@@ -628,7 +653,7 @@ static int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, 
  * with register/immediate operands: that overwrites every EFLAGS bit and cannot
  * fault. It stops -- conservatively "not dead" -- at the first thing that could
  * read flags (Jcc, INC/DEC which preserve CF, ADC/SBB, a helper), could fault
- * mid-block and hand a stale tuple to the interpreter (any memory operand), or
+ * mid-block and expose a stale tuple (any memory operand), or
  * ends the block (branch, ret, unsupported, interception point, unmapped).
  * Register moves and NOPs are transparent and scanned through.
  *
@@ -679,6 +704,13 @@ static int flag_write_is_dead(const X86pMem *mem,
       return 0;
     }
     if (pc != eip && boundary && boundary(pc, boundary_user)) {
+      return 0;
+    }
+    /* A later flag write is a valid killer only if the emit loop will reach
+       and translate it. Shape-only checks below are intentionally narrower
+       than the complete translation gate, so consulting them first could
+       discard flags on the strength of an instruction the block then refuses. */
+    if (!can_emit(&insn)) {
       return 0;
     }
 
@@ -903,8 +935,7 @@ static void emit_alu_inline(BlockCtx *c,
  *
  * The stack is ordinary guest memory, so both go through the same bounds check
  * and the same fault stub as any other access. What is specific to them is the
- * ORDER, and in both cases it is the order the interpreter uses because it is
- * the order the architecture specifies:
+ * ORDER, and in both cases it is the order the architecture specifies:
  *
  *   - PUSH reads its operand BEFORE moving ESP, so `PUSH ESP` stores the old
  *     value, and it moves ESP only AFTER the store has been accepted, so a
@@ -927,6 +958,125 @@ static void emit_alu_inline(BlockCtx *c,
 static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
   emit_address_parts(c->e, &insn->operand[1]);
   x86p_emit_store32(c->e, CPU_REG, reg_off(insn->operand[0].reg), EA_REG);
+}
+
+/* LEAVE is ordered state transition, not a MOV followed by an ordinary POP:
+   ESP becomes EBP before the stack read, and remains there if that read faults.
+   Only a successful read advances ESP and replaces EBP. */
+static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
+  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEbp));
+  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  emit_host_pointer(c->e, &c->plan);
+  x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+  x86p_emit_alu_r32_imm32(c->e, kX64Add, EA_REG, 4u);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEbp), kX64Rsi);
+}
+
+static void emit_cdq(X86pEmit *e) {
+  x86p_emit_load32(e, kX64Rax, CPU_REG, reg_off(kX86pEax));
+  x86p_emit_sar_r32_imm8(e, kX64Rax, 31u);
+  x86p_emit_store32(e, CPU_REG, reg_off(kX86pEdx), kX64Rax);
+}
+
+/* This helper owns only one already-decoded operation's value semantics. It
+   cannot fetch, decode, dispatch, or fall back to the test-only interpreter. */
+static int jit_div32(X86pCpu *cpu, uint32_t divisor, uint32_t signed_divide) {
+  uint32_t quotient = 0u;
+  uint32_t remainder = 0u;
+
+  int ok = signed_divide
+               ? x86p_alu_idiv(cpu->reg[kX86pEdx], cpu->reg[kX86pEax], divisor, 4, &quotient, &remainder, &cpu->flags)
+               : x86p_alu_div(cpu->reg[kX86pEdx], cpu->reg[kX86pEax], divisor, 4, &quotient, &remainder, &cpu->flags);
+  if (!ok) {
+    return 0;
+  }
+  cpu->reg[kX86pEax] = quotient;
+  cpu->reg[kX86pEdx] = remainder;
+  return 1;
+}
+
+static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int signed_divide) {
+  const X86pOperand *divisor = &insn->operand[0];
+  X86pEmitSite failed;
+
+  if (divisor->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, divisor, insn_eip, 4);
+    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+  } else {
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(divisor->reg));
+  }
+  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rdx, (uint32_t)signed_divide);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_div32);
+  x86p_emit_call_r64(c->e, kX64Rax);
+  x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
+  x86p_emit_mov_r32_imm32(c->e, FAULTPC_REG, insn_eip);
+  failed = x86p_emit_jcc_rel32(c->e, (unsigned)kX86pCondZ);
+  note_divide_fault(c, failed);
+}
+
+static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
+  uint32_t low = 0u;
+  uint32_t high = 0u;
+
+  x86p_alu_imul(left, right, 4, &low, &high, &cpu->flags);
+  cpu->reg[destination] = low;
+}
+
+static void emit_imul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *destination = &insn->operand[0];
+  const X86pOperand *source = &insn->operand[1];
+
+  if (insn->operands == 2) {
+    if (source->kind == kX86pOperandMem) {
+      emit_mem_prepare_w(c, source, insn_eip, 4);
+      x86p_emit_load32(c->e, kX64Rcx, HOSTPTR_REG, 0);
+    } else {
+      x86p_emit_load32(c->e, kX64Rcx, CPU_REG, reg_off(source->reg));
+    }
+    x86p_emit_load32(c->e, kX64Rdx, CPU_REG, reg_off(destination->reg));
+  } else {
+    if (source->kind == kX86pOperandMem) {
+      emit_mem_prepare_w(c, source, insn_eip, 4);
+      x86p_emit_load32(c->e, kX64Rdx, HOSTPTR_REG, 0);
+    } else {
+      x86p_emit_load32(c->e, kX64Rdx, CPU_REG, reg_off(source->reg));
+    }
+    x86p_emit_mov_r32_imm32(c->e, kX64Rcx, insn->operand[2].imm);
+  }
+  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, destination->reg);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_imul32);
+  x86p_emit_call_r64(c->e, kX64Rax);
+}
+
+static int jit_string(X86pCpu *cpu, const X86pMem *mem, uint32_t operation, uint32_t repeat, uint32_t width) {
+  X86pInsn insn;
+
+  memset(&insn, 0, sizeof insn);
+  insn.op = (uint8_t)kX86pInsnString;
+  insn.str = (uint8_t)operation;
+  insn.rep = (uint8_t)repeat;
+  insn.str_width = (uint8_t)width;
+  return x86p_string_execute(cpu, mem, &insn, NULL) == kX86pStringOk;
+}
+
+static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmitSite failed;
+
+  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rsi, (uint64_t)(uintptr_t)c->mem);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rdx, insn->str);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rcx, insn->rep);
+  x86p_emit_mov_r32_imm32(c->e, kX64R8, insn->str_width);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_string);
+  x86p_emit_call_r64(c->e, kX64Rax);
+  x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
+  x86p_emit_mov_r32_imm32(c->e, FAULTPC_REG, insn_eip);
+  failed = x86p_emit_jcc_rel32(c->e, (unsigned)kX86pCondZ);
+  note_fault(c, failed);
 }
 
 /* Push whatever is in RSI. The one implementation of the stack store, shared by
@@ -1141,6 +1291,27 @@ static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
 }
 
+static void emit_xchg32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *first = &insn->operand[0];
+  const X86pOperand *second = &insn->operand[1];
+  const X86pOperand *memory = first->kind == kX86pOperandMem ? first : second;
+  const X86pOperand *reg = first->kind == kX86pOperandReg ? first : second;
+
+  if (memory->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, memory, insn_eip, 4);
+    x86p_emit_load32(c->e, kX64Rax, HOSTPTR_REG, 0);
+    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(reg->reg));
+    x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
+    x86p_emit_store32(c->e, CPU_REG, reg_off(reg->reg), kX64Rax);
+    return;
+  }
+
+  x86p_emit_load32(c->e, kX64Rax, CPU_REG, reg_off(first->reg));
+  x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(second->reg));
+  x86p_emit_store32(c->e, CPU_REG, reg_off(first->reg), kX64Rsi);
+  x86p_emit_store32(c->e, CPU_REG, reg_off(second->reg), kX64Rax);
+}
+
 /*
  * MOVZX / MOVSX: a narrow source widened into a wider register.
  *
@@ -1178,234 +1349,11 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
 /*
  * Prologue: save RBX, park the X86pCpu pointer in it.
  *
- * STACK ALIGNMENT. System V requires RSP to be 16-byte aligned immediately
- * before a CALL. On entry to this block -- itself reached by a CALL -- RSP is
- * 8 mod 16. One 8-byte push brings it to 0, which is exactly what the helper
- * calls below need. Pushing an even number of registers instead would leave it
- * misaligned, and misalignment does not fault: it corrupts whichever helper
- * first touches aligned SSE state, far from here.
+ * System V requires RSP to be 16-byte aligned immediately before a CALL. On
+ * entry to this block RSP is 8 mod 16; one 8-byte push aligns calls to narrow
+ * semantic helpers such as x86p_alu. No helper may decode or dispatch a guest
+ * instruction: an instruction without an emitter is a named refusal.
  */
-/*
- * THE INTERPRETER, CALLED FROM INSIDE A TRANSLATED BLOCK.
- *
- * Not a fallback: a fallback ends the block, returns to the dispatch loop,
- * steps once and translates again from the next address, and a function full
- * of floating point would spend its life doing that. This runs the instruction
- * WITHOUT leaving the block, so an FLD in the middle of otherwise-translatable
- * code costs a call rather than a round trip -- and, more to the point, does
- * not truncate the block at the first one.
- *
- * WHY THIS IS NOT A SECOND SEMANTICS. It is the same x86p_execute_decoded the
- * interpreter uses, on the same decoded instruction, so there is nothing here
- * to disagree with. What the JIT owns for these families is scheduling, not
- * meaning. Families worth inlining get inlined later; that is a PERFORMANCE
- * decision, and this makes it one rather than a coverage decision.
- *
- * The instruction is decoded at TRANSLATION time and its X86pInsn lives in the
- * code buffer beside the call, so nothing is decoded at run time. Re-decoding
- * would make a floating-point instruction cost more under the JIT than under
- * the interpreter, which would be a strange thing for a JIT to do.
- */
-static uint32_t jit_helper_execute(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn) {
-  switch (x86p_execute_decoded(cpu, mem, insn, NULL)) {
-  case kX86pStepOk:
-    return 0u;
-  case kX86pStepDivideError:
-    return (uint32_t)kX86pJitExitDivideError;
-  case kX86pStepInterrupt:
-    return (uint32_t)kX86pJitExitInterrupt;
-  case kX86pStepProtectionFault:
-    return (uint32_t)kX86pJitExitProtectionFault;
-  case kX86pStepBoundRange:
-    return (uint32_t)kX86pJitExitBoundRange;
-  case kX86pStepUnsupported:
-    /* can_emit refused to route an unsupported instruction here, so reaching
-       this is a defect in this file rather than in the guest. Reported as an
-       exit the caller must handle, never as success. */
-    return (uint32_t)kX86pJitExitUnsupported;
-  default:
-    return (uint32_t)kX86pJitExitMemoryFault;
-  }
-}
-
-/*
- * Call the interpreter for one instruction, without leaving the block.
- *
- * The decoded X86pInsn is placed IN the code buffer, jumped over, and reached
- * with a RIP-relative LEA. In the buffer rather than in a side table because
- * the arena is a bump pointer that a flush rewinds wholesale: a side
- * allocation would need its own lifetime, and a lifetime that must agree with
- * a code region's is one that will eventually disagree. RIP-relative rather
- * than an absolute pointer because the write and exec addresses of that buffer
- * differ under W^X.
- *
- * The jump over the data is taken once per execution and is perfectly
- * predicted; it is not on the same scale as the call it precedes.
- */
-/*
- * The helper sequence is the longest thing this file emits, and its length
- * depends on sizeof(X86pInsn) -- which belongs to another header. Checked at
- * compile time rather than trusted: growing the decoded form by a field would
- * otherwise silently push a block past the per-instruction reservation, and
- * the emit loop reserves WORST_CASE_INSN_BYTES before each instruction on the
- * strength of this number.
- */
-#define HELPER_CALL_MAX_BYTES (64u + 7u + (unsigned)sizeof(X86pInsn))
-_Static_assert(HELPER_CALL_MAX_BYTES <= X86P_JIT_WORST_CASE_INSN_BYTES,
-               "an interpreter call no longer fits the per-instruction reservation");
-
-/*
- * Which instruction kinds still route to the interpreter, by translation
- * count. Not a correctness signal -- every one of these runs correctly through
- * jit_helper_execute -- but a ranked work list for "what to teach the emitter
- * next", read beside the execution-weighted block profile. Translation-time,
- * so a block entered a million times counts once; pair it with jit.profile.
- */
-static uint64_t g_helper_hist[kX86pInsnOpCount];
-static uint64_t g_helper_hist_blockend[kX86pInsnOpCount];
-
-void x86p_jit_helper_histogram_reset(void) {
-  memset(g_helper_hist, 0, sizeof g_helper_hist);
-  memset(g_helper_hist_blockend, 0, sizeof g_helper_hist_blockend);
-}
-
-void x86p_jit_helper_histogram_report(char *buf, size_t len) {
-  size_t used = 0;
-  unsigned shown = 0;
-  int done[kX86pInsnOpCount];
-  memset(done, 0, sizeof done);
-  if (!buf || len == 0) {
-    return;
-  }
-  used += (size_t)snprintf(buf, len, "jit helper routing (translation count; run-weight is jit.profile):");
-  for (;;) {
-    int best = -1;
-    uint64_t best_n = 0;
-    int i;
-    for (i = 0; i < (int)kX86pInsnOpCount; i++) {
-      if (!done[i] && g_helper_hist[i] > best_n) {
-        best_n = g_helper_hist[i];
-        best = i;
-      }
-    }
-    if (best < 0 || shown >= 16u || used >= len) {
-      break;
-    }
-    done[best] = 1;
-    shown++;
-    used += (size_t)snprintf(buf + used,
-                             used < len ? len - used : 0,
-                             "\n  %-10s %llu (%llu ended a block)",
-                             x86p_insn_op_name(best),
-                             (unsigned long long)g_helper_hist[best],
-                             (unsigned long long)g_helper_hist_blockend[best]);
-  }
-}
-
-static void emit_helper_call(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  X86pEmit *e = c->e;
-  X86pEmitSite over;
-  size_t table;
-  X86pEmitSite failed;
-
-  /* The helper reads cpu->eip: it is where the instruction is, which is what
-     x86p_execute_decoded advances from and what a fault must leave behind. */
-  x86p_emit_store32_imm(e, CPU_REG, eip_off(), insn_eip);
-
-  over = x86p_emit_jmp_rel32(e);
-  x86p_emit_align(e, 8u); /* X86pInsn holds pointers */
-  table = x86p_emit_here(e);
-  x86p_emit_data(e, insn, sizeof *insn);
-  x86p_emit_bind(e, over);
-
-  x86p_emit_mov_r64_r64(e, kX64Rdi, CPU_REG);
-  x86p_emit_mov_r64_imm64(e, kX64Rsi, (uint64_t)(uintptr_t)c->mem);
-  x86p_emit_lea_rip(e, kX64Rdx, table);
-  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&jit_helper_execute);
-  x86p_emit_call_r64(e, kX64Rax);
-
-  /* Zero is success. Anything else is an exit code already in EAX, with EIP
-     already left where that exit means it should be. */
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  failed = x86p_emit_jcc_rel32(e, 0x5u); /* jnz */
-  note_helper_fault(c, failed);
-  c->helper_calls++;
-  if (insn->op < (uint8_t)kX86pInsnOpCount) {
-    g_helper_hist[insn->op]++;
-  }
-}
-
-/*
- * Can this instruction change EIP?
- *
- * Asked as a WHITELIST of operations that provably cannot, because the cost of
- * the two mistakes is not symmetric. Treating a branch as straight-line code
- * means the block carries on emitting instructions that the guest was never
- * going to reach, at an EIP the block then overwrites -- silent, and wrong in
- * a way no state comparison at the block boundary can see. Treating
- * straight-line code as a branch merely ends the block early.
- */
-static int helper_insn_is_straight_line(const X86pInsn *insn) {
-  switch (insn->op) {
-  case kX86pInsnAlu:
-  case kX86pInsnAluUnary:
-  case kX86pInsnMov:
-  case kX86pInsnMovzx:
-  case kX86pInsnMovsx:
-  case kX86pInsnLea:
-  case kX86pInsnPush:
-  case kX86pInsnPop:
-  case kX86pInsnXchg:
-  case kX86pInsnSetcc:
-  case kX86pInsnCmovcc:
-  case kX86pInsnLeave:
-  case kX86pInsnNop:
-  case kX86pInsnCdq:
-  case kX86pInsnCwde:
-  case kX86pInsnMul:
-  case kX86pInsnImul:
-  case kX86pInsnDiv:
-  case kX86pInsnIdiv:
-  case kX86pInsnPushfd:
-  case kX86pInsnPopfd:
-  case kX86pInsnX87:
-  case kX86pInsnString:
-  case kX86pInsnSimd:
-  case kX86pInsnCld:
-  case kX86pInsnStd:
-    return 1;
-  default:
-    return 0;
-  }
-}
-
-/*
- * Does this build have semantics for the instruction AT ALL?
- *
- * Distinct from can_emit, which asks whether there is an x86-64 emitter. An
- * instruction with no emitter is routed to the interpreter and the block
- * carries on; an instruction with no SEMANTICS ends the block, because there
- * is nothing to route it to.
- *
- * The SIMD families make this more than an op-code check: RCPPS, RSQRTSS and
- * the 3DNow! approximation instructions are DECODED, NAMED, and deliberately
- * unimplemented -- their results come from hardware tables and a guess would
- * be worse than a refusal. Asking the owning module rather than keeping a
- * second list here is what stops the two from drifting apart, and drifting
- * would mean emitting a call that always fails.
- */
-static int insn_has_semantics(const X86pInsn *in) {
-  if (in->op == (uint8_t)kX86pInsnUnsupported) {
-    return 0;
-  }
-  if (in->op == (uint8_t)kX86pInsnSimd) {
-    if (in->simd == (uint8_t)kX86pSimdPf) {
-      return x86p_3dnow_implemented((X86pPfOp)in->pf);
-    }
-    return x86p_simd_is_implemented((X86pSimdOp)in->simd);
-  }
-  return 1;
-}
 
 static void emit_prologue(X86pEmit *e) {
   x86p_emit_push_r64(e, CPU_REG);
@@ -1414,18 +1362,6 @@ static void emit_prologue(X86pEmit *e) {
 
 static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
   x86p_emit_store32_imm(e, CPU_REG, eip_off(), next_eip);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
-  x86p_emit_pop_r64(e, CPU_REG);
-  x86p_emit_ret(e);
-}
-
-/*
- * The same exit, leaving EIP exactly as it stands.
- *
- * For an instruction a helper executed: the helper has already put EIP where
- * the instruction says it goes, and this file does not know where that is.
- */
-static void emit_epilogue_keep_eip(X86pEmit *e, X86pJitExit exit) {
   x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
   x86p_emit_pop_r64(e, CPU_REG);
   x86p_emit_ret(e);
@@ -1443,17 +1379,20 @@ static void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exi
 /*
  * A conditional branch, emitted WITHOUT a forward jump.
  *
- * x86p_cond(cc, &cpu->flags) is the interpreter's own condition evaluator --
- * the same reason arithmetic calls x86p_alu. Both candidate addresses are then
+ * x86p_cond(cc, &cpu->flags) is the canonical condition evaluator. Both candidate addresses are then
  * materialised and CMOVcc selects between them, so there is no branch to patch
  * and no fixup list to forget to apply. `mov` does not disturb flags, so the
  * ZF that TEST set is still live at the CMOV.
  */
-static void emit_jcc(X86pEmit *e, uint8_t cond, uint32_t target, uint32_t fallthrough) {
+static void emit_condition_value(X86pEmit *e, uint8_t cond) {
   x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)cond);
   x86p_emit_lea64(e, kX64Rsi, CPU_REG, flags_off());
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cond);
   x86p_emit_call_r64(e, kX64Rax);
+}
+
+static void emit_jcc(X86pEmit *e, uint8_t cond, uint32_t target, uint32_t fallthrough) {
+  emit_condition_value(e, cond);
   x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
   x86p_emit_mov_r32_imm32(e, kX64Rax, fallthrough);
   x86p_emit_mov_r32_imm32(e, kX64Rcx, target);
@@ -1461,13 +1400,29 @@ static void emit_jcc(X86pEmit *e, uint8_t cond, uint32_t target, uint32_t fallth
   emit_epilogue_from(e, kX64Rax, kX86pJitExitBlockEnd);
 }
 
+/* SETcc materialises the canonical condition evaluator's 0/1 result without
+   touching guest flags. A memory destination computes the condition first,
+   then preserves it in RCX while the shared address/bounds path uses RAX. */
+static void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *dst = &insn->operand[0];
+
+  emit_condition_value(c->e, insn->cond);
+  if (dst->kind == kX86pOperandMem) {
+    x86p_emit_mov_r32_r32(c->e, CARRY_REG, kX64Rax);
+    emit_mem_prepare_w(c, dst, insn_eip, 1);
+    x86p_emit_store8_reg(c->e, HOSTPTR_REG, 0, CARRY_REG);
+    return;
+  }
+  x86p_emit_store8_reg(c->e, CPU_REG, reg_off_w(dst->reg, 1), kX64Rax);
+}
+
 /*
  * CALL and RET: control transfers the block can COMPLETE rather than refuse.
  *
  * Both end the block -- the target is another block -- but ending it with
  * kX86pJitExitBlockEnd and the right EIP is a different thing from ending it
- * with kX86pJitExitUnsupported. The second hands the instruction back to the
- * interpreter; the first leaves the dispatcher a plain address to look up. On
+ * with kX86pJitExitUnsupported. The second refuses the run; the first leaves
+ * the dispatcher a plain address to look up. On
  * this corpus that is the difference between 17,640 blocks that must fall back
  * and 17,640 that do not.
  *
@@ -1631,45 +1586,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
 
     if (!can_emit(&insn)) {
-      if (!insn_has_semantics(&insn)) {
-        /* No semantics ANYWHERE -- not here, not in the interpreter -- so
-           there is nothing to route to and the block genuinely ends. */
-        if (count == 0) {
-          say(reason, reason_len, "%s at %08X has no semantics in this build", insn.mnemonic, pc);
-          return kX86pJitUnsupportedAtEntry;
-        }
-        exit = kX86pJitExitUnsupported;
-        stopper = insn.mnemonic;
-        break;
+      if (count == 0) {
+        say(reason, reason_len, "%s at %08X has no JIT emitter in this build", insn.mnemonic, pc);
+        return kX86pJitUnsupportedAtEntry;
       }
-
-      emit_helper_call(&ctx, &insn, pc);
-      /* A helper writes flags this file did not choose, so the next carry-in
-         has no statically known predecessor. */
-      last_kind = -1;
-      pc += insn.length;
-      count++;
-      if (!helper_insn_is_straight_line(&insn)) {
-        if (insn.op < (uint8_t)kX86pInsnOpCount) {
-          g_helper_hist_blockend[insn.op]++;
-        }
-        /* The helper set EIP -- to a branch target, a return address, or the
-           next instruction -- and only it knows which. Ending with an epilogue
-           that OVERWROTE EIP would turn every helper-executed branch into a
-           fall-through, correctly and invisibly, for the whole block. */
-        emit_epilogue_keep_eip(&e, kX86pJitExitBlockEnd);
-        terminated = 1;
-        /* ... and the block STOPS, like the other two places that terminate
-           one. Carrying on emitted instructions after the epilogue: dead code
-           the block could never reach, and -- worse -- counted in `insns`, so
-           the block claimed to cover instructions it had just decided not to
-           execute. That is invisible until something steps a guest `insns`
-           times and compares, which is what tools/jit_coverage.c does: it
-           surfaced the day SAHF became the first non-straight-line instruction
-           to reach this path. */
-        break;
-      }
-      continue;
+      exit = kX86pJitExitUnsupported;
+      stopper = insn.mnemonic;
+      break;
     }
 
     if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet || is_indirect_branch(&insn)) {
@@ -1718,6 +1641,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnMovsx:
       emit_movx(&ctx, &insn, 1, pc);
       break;
+    case kX86pInsnXchg:
+      emit_xchg32(&ctx, &insn, pc);
+      break;
+    case kX86pInsnSetcc:
+      emit_setcc(&ctx, &insn, pc);
+      break;
     case kX86pInsnAluUnary: {
       int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
@@ -1732,6 +1661,29 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnLea:
       emit_lea(&ctx, &insn);
       break;
+    case kX86pInsnLeave:
+      emit_leave(&ctx, pc);
+      break;
+    case kX86pInsnCdq:
+      emit_cdq(&e);
+      break;
+    case kX86pInsnDiv:
+      emit_div32(&ctx, &insn, pc, 0);
+      break;
+    case kX86pInsnIdiv:
+      emit_div32(&ctx, &insn, pc, 1);
+      break;
+    case kX86pInsnImul:
+      emit_imul32(&ctx, &insn, pc);
+      /* The semantic owner materialises CF/OF into explicit flags. */
+      last_kind = -1;
+      break;
+    case kX86pInsnString:
+      emit_string(&ctx, &insn, pc);
+      if (insn.str == (uint8_t)kX86pStringScas || insn.str == (uint8_t)kX86pStringCmps) {
+        last_kind = -1;
+      }
+      break;
     case kX86pInsnX87:
       /* FLD, the FADD/FSUB/FMUL/FDIV family, and FST/FSTP (to register or
          memory) reach here; none write EFLAGS, so last_kind -- the predecessor
@@ -1742,6 +1694,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_x87_store_reg(&ctx, &insn);
       } else if (x87_store_mem_is_emittable(&insn)) {
         emit_x87_store_mem(&ctx, &insn, pc);
+      } else if (x87_constant_is_emittable(&insn)) {
+        emit_x87_constant(&ctx, &insn);
       } else {
         emit_x87_load(&ctx, &insn, pc);
       }
@@ -1801,9 +1755,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   /*
    * The shared fault stub, AFTER the normal return so it is never fallen into.
    * FAULTPC_REG holds the guest EIP of whichever access failed, set immediately
-   * before each bounds check -- so EIP lands ON the faulting instruction rather
-   * than past it, and a caller can deliver the fault or hand that one
-   * instruction to the interpreter.
+   * before each bounds check -- so EIP lands ON the faulting instruction and a
+   * caller can deliver the correct guest fault.
    */
   if (ctx.nfaults) {
     unsigned f;
@@ -1816,16 +1769,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     x86p_emit_ret(&e);
   }
 
-  /*
-   * The helper stub. EAX already holds the exit code and EIP was left by the
-   * helper on the instruction that failed, so this only unwinds -- which is
-   * why it cannot share the stub above, which writes both.
-   */
-  if (ctx.nhelper_faults) {
+  if (ctx.ndivide_faults) {
     unsigned f;
-    for (f = 0; f < ctx.nhelper_faults; f++) {
-      x86p_emit_bind(&e, ctx.helper_faults[f]);
+    for (f = 0; f < ctx.ndivide_faults; f++) {
+      x86p_emit_bind(&e, ctx.divide_faults[f]);
     }
+    x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
+    x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitDivideError);
     x86p_emit_pop_r64(&e, CPU_REG);
     x86p_emit_ret(&e);
   }
@@ -1856,7 +1806,6 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->host_bytes = e.len;
   out->stopper = stopper;
   out->flag_helper_calls = ctx.flag_helper_calls;
-  out->helper_calls = ctx.helper_calls;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
@@ -1878,7 +1827,5 @@ int x86p_jit_emits_natively(const X86pInsn *insn) {
 }
 
 int x86p_jit_can_translate(const X86pInsn *insn) {
-  /* Either route counts: a helper call keeps the block going, which is what
-     "translated" has to mean for a coverage number to track the work. */
-  return can_emit(insn) || insn_has_semantics(insn);
+  return can_emit(insn);
 }

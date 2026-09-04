@@ -9,11 +9,9 @@
  *
  *   - The INTERPRETER is the floor. It is the correctness authority and the
  *     thing the JIT has to beat to justify existing at all.
- *   - NATIVE C is the ceiling, and it is the important one. It performs the
- *     same operations on the same values as ordinary compiled C, which is
- *     approximately what STATIC RECOMPILATION produces -- generated C handed to
- *     the host compiler. So the native column is a stand-in for the baseline
- *     the JIT is required to approach, and the JIT/native ratio is the real
+ *   - NATIVE C is the ceiling. It performs the same operations on the same
+ *     values without guest bookkeeping. The native column is therefore the
+ *     lower-bound control the JIT is required to approach, and the JIT/native ratio is the real
  *     score. A JIT that beats the interpreter by 10x and is 40x off native has
  *     not met the bar.
  *   - The JIT is what is being measured.
@@ -94,8 +92,8 @@ static uint32_t build_kernel(void) {
   return n;
 }
 
-/* The same operations in C, with no guest bookkeeping -- the static-recomp
-   stand-in. Kept literally parallel to build_kernel above. */
+/* The same operations in C, with no guest bookkeeping. Kept literally
+   parallel to build_kernel above. */
 static void native_kernel(uint32_t *r) {
   int i;
   for (i = 0; i < 8; i++) {
@@ -111,17 +109,14 @@ static void native_kernel(uint32_t *r) {
 }
 
 /*
- * The same operations, maintaining guest flags INLINE -- the realistic
- * static-recomp stand-in, and the number the JIT is required to approach.
+ * The same operations, maintaining guest flags INLINE -- the like-for-like
+ * control, and the number the JIT is required to approach.
  *
  * This deliberately does NOT call x86p_flags_set. An earlier version did, and
- * it made the JIT look 3.4x FASTER than static recompilation, which is not a
- * result -- it was measuring a cross-translation-unit call the JIT had learned
- * to inline and the baseline had not. A recompiler emitting this C emits the
- * field writes directly, and it knows the PREVIOUS operation's flag kind
- * statically for exactly the same reason the translator does: it generated it.
- * So the carry_in derivations below are specialised per site, matching what
- * the JIT emits instruction for instruction.
+ * it made the JIT look 3.4x faster than this control. That was measuring a
+ * cross-translation-unit call the JIT had learned to inline and the control had
+ * not. The carry_in derivations below are therefore specialised per site,
+ * matching what the JIT emits instruction for instruction.
  *
  * Beating a baseline that was handicapped is worse than having no baseline,
  * because it produces a number that sounds like success.
@@ -138,10 +133,10 @@ static void native_kernel_flags(X86pCpu *c) {
    *
    * So this measures the cost of ACTUALLY PERFORMING the same stores the JIT
    * performs, which is the like-for-like comparison. The elimination the
-   * compiler wanted to do is real and valuable, and static recompilation gets
-   * it free -- but it is a SEPARATE advantage (dead flag-write elimination),
-   * and folding it silently into this number would hide it instead of costing
-   * it out. The JIT does not do it yet; see the note printed below.
+   * compiler wanted to do is real and valuable, but it is a SEPARATE advantage
+   * (dead flag-write elimination), and folding it silently into this number
+   * would hide it instead of costing it out. The JIT does not do it yet; see
+   * the note printed below.
    */
   volatile X86pFlags *f = &c->flags;
   int i;
@@ -354,7 +349,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* ---- native with guest flags: the realistic static-recomp baseline ---- */
+    /* ---- native with guest flags: the like-for-like control ---- */
     {
       X86pCpu nc;
       seed(&nc);
@@ -399,7 +394,7 @@ int main(int argc, char **argv) {
          100.0 * (w_jit / t_jit - 1.0),
          100.0 * (w_native_flags / t_native_flags - 1.0));
   printf("\n  jit is %.2fx faster than the interpreter\n", t_interp / t_jit);
-  printf("  jit is %.2fx the cost of native+flags  <-- THE SCORE (1.00 would match static recomp)\n",
+  printf("  jit is %.2fx the cost of native+flags  <-- THE SCORE (1.00 would match the control)\n",
          t_jit / t_native_flags);
   printf("\nNOTE: native+flags stores every flag unconditionally. The JIT now DOES eliminate\n"
          "dead flag writes (flag_write_is_dead in jit_x64.c): a lazy tuple whose bits a later\n"
@@ -407,8 +402,8 @@ int main(int argc, char **argv) {
          "never reads its flags, so the JIT drops nearly all of them -- which is why it can\n"
          "score below 1.00x here. On flag-heavy code where flags ARE read the elimination does\n"
          "not fire and the per-op cost below is what remains.\n");
-  printf("\nnative+flags is the static-recompilation stand-in: the same operations, maintaining\n"
-         "the same guest flags, which is what a recompiler's generated C has to do. The flag-free\n"
+  printf("\nnative+flags is the like-for-like control: the same operations, maintaining\n"
+         "the same guest flags. The flag-free\n"
          "column is a floor no correct x86 implementation can reach and is shown only for scale.\n");
   munmap(code, CODE_SIZE);
   return 0;
