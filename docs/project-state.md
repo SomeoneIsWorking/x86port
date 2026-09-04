@@ -28,7 +28,7 @@ product target and verify its actual gameplay link and selector.
 | S004 | The x64 backend translates and executes runtime basic blocks | partial | S001, S002 | G001, G002, G003 |
 | S005 | Dynarec is the product default; bounded fallback is controlled and explicit interpreter mode is diagnostic-only | partial | S002, S004 | G001, G002 |
 | S006 | Static Substrate and offline guest-code generation are absent from x86port interfaces and workflows | verified | — | G001, G004 |
-| S007 | An ARM64 product JIT backend is available | missing | S002 | G001, G002 |
+| S007 | An ARM64 product JIT backend is available | partial | S002 | G001, G002 |
 | S008 | Runtime dispatch supports image-aware native overrides and scoped original calls through the JIT | partial | S004, S005 | G001, G002, G003 |
 | S009 | Executable-code publication, caching, and invalidation preserve runtime correctness | partial | S004 | G001, G003, G004 |
 | S010 | Runtime configuration is typed, explicit, and instance-owned | missing | S005 | G004 |
@@ -49,7 +49,8 @@ JIT execution:
 | Linux x86-64 | supported | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. |
 | Windows x86-64 | unsupported | The current top-level CMake graph unconditionally links the POSIX `m` library into `x86port_runtime`; Windows has no such library, so the native x64 product cannot link and a Windows job would fail before exercising it. Portability must be fixed at that owner before adding a Windows job. |
 | macOS x86-64 | supported | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the complete CTest graph against the x64 emitter. |
-| macOS arm64 / Android arm64-v8a | unsupported | `src/x86port` only emits x86-64 host code. The missing ARM64 backend is S007; bounded fallback cannot qualify a host backend, so no configure-only or interpreter-only job is published. |
+| macOS arm64 | supported | `src/x86port` now emits ARM64 host code (`jit_arm64.c`, `jit_arm64_x87.c`, `emit_arm64.c`), selected by `CMakeLists.txt` when `CMAKE_SYSTEM_PROCESSOR` matches `arm64`/`aarch64`. The full CTest graph passes 22/26 on Apple Silicon; the remaining 4 are the honest "this host is not x86-64" oracle refusals (`test_integer_tail`, `test_x87_fn`, `test_simd`, `test_string_ops`), which need real x86-64 hardware and are not part of S007. No CI job runs this yet — see S007 gap. |
+| Android arm64-v8a | unsupported | ARM64 code emission now exists (see macOS arm64 above), but nothing has exercised it under Android's toolchain, page size, or W^X model; that verification has not been attempted. |
 
 ## Evidence and exact gaps
 
@@ -120,10 +121,27 @@ legacy option. Consumer removal is tracked by their own state and S014/S015.
 
 ### S007 — ARM64 backend
 
-Missing capability: implement and qualify runtime ARM64 code emission,
-executable-memory publication, instruction-cache coherence, ABI transitions,
-invalidation, and product conformance. A bounded instruction fallback cannot
-substitute for a missing ARM64 backend.
+Evidence: `src/x86port/emit_arm64.c` is a from-scratch AArch64 encoder (AAPCS64
+calling convention, register roles kept outside X0-X7 so no per-call liveness
+juggling is needed), self-tested independently of any x86 input. `jit_arm64.c`
+and `jit_arm64_x87.c` port the full x64 translator's instruction coverage and
+x87 stack semantics onto it, selected at configure time by `CMakeLists.txt`
+(`CMAKE_SYSTEM_PROCESSOR` matches `arm64`/`aarch64`) so exactly one backend
+trio links into `x86port_runtime`. `test_jit_x64` runs its full differential
+fuzzer against the interpreter oracle through this backend: 21,130/21,130
+checks pass across 1,258 programs (branches, memory faults, x87 stack effects,
+carry-in propagation). `test_jit_engine` proves the dispatch loop's cache
+fill/flush/invalidate/rewind paths run for real on this backend, sized against
+the host's actual page size rather than an assumed one. Executable-memory
+publication, the per-thread MAP_JIT write/execute toggle, and instruction-cache
+invalidation (`__builtin___clear_cache`) are exercised by the test harness on
+Apple Silicon, matching `jit-common`'s product-path pattern.
+
+Gap: no CI job runs this backend yet (macOS arm64 CI still uses Intel Apple
+Clang), so regressions here are only caught locally. Product conformance —
+X-Men 2 actually running gameplay through this backend via `x2native`, not
+just passing synthetic differential tests — has not been attempted; that is
+S014's remaining scope. Android arm64-v8a has not been exercised at all.
 
 ### S008 — native and original dispatch
 
