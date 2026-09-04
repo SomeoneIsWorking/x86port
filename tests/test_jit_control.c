@@ -44,6 +44,11 @@ static void put_u32(uint8_t *at, uint32_t value) {
   at[3] = (uint8_t)(value >> 24);
 }
 
+static void put_u64(uint8_t *at, uint64_t value) {
+  put_u32(at, (uint32_t)value);
+  put_u32(at + 4u, (uint32_t)(value >> 32));
+}
+
 static int fixture_init(Fixture *fixture) {
   char reason[256] = {0};
 
@@ -719,6 +724,72 @@ static void test_x87_constant_loads_and_full_stack(Fixture *fixture) {
   compare_one_success(fixture, initial, 2u, 1);
 }
 
+static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
+  static const uint64_t operands[] = {
+      UINT64_C(0xC010000000000000), /* -4.0: ST(0) is greater, C0/C2/C3 clear. */
+      UINT64_C(0x3FF0000000000000), /*  1.0: equal, C3 set. */
+      UINT64_C(0x4010000000000000), /*  4.0: ST(0) is less, C0 set. */
+      UINT64_C(0x7FF8000000000001), /* quiet NaN: unordered and IE set. */
+  };
+  X86pCpu initial;
+  X86pJitBlock block;
+  X86pJitStatus translation;
+  char reason[256] = {0};
+  unsigned index;
+
+  for (index = 0u; index < sizeof operands / sizeof operands[0]; index++) {
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0xDCu;
+    fixture->guest[1] = 0x5Du;
+    fixture->guest[2] = 0xF8u; /* FCOMP qword [EBP-8]: the X-Men 2 frontier encoding. */
+    append_stopper(fixture->guest + 3u);
+    put_u64(fixture->guest + kDataOffset, operands[index]);
+    initial = explicit_cpu(index & 31u);
+    initial.reg[kX86pEbp] = kGuestBase + kDataOffset + 8u;
+    initial.x87.status = X86P_X87_ZE | X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
+    CHECK(x86p_x87_push(&initial.x87, 1.0L) != 0);
+    /* Full CPU comparison includes C0/C2/C3/IE, tags, TOP and the one pop. */
+    compare_one_success(fixture, initial, 3u, 1);
+  }
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xD8u;
+  fixture->guest[1] = 0x15u; /* FCOM dword [disp32]: compare without pop. */
+  put_u32(fixture->guest + 2u, kGuestBase + kDataOffset);
+  append_stopper(fixture->guest + 6u);
+  put_u32(fixture->guest + kDataOffset, UINT32_C(0x3F800000));
+  initial = explicit_cpu(9u);
+  CHECK(x86p_x87_push(&initial.x87, 1.0L) != 0);
+  compare_one_success(fixture, initial, 6u, 1);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xDCu;
+  fixture->guest[1] = 0x1Du; /* FCOMP qword [disp32] with an empty ST(0). */
+  put_u32(fixture->guest + 2u, kGuestBase + kDataOffset);
+  append_stopper(fixture->guest + 6u);
+  put_u64(fixture->guest + kDataOffset, UINT64_C(0x3FF0000000000000));
+  initial = explicit_cpu(14u);
+  compare_one_success(fixture, initial, 6u, 1);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xDCu;
+  fixture->guest[1] = 0x1Du;
+  put_u32(fixture->guest + 2u, kGuestBase + kGuestSize - 7u);
+  append_stopper(fixture->guest + 6u);
+  initial = explicit_cpu(20u);
+  CHECK(x86p_x87_push(&initial.x87, 2.0L) != 0);
+  /* The failed read must not compare or pop; the full-state diff proves both. */
+  compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xD8u;
+  fixture->guest[1] = 0xD9u; /* FCOMP ST(1): deliberately outside this memory milestone. */
+  append_stopper(fixture->guest + 2u);
+  translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
+  CHECK(translation == kX86pJitUnsupportedAtEntry);
+  CHECK(strstr(reason, "FCOMP") != NULL);
+}
+
 int main(void) {
   Fixture fixture;
 
@@ -741,8 +812,9 @@ int main(void) {
   test_rep_cmpsb_termination_direction_and_fault_progress(&fixture);
   test_xchg32_register_memory_alias_and_fault(&fixture);
   test_x87_constant_loads_and_full_stack(&fixture);
+  test_x87_memory_compare_status_pop_nan_and_fault(&fixture);
   jc_code_region_destroy(&fixture.code);
-  printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87 constants\n",
+  printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87\n",
          g_checks,
          g_failures);
   return g_failures == 0 ? 0 : 1;

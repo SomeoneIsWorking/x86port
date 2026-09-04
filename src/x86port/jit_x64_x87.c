@@ -68,6 +68,18 @@ int x87_arith_is_emittable(const X86pInsn *insn) {
 }
 
 /*
+ * FCOM / FCOMP against a 32- or 64-bit memory float. The integer-source FICOM
+ * family is deliberately separate: it has different widening semantics.
+ * Register and implicit compare forms also remain refused until their empty
+ * source-stack behavior has its own emitted control-flow coverage.
+ */
+int x87_compare_mem_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  return insn->x87 == (uint8_t)kX86pX87InsnCompare && !insn->x87_mem_int && insn->operands == 1 &&
+         o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+}
+
+/*
  * FST / FSTP to a stack position (not memory). Both slots are 80-bit, so there
  * is no narrowing and no control-word question.
  */
@@ -236,6 +248,32 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   if (have_skip) {
     x86p_emit_bind(e, skip);
+  }
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+}
+
+/*
+ * FCOM / FCOMP m32/m64. The memory access is validated before opening the
+ * outgoing long-double stack slot so the shared fault stub always observes
+ * the post-prologue RSP. A host FLD widens the operand exactly and
+ * x86p_x87_compare remains the sole owner of C0/C2/C3, NaN and empty-ST(0)
+ * status semantics. FCOMP then pops through the same stack owner as the
+ * interpreter. Neither comparison nor pop changes integer EFLAGS.
+ */
+void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  const X86pOperand *o0 = &insn->operand[0];
+  int i;
+
+  emit_mem_prepare_w(c, o0, insn_eip, o0->size);
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  x87_widen_mem_to_scratch(e, o0->size);
+  x87_lea_self(e);
+  x87_call(e, (const void *)&x86p_x87_compare); /* other at [rsp] */
+  for (i = 0; i < (int)insn->x87_pops; i++) {
+    x87_lea_self(e);
+    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
 }

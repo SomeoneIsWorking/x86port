@@ -3,12 +3,13 @@
  *
  * x87 is ~38% of in-game guest CPU on pc/xmen2, and it is the single largest
  * broad-codegen lever left. This unit emits the translatable subset -- FLD, the
- * FADD/FSUB/FMUL/FDIV family, and FST/FSTP (to a register or to m32/m64) --
- * with inline operand widening and direct calls to the shared x86p_x87_*
- * semantic helpers, so the status word, tags and TOP stay that module's
- * business and the test oracle can check operand plumbing independently.
- * Integer-source forms (FILD/FIST...), FLD m80, compares and FLDCW/FNSTSW are
- * refused until they have native emitters.
+ * FADD/FSUB/FMUL/FDIV family, FCOM/FCOMP against m32/m64, and FST/FSTP (to a
+ * register or to m32/m64) -- with inline operand widening and direct calls to
+ * the shared x86p_x87_* semantic helpers, so the status word, tags and TOP stay
+ * that module's business and the test oracle can check operand plumbing
+ * independently. Integer-source forms (FILD/FIST/FICOM...), FLD m80,
+ * register/implicit compares and FLDCW/FNSTSW are refused until they have
+ * native emitters.
  */
 #ifndef X86PORT_JIT_X64_X87_H
 #define X86PORT_JIT_X64_X87_H
@@ -20,6 +21,7 @@
    for an emittable instruction; the dispatch order in jit_x64.c mirrors this. */
 int x87_load_is_emittable(const X86pInsn *insn);
 int x87_arith_is_emittable(const X86pInsn *insn);
+int x87_compare_mem_is_emittable(const X86pInsn *insn);
 int x87_store_reg_is_emittable(const X86pInsn *insn);
 int x87_store_mem_is_emittable(const X86pInsn *insn);
 int x87_constant_is_emittable(const X86pInsn *insn);
@@ -28,6 +30,7 @@ int x87_constant_is_emittable(const X86pInsn *insn);
    predicate. None of these write EFLAGS. */
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn);
 void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_constant(BlockCtx *c, const X86pInsn *insn);

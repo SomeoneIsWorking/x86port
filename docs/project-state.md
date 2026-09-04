@@ -74,9 +74,10 @@ differentials cover all SETcc conditions and byte destinations, LEAVE ordering,
 CDQ sign edges, MUL r/m32 widening and flag behavior, unsigned and signed DIV
 r/m32 faults, two- and three-operand
 IMUL result and flag behavior, REP string progress and termination, XCHG r/m32
-ordering, and all seven x87 constant loads including stack overflow. Gap:
-title-required emitter, exception, and interrupt coverage is incomplete, and
-the backend has not yet passed representative consumer gameplay conformance.
+ordering, all seven x87 constant loads including stack overflow, and memory-form
+FCOM/FCOMP status, NaN, pop, empty-stack, and fault behavior. Gap: title-required
+emitter, exception, and interrupt coverage is incomplete, and the backend has
+not yet passed representative consumer gameplay conformance.
 
 ### S005 — product execution selection and fallback
 
