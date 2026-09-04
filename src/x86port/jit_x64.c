@@ -7,6 +7,8 @@
 #include "emit_x64.h"
 #include "exec.h"
 #include "flags.h"
+#include "jit_x64_internal.h"
+#include "jit_x64_x87.h"
 #include "simd.h"
 #include "three_dnow.h"
 
@@ -15,40 +17,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
- * The host register holding the X86pCpu pointer for the life of a block.
- *
- * RBX is callee-saved, so the helper calls this file emits cannot clobber it.
- * Choosing a caller-saved register instead would work perfectly until the first
- * call to x86p_alu, after which every guest register access would read from
- * whatever the helper left behind.
- */
-#define CPU_REG kX64Rbx
-
-/*
- * Scratch roles in the emitted memory sequence. Named rather than spelled at
- * each site, because a collision between the host pointer and an operand is
- * silent: the access simply reads the wrong address.
- */
-#define EA_REG kX64Rax      /* the guest effective address, 32-bit */
-#define HOSTPTR_REG kX64R11 /* the host address it maps to */
-#define FAULTPC_REG kX64R10 /* guest EIP to report if the access faults */
-/*
- * ADDR_TMP and CARRY_REG must be DIFFERENT registers, and that is a
- * correctness constraint rather than a preference. The carry-in bit is computed
- * before the address -- it reads the OLD flag state, which the operation is
- * about to overwrite -- but it must not be STORED until the bounds check has
- * passed, because an access that faults must leave the flag state untouched.
- * So the bit stays live in CARRY_REG across the whole address computation, and
- * the address machinery cannot use that register.
- */
-#define ADDR_TMP kX64Rdi  /* index/offset scratch during address forming */
-#define CARRY_REG kX64Rcx /* the pending carry-in bit, until it is safe to store */
-
-/* Guest instructions per block. A cap so a straight-line run of translatable
-   code cannot consume the whole arena in one block, and so a caller always gets
-   a chance to invalidate between blocks. */
-#define MAX_INSNS 64
+/* The host register roles (CPU_REG, HOSTPTR_REG, ...) and MAX_INSNS live in
+   jit_x64_internal.h -- the x87 emission unit needs the same definitions. */
 
 /* Emitting one guest instruction never exceeds this, so the buffer is checked
    once per instruction rather than after every emit. The margin is generous
@@ -140,11 +110,6 @@ static int32_t flag_off(size_t field) {
 #define FLAG_KIND flag_off(offsetof(X86pFlags, kind))
 #define FLAG_W flag_off(offsetof(X86pFlags, w))
 #define FLAG_CARRY_IN flag_off(offsetof(X86pFlags, carry_in))
-
-/* The X86pX87 sub-struct, and where the fields the JIT touches live in it. */
-static int32_t x87_off(void) {
-  return (int32_t)offsetof(X86pCpu, x87);
-}
 
 /* ---- can this instruction be emitted? ----------------------------------- */
 
@@ -277,84 +242,7 @@ static int movx_is_emittable(const X86pInsn *insn) {
   return src->kind == kX86pOperandMem;
 }
 
-/*
- * FLD, and only FLD, for the first x87 backend.
- *
- * A load is the one x87 instruction with no rounding and no reverse-operand
- * trap: widening a 32- or 64-bit float to the register's 80 bits is exact for
- * every value, NaNs and denormals included, so `fld dword`/`fld qword` on the
- * host produces bit-for-bit what x86p_x87_from_f32/f64 produce. The emitted
- * code then calls x86p_x87_push (or x86p_x87_get for the FLD ST(i) form)
- * directly -- the same functions the interpreter uses -- so stack-overflow
- * flags, tags and TOP stay that module's business. FLD m80 stays on the helper
- * (its own byte-assembly path), as does FILD (integer source, x87_mem_int).
- *
- * Every other x87 instruction -- stores (host narrowing follows the control
- * word, the interpreter's (float) cast does not), arithmetic, compares --
- * keeps going through emit_helper_call until a later phase.
- */
-static int x87_load_is_emittable(const X86pInsn *insn) {
-  const X86pOperand *o;
-  if (insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int || insn->operands != 1) {
-    return 0;
-  }
-  o = &insn->operand[0];
-  if (o->kind == kX86pOperandSt) {
-    return o->reg >= 0 && o->reg < X86P_X87_REGS;
-  }
-  return o->kind == kX86pOperandMem && (o->size == 4 || o->size == 8) && !o->addr16;
-}
-
-/*
- * FADD / FSUB / FMUL / FDIV, their R (operand-swap) and P (pop) variants, in
- * the three operand shapes arith_operands (x87_exec.c) recognises: `Fop m32/m64`
- * accumulating into ST(0), `Fop ST(0), ST(i)` written short as one operand, and
- * `FopP ST(i), ST(0)` with two. The integer-source forms (FIADD ...,
- * x87_mem_int) keep their own path. The emitted code still calls
- * x86p_x87_arith, so the reverse flag, the ZE/IE/SF bits, the divide-by-zero
- * infinity and the result tag stay that one function's business.
- */
-static int x87_arith_is_emittable(const X86pInsn *insn) {
-  const X86pOperand *o0 = &insn->operand[0];
-  if (insn->x87 != (uint8_t)kX86pX87InsnArith || insn->x87_mem_int) {
-    return 0;
-  }
-  if ((unsigned)insn->x87_op >= (unsigned)kX86pX87OpCount) {
-    return 0;
-  }
-  if (insn->operands == 2 && o0->kind == kX86pOperandSt && insn->operand[1].kind == kX86pOperandSt) {
-    return o0->reg >= 0 && o0->reg < X86P_X87_REGS && insn->operand[1].reg >= 0 &&
-           insn->operand[1].reg < X86P_X87_REGS;
-  }
-  if (insn->operands == 1 && o0->kind == kX86pOperandSt) {
-    return o0->reg >= 0 && o0->reg < X86P_X87_REGS;
-  }
-  return insn->operands == 1 && o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
-}
-
-/*
- * FST / FSTP to a stack position (not memory). Both slots are 80-bit, so there
- * is no narrowing and no control-word question.
- */
-static int x87_store_reg_is_emittable(const X86pInsn *insn) {
-  const X86pOperand *o0 = &insn->operand[0];
-  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandSt &&
-         o0->reg >= 0 && o0->reg < X86P_X87_REGS;
-}
-
-/*
- * FST / FSTP to a 32- or 64-bit memory float. x86p_x87_to_f32/f64 own the
- * narrowing (now RC-correct), so the emitted code calls them -- and calls
- * x86p_x87_get first, because the interpreter tests ST(0) for emptiness BEFORE
- * it touches memory: an empty ST(0) is a whole no-op there, no store and no
- * fault even if the address is bad. So the get and the narrowing run first, and
- * only then the bounds check.
- */
-static int x87_store_mem_is_emittable(const X86pInsn *insn) {
-  const X86pOperand *o0 = &insn->operand[0];
-  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandMem &&
-         (o0->size == 4 || o0->size == 8) && !o0->addr16;
-}
+/* The x87 predicates (x87_load_is_emittable, ...) live in jit_x64_x87.c. */
 
 static int can_emit(const X86pInsn *insn) {
   int i;
@@ -475,11 +363,7 @@ static int alu_writes_dest(uint8_t op) {
  * host memory, so this is stated here and in the header rather than left to be
  * discovered.
  */
-typedef struct MemPlan {
-  uint64_t host;
-  uint32_t lo;
-  uint32_t size;
-} MemPlan;
+/* MemPlan lives in jit_x64_internal.h. */
 
 /*
  * Emit: EA_REG = base + index*scale + disp, as the guest computes it.
@@ -592,32 +476,7 @@ static void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
 
 /* ---- emitting ------------------------------------------------------------ */
 
-/*
- * Per-block emission state.
- *
- * The fault sites are collected rather than bound as they are made, because
- * they all jump to ONE stub emitted after the normal epilogue. Binding each to
- * its own copy of the stub would be correct and would also add a dozen bytes
- * per memory access to every block.
- */
-typedef struct BlockCtx {
-  X86pEmit *e;
-  unsigned flag_helper_calls;
-  MemPlan plan;
-  X86pEmitSite faults[MAX_INSNS * 2];
-  unsigned nfaults;
-  /*
-   * Sites where a helper reported a non-Ok status. They go to a DIFFERENT stub
-   * from the bounds-check faults: that stub decides the exit code and the guest
-   * EIP itself, whereas here the helper has already set both -- the exit code
-   * is in EAX and EIP was left on the instruction. A shared stub would
-   * overwrite one with the other.
-   */
-  X86pEmitSite helper_faults[MAX_INSNS];
-  unsigned nhelper_faults;
-  unsigned helper_calls;
-  const X86pMem *mem;
-} BlockCtx;
+/* BlockCtx (per-block emission state) lives in jit_x64_internal.h. */
 
 static void note_helper_fault(BlockCtx *c, X86pEmitSite site) {
   if (c->nhelper_faults < sizeof c->helper_faults / sizeof c->helper_faults[0]) {
@@ -642,7 +501,7 @@ static void note_fault(BlockCtx *c, X86pEmitSite site) {
 /* The width is the ACCESS width, not a constant: a two-byte access ending one
    byte past the mapping must be refused, and a check hard-coded to 4 would
    refuse a legal one-byte access at the last address instead. */
-static void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
+void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_effective_address(c->e, o);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
   emit_host_pointer(c->e, &c->plan);
@@ -1313,208 +1172,8 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
   emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, dw), kX64Rax, dw);
 }
 
-/*
- * FLD -- push a float onto the x87 stack.
- *
- * The value is widened to 80 bits by the host `fld` (exact for every 32- and
- * 64-bit float) and handed to x86p_x87_push, which owns the overflow flags,
- * the tag and TOP exactly as it does for the interpreter. The FLD ST(i) form
- * reads the source with x86p_x87_get first and pushes nothing when that
- * register is empty -- the interpreter's own order, because the push would
- * renumber the position being read.
- *
- * A 16-byte scratch slot is opened on the stack for the long double: System V
- * passes an 80-bit value to a function in memory, and x86p_x87_get writes its
- * result there. `sub rsp, 16` keeps the 16-byte alignment a CALL needs. The
- * memory form's bounds check runs BEFORE the sub, so the fault stub -- which
- * pops RBX and returns assuming the post-prologue RSP -- is never reached with
- * the slot still open.
- */
-/* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
-static void x87_lea_self(X86pEmit *e) {
-  x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
-}
-
-/* mov rax, imm64(fn); call rax. */
-static void x87_call(X86pEmit *e, const void *fn) {
-  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)fn);
-  x86p_emit_call_r64(e, kX64Rax);
-}
-
-/* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The
-   widen-and-spill leaves the host x87 stack balanced and an 80-bit copy of the
-   memory float at [rsp], which is where System V wants an outgoing long double
-   argument and where the interpreter's read_float lands the same bits. */
-static void x87_widen_mem_to_scratch(X86pEmit *e, int w) {
-  x86p_emit_x87_m(e, (w == 4) ? 0xD9u : 0xDDu, 0u, HOSTPTR_REG, 0);
-  x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, 0);
-}
-
-static void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  X86pEmit *e = c->e;
-  const X86pOperand *o = &insn->operand[0];
-
-  if (o->kind == kX86pOperandMem) {
-    const int w = o->size; /* 4 or 8 -- can_emit gate */
-    emit_mem_prepare_w(c, o, insn_eip, w);
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-    x87_widen_mem_to_scratch(e, w);
-    x87_lea_self(e);
-    x87_call(e, (const void *)&x86p_x87_push);
-    x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-    return;
-  }
-
-  /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
-  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-  x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o->reg);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  {
-    X86pEmitSite skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: source register was empty */
-    x87_lea_self(e);
-    x87_call(e, (const void *)&x86p_x87_push);
-    x86p_emit_bind(e, skip);
-  }
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-}
-
-/*
- * FADD / FSUB / FMUL / FDIV (+R, +P). The source operand is widened to 80 bits
- * into a 16-byte stack slot -- from memory with a host `fld`, or from a stack
- * register with x86p_x87_get -- and x86p_x87_arith runs the real op under the
- * guest control word. System V passes the long double `src` in memory, so the
- * slot IS the outgoing argument; `reverse` follows in ECX.
- *
- * A named source register that is empty is a stack fault that arith_operands
- * turns into a whole no-op -- no arithmetic, no pop -- so that path jumps
- * straight to the stack cleanup.
- */
-static void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  X86pEmit *e = c->e;
-  const X86pOperand *o0 = &insn->operand[0];
-  const int two_op = (insn->operands == 2);
-  const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
-  X86pEmitSite skip;
-  int have_skip = 0;
-  int i;
-
-  if (o0->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, o0, insn_eip, o0->size);
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-    x87_widen_mem_to_scratch(e, o0->size);
-  } else {
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-    x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
-    x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
-    x87_call(e, (const void *)&x86p_x87_get);
-    x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-    skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: empty source register */
-    have_skip = 1;
-  }
-
-  x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)insn->x87_op);
-  x86p_emit_mov_r32_imm32(e, kX64Rdx, (uint32_t)dst);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)insn->x87_reverse);
-  x87_call(e, (const void *)&x86p_x87_arith); /* src at [rsp] */
-
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
-
-  if (have_skip) {
-    x86p_emit_bind(e, skip);
-  }
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-}
-
-/*
- * FST ST(i) / FSTP ST(i): read ST(0), copy it into ST(i), pop when the P form.
- * Both slots are 80-bit so nothing rounds. An empty ST(0) is a stack fault the
- * interpreter turns into a no-op.
- */
-static void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
-  X86pEmit *e = c->e;
-  const X86pOperand *o0 = &insn->operand[0];
-  X86pEmitSite skip;
-  int i;
-
-  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-  x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty */
-  x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o0->reg);
-  x87_call(e, (const void *)&x86p_x87_set); /* value at [rsp] */
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
-  x86p_emit_bind(e, skip);
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-}
-
-/*
- * FST m32/m64 / FSTP m32/m64.
- *
- * ORDER MATTERS. The interpreter reads ST(0) and, only if it is not empty,
- * narrows and writes memory. An empty ST(0) never touches memory, so it never
- * faults on a bad address. This emits the same order: x86p_x87_get into a stack
- * slot, then -- if it succeeded -- x86p_x87_to_f32/f64 (which now round by the
- * guest control word), then the bounds check, then the store, then the pop.
- *
- * The scratch slot is released BEFORE emit_mem_prepare_w so its fault stub sees
- * the post-prologue RSP; the narrowed bits survive that in R9, which the
- * address path (RAX/RDI/R10/R11) does not touch.
- */
-static void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  X86pEmit *e = c->e;
-  const X86pOperand *o0 = &insn->operand[0];
-  const int w = o0->size; /* 4 or 8 -- gate */
-  X86pEmitSite empty;
-  X86pEmitSite done;
-  int i;
-
-  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-  x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  empty = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty -> no store, no pop, no fault */
-
-  x87_lea_self(e);
-  x87_call(e, (w == 4) ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64); /* value at [rsp] */
-  x86p_emit_mov_r64_r64(e, kX64R9, kX64Rax);
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-
-  emit_mem_prepare_w(c, o0, insn_eip, w);
-  if (w == 4) {
-    x86p_emit_store32(e, HOSTPTR_REG, 0, kX64R9);
-  } else {
-    x86p_emit_store64(e, HOSTPTR_REG, 0, kX64R9);
-  }
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
-  done = x86p_emit_jmp_rel32(e);
-
-  x86p_emit_bind(e, empty);
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-  x86p_emit_bind(e, done);
-}
+/* The x87 emission family (x87_lea_self, emit_x87_load/arith/store_reg/store_mem)
+   lives in jit_x64_x87.c. */
 
 /*
  * Prologue: save RBX, park the X86pCpu pointer in it.
