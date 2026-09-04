@@ -1,0 +1,33 @@
+/*
+ * jit_x64_x87.h -- native x87 emission for the x86-64 JIT backend.
+ *
+ * x87 is ~38% of in-game guest CPU on pc/xmen2, and it is the single largest
+ * broad-codegen lever left. This unit emits the translatable subset -- FLD, the
+ * FADD/FSUB/FMUL/FDIV family, and FST/FSTP (to a register or to m32/m64) --
+ * with inline operand widening and direct calls to the x86p_x87_* helpers that
+ * the interpreter itself uses, so the status word, tags and TOP stay that
+ * module's business and jit.verify is guaranteed to agree when the operand
+ * plumbing is right. Integer-source forms (FILD/FIST...), FLD m80, compares and
+ * FLDCW/FNSTSW stay on the generic helper call.
+ */
+#ifndef X86PORT_JIT_X64_X87_H
+#define X86PORT_JIT_X64_X87_H
+
+#include "decode.h"
+#include "jit_x64_internal.h"
+
+/* Can this X87 instruction be emitted natively? Exactly one predicate is true
+   for an emittable instruction; the dispatch order in jit_x64.c mirrors this. */
+int x87_load_is_emittable(const X86pInsn *insn);
+int x87_arith_is_emittable(const X86pInsn *insn);
+int x87_store_reg_is_emittable(const X86pInsn *insn);
+int x87_store_mem_is_emittable(const X86pInsn *insn);
+
+/* Emit one X87 instruction. The caller has already checked the matching
+   predicate. None of these write EFLAGS. */
+void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn);
+void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+
+#endif /* X86PORT_JIT_X64_X87_H */

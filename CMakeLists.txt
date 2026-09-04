@@ -65,6 +65,7 @@ add_library(x86port STATIC
   src/x86port/x87_transcendental.c
   src/x86port/emit_x64.c
   src/x86port/jit_x64.c
+  src/x86port/jit_x64_x87.c
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
 target_include_directories(x86port PUBLIC src/x86port)
