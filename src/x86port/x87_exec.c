@@ -470,10 +470,7 @@ static void execute(Ctx *c) {
     return;
 
   case kX86pX87InsnClearExc:
-    /* The exception flags and the busy bit; the condition codes and TOP are
-       not touched. Clearing the whole word would silently reset TOP to zero
-       and every subsequent ST(i) would name a different register. */
-    f->status &= (uint16_t)~0x80FFu;
+    x86p_x87_clear_exceptions(f);
     return;
 
   case kX86pX87InsnTest: {

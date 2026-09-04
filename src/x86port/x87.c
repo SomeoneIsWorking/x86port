@@ -132,6 +132,13 @@ uint16_t x86p_x87_status(const X86pX87 *f) {
   return (uint16_t)((f->status & ~(7u << X86P_X87_TOP_SHIFT)) | ((uint16_t)(f->top & 7u) << X86P_X87_TOP_SHIFT));
 }
 
+void x86p_x87_clear_exceptions(X86pX87 *f) {
+  if (!f) {
+    return;
+  }
+  f->status &= (uint16_t)~X86P_X87_FNCLEX_MASK;
+}
+
 int x86p_x87_get(const X86pX87 *f, int i, long double *out) {
   int p;
   if (!f || !out || i < 0 || i >= X86P_X87_REGS) {

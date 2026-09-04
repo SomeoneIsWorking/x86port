@@ -77,9 +77,15 @@ IMUL result and flag behavior, REP string progress and termination, XCHG r/m32
 ordering, all seven x87 constant loads including stack overflow, and memory-form
 FCOM/FCOMP status, NaN, pop, empty-stack, and fault behavior. FNSTSW AX is
 differentially covered across all TOP values and preserves upper EAX, integer
-flags, and x87 state. Gap: title-required emitter, exception, and interrupt
-coverage is incomplete, and the backend has not yet passed representative
-consumer gameplay conformance.
+flags, and x87 state. FNCLEX `DB E2` is decoded and executed through the
+shipping JIT; its focused differential proves that only B/ES/SF and the six
+exception flags are cleared while TOP, condition codes, control, tags, register
+data, general registers, and integer flags remain unchanged, and neighboring
+FNINIT remains a named refusal. The product-only runtime fixture independently
+executes FNCLEX before a named stopper without linking the interpreter oracle.
+Gap: title-required emitter, exception, and interrupt coverage is incomplete,
+and the backend has not yet passed representative consumer gameplay
+conformance.
 
 ### S005 — product execution selection and fallback
 

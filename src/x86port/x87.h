@@ -47,15 +47,24 @@ extern "C" {
 #define X86P_X87_REGS 8
 
 /* Status-word bits that matter to a guest. C0-C3 carry comparison results and
-   are read through FNSTSW; the stack-fault and invalid-operation bits are how
-   a guest finds out it overflowed or emptied the stack. */
+   are read through FNSTSW; the exception-summary, stack-fault, and individual
+   exception bits are cleared by FNCLEX; B is the architectural busy bit. */
 #define X86P_X87_IE 0x0001u /* invalid operation */
+#define X86P_X87_DE 0x0002u /* denormal operand */
 #define X86P_X87_ZE 0x0004u /* zero divide */
+#define X86P_X87_OE 0x0008u /* overflow */
+#define X86P_X87_UE 0x0010u /* underflow */
+#define X86P_X87_PE 0x0020u /* precision */
 #define X86P_X87_SF 0x0040u /* stack fault */
+#define X86P_X87_ES 0x0080u /* exception summary */
 #define X86P_X87_C0 0x0100u
 #define X86P_X87_C1 0x0200u
 #define X86P_X87_C2 0x0400u
 #define X86P_X87_C3 0x4000u
+#define X86P_X87_B 0x8000u /* busy */
+#define X86P_X87_FNCLEX_MASK                                                                                           \
+  (X86P_X87_B | X86P_X87_ES | X86P_X87_SF | X86P_X87_PE | X86P_X87_UE | X86P_X87_OE | X86P_X87_ZE | X86P_X87_DE |      \
+   X86P_X87_IE)
 #define X86P_X87_TOP_SHIFT 11
 
 /* Control-word fields. Rounding control selects nearest/down/up/truncate;
@@ -146,6 +155,10 @@ int x86p_x87_depth(const X86pX87 *f);
 
 /* The status word as FNSTSW reports it, with TOP merged into bits 11-13. */
 uint16_t x86p_x87_status(const X86pX87 *f);
+
+/* FNCLEX clears only the busy, summary, stack-fault, and six exception bits.
+   It does not change TOP, condition codes, control, tags, or register data. */
+void x86p_x87_clear_exceptions(X86pX87 *f);
 
 /* Round a value to the precision the control word currently selects. Applied
    to every arithmetic result, because that is what the hardware does -- a

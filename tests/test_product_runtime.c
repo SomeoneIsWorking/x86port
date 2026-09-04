@@ -290,6 +290,54 @@ static int xchg_eax_esp_executes_before_a_named_refusal(X86pJitEngine *engine, X
          expect(stats.translate_refusals == 7u, "post-XCHG refusal was not counted");
 }
 
+static int fnclex_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
+  static const uint8_t program[] = {
+      0xDB,
+      0xE2, /* FNCLEX */
+      0x0F,
+      0x53,
+      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+  };
+  char reason[256] = {0};
+  X86pJitEngineStats stats;
+  X86pJitRunStatus status;
+  long double first = 0.0L;
+  long double second = 0.0L;
+  uint8_t tags[X86P_X87_REGS];
+
+  memcpy(guest, program, sizeof program);
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)sizeof program);
+  x86p_cpu_reset(cpu);
+  cpu->eip = kGuestBase;
+  cpu->reg[kX86pEax] = UINT32_C(0xA5A5A5A5);
+  cpu->flags.kind = (uint8_t)kX86pFlagsExplicit;
+  cpu->flags.a = UINT32_C(0x000008D5);
+  cpu->x87.control = UINT16_C(0x0B7F);
+  if (!x86p_x87_push(&cpu->x87, 1.25L) || !x86p_x87_push(&cpu->x87, -3.5L)) {
+    return expect(0, "could not prepare the FNCLEX x87 stack");
+  }
+  cpu->x87.status = UINT16_C(0xFFFF);
+  memcpy(tags, cpu->x87.tag, sizeof tags);
+
+  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  x86p_jit_engine_stats(engine, &stats);
+
+  return expect(status == kX86pRunUnsupported, "post-FNCLEX refusal did not return the product status") &&
+         expect(cpu->eip == kGuestBase + 2u, "product did not execute through FNCLEX") &&
+         expect(cpu->x87.status == (uint16_t)(UINT16_C(0xFFFF) & (uint16_t)~X86P_X87_FNCLEX_MASK),
+                "FNCLEX cleared the wrong status bits") &&
+         expect(cpu->x87.top == 6u, "FNCLEX changed TOP") &&
+         expect(cpu->x87.control == UINT16_C(0x0B7F), "FNCLEX changed the control word") &&
+         expect(memcmp(cpu->x87.tag, tags, sizeof tags) == 0, "FNCLEX changed the tag word") &&
+         expect(x86p_x87_get(&cpu->x87, 0, &first) && first == -3.5L, "FNCLEX changed ST(0)") &&
+         expect(x86p_x87_get(&cpu->x87, 1, &second) && second == 1.25L, "FNCLEX changed ST(1)") &&
+         expect(cpu->reg[kX86pEax] == UINT32_C(0xA5A5A5A5), "FNCLEX changed a general register") &&
+         expect(cpu->flags.kind == (uint8_t)kX86pFlagsExplicit && cpu->flags.a == UINT32_C(0x000008D5),
+                "FNCLEX changed integer flags") &&
+         expect(strstr(reason, "RCPPS") != NULL, "post-FNCLEX refusal omitted the mnemonic") &&
+         expect(stats.translate_refusals == 8u, "post-FNCLEX refusal was not counted");
+}
+
 static int translation_failures_are_distinct(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
   char reason[256] = {0};
   X86pJitRunStatus status;
@@ -341,6 +389,9 @@ int main(void) {
   }
   if (ok) {
     ok = xchg_eax_esp_executes_before_a_named_refusal(engine, &cpu, guest);
+  }
+  if (ok) {
+    ok = fnclex_executes_before_a_named_refusal(engine, &cpu, guest);
   }
   if (ok) {
     ok = translation_failures_are_distinct(engine, &cpu, guest);
