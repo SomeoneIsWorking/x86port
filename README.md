@@ -8,9 +8,10 @@ binary.
 The product contract is deliberately narrow:
 
 - x64 and ARM64 are the required product JIT backends;
-- an interpreter may exist only in a separately built test target;
-- the product library and gameplay executables contain no interpreter,
-  interpreter selector, or interpreter fallback;
+- dynarec is always the product default and every cold block reaches the JIT;
+- a bounded, counted interpreter fallback may run only after a typed compile
+  refusal or unsafe emitted execution; explicit interpreter mode remains a
+  separately built diagnostic target and missing backends never fall back;
 - there is no static `Substrate`, offline guest-code generator, generated guest
   corpus, or precompiled guest image.
 
@@ -20,8 +21,9 @@ The concrete `x86port_runtime` target is the JIT-only product library;
 `x86port` aliases it for consumers. It contains the x64 decoder, CPU state and
 semantics, emitter, executable code memory/cache integration, bounded dispatch,
 interception, profiling, and invalidation APIs. Unsupported translations return
-a named refusal and never enter the separately built `x86port_test_oracle`.
-Product-only execution and archive-symbol gates enforce that boundary. x64
+a named refusal. The permitted bounded product fallback and its telemetry are
+not implemented yet and remain distinct from `x86port_test_oracle`.
+Product-only execution and archive-symbol gates enforce the current boundary. x64
 instruction and consumer conformance coverage is still incomplete, and ARM64
 code emission is absent. Shipping diagnostics use the configurable
 `X86pDiagnosticSink` boundary; only its default implementation writes to

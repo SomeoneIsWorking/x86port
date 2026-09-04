@@ -10,14 +10,16 @@ product or alternate static execution mode to preserve.
 The consumer-facing library contains CPU state, runtime decoding, shared
 semantic helpers, a host JIT backend, executable code/cache ownership, bounded
 dispatch, invalidation, and the native-call boundary. A game links that library
-and always executes non-native guest code through the JIT.
+and offers every non-native guest block to the JIT first.
 
-The interpreter is built only into a separate framework-test target. That
-target may compare interpreter and JIT state, but the gameplay library and
-consumer executable must contain no interpreter dispatcher, interpreter engine
-enum, selector spelling, fallback branch, or JIT-emitted call into interpreter
-dispatch. A JIT may call a narrowly owned semantic helper; the helper implements
-one CPU rule and does not decode or dispatch the next guest instruction.
+Interpreter-only execution is built into a separate framework-test target. That
+target may compare interpreter and JIT state. The gameplay library has no
+interpreter engine enum or selector spelling; its only legal interpretation
+edge is a bounded fallback owned by the JIT dispatcher after typed failed or
+unsupported compilation, or unsafe emitted execution. The edge records reason,
+guest PC, blocks, and instructions before returning to JIT dispatch. A JIT may
+also call a narrowly owned semantic helper; that helper implements one CPU rule
+and does not decode or dispatch the next guest instruction.
 
 Runtime translation is the only guest-code generation. No configure, build,
 install, provision, or release action may emit guest C/C++, object files,
@@ -33,7 +35,7 @@ This gate removes a stale path only; the product link boundary is Gate 2.
 
 ## Gate 2 — separate product and oracle link graphs
 
-`x86port_runtime` is the concrete JIT-only product library and `x86port` aliases
+`x86port_runtime` is the concrete dynarec-default product library and `x86port` aliases
 it. Interpreter dispatch and oracle-only support live in
 `x86port_test_oracle`, which is created only when this repository builds as the
 top-level project.
@@ -42,8 +44,8 @@ Acceptance evidence:
 
 - a consumer fixture links the product library and executes nonzero translated
   blocks;
-- symbol/link inspection proves interpreter step/run functions and runtime
-  engine selection are absent from the fixture and product archive;
+- symbol/link inspection proves explicit interpreter-only selection and the
+  test-oracle dispatcher are absent from the fixture and product archive;
 - the product API exposes one execution contract and refuses an unavailable
   host backend rather than selecting an engine;
 - the separately built differential target still exercises the same CPU state,
@@ -51,22 +53,25 @@ Acceptance evidence:
 - a negative fixture intentionally links the oracle target and proves the link
   audit can detect interpreter presence.
 
-## Gate 3 — keep interpreter execution out of the x64 JIT
+## Gate 3 — bound every non-JIT instruction
 
 Every translatable instruction takes either host emission or a call to a
 canonical narrow semantic helper. An instruction without either route stops at
-its own EIP with a named unsupported status. It never calls the interpreter
-step/dispatch loop.
+its own EIP with a named unsupported status or enters the bounded product
+fallback with that exact reason. Fallback executes only that refused/unsafe
+block, records blocks and instructions by reason, and returns to JIT dispatch;
+it is never a profiling first pass, asynchronous-compilation bridge,
+missing-backend substitute, or compatibility mode.
 
 Acceptance evidence:
 
-- the title corpus reports every decoded instruction as emitted or handled by a
-  named semantic helper, with no interpreter-dispatch category;
-- unsupported semantics stop with a named refusal and cannot silently make
-  progress through the oracle;
+- the title corpus reports every decoded instruction as emitted, handled by a
+  named semantic helper, or entered through a named/countable fallback edge;
+- unsupported semantics stop with a named refusal or bounded fallback and
+  cannot silently make progress through the diagnostic oracle;
 - differential tests still stop at the first whole-machine mismatch;
-- nonzero translated blocks, cache hits, semantic-helper calls, and refusals are reported
-  with denominators;
+- nonzero translated blocks, cache hits, semantic-helper calls, refusals, and
+  fallback blocks/instructions by reason are reported with denominators;
 - exception, interrupt, memory-fault, and bounded-exit outcomes preserve the
   guest PC and state required by consumers.
 
@@ -110,8 +115,8 @@ completion evidence.
 ## Gate 6 — implement and qualify ARM64
 
 Add a cohesive ARM64 backend behind the same product dispatcher and semantic
-owners. Do not grow the x64 emitter into a multi-host monolith and do not use the
-test interpreter as an ARM64 product path.
+owners. Do not grow the x64 emitter into a multi-host monolith and do not use
+bounded fallback as a substitute for an ARM64 product backend.
 
 Acceptance evidence mirrors x64 and additionally covers ARM64 ABI transitions,
 W^X publication, instruction-cache maintenance, cache invalidation, and each
@@ -135,6 +140,5 @@ Before calling the framework complete:
 - keep x86-only policy local and extract to `jit-common` only after two concrete
   platform frameworks prove identical semantics.
 
-After both consumers pass their dynamic conformance gates, remove their final
-dependency on `shared/recomp-x86`; the obsolete repository is then deleted by
-the portfolio migration owner rather than retained as a legacy path.
+Both consumers must resolve only the maintained `x86port` and `jit-common`
+runtime contracts; no parallel execution-framework dependency may remain.

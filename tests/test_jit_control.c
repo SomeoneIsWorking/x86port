@@ -153,6 +153,9 @@ static void compare_one_success(Fixture *fixture, X86pCpu initial, uint32_t inst
   }
 }
 
+static void
+compare_expected_exit(Fixture *fixture, X86pCpu initial, X86pStepStatus expected_step, X86pJitExit expected_exit);
+
 static void test_setcc_all_conditions_and_byte_destinations(Fixture *fixture) {
   unsigned condition;
   unsigned flags;
@@ -289,6 +292,53 @@ static void test_cdq_sign_edges(Fixture *fixture) {
     initial.reg[kX86pEdx] = 0x13579BDFu;
     compare_one_success(fixture, initial, 1u, 1);
   }
+}
+
+static void test_mul32_register_memory_alias_and_fault(Fixture *fixture) {
+  static const struct {
+    uint32_t eax;
+    uint32_t operand;
+    uint8_t reg;
+  } cases[] = {
+      {0u, 0u, kX86pEcx},
+      {1u, 0xFFFFFFFFu, kX86pEcx},
+      {0xFFFFFFFFu, 2u, kX86pEcx},
+      {0xFFFFFFFFu, 0xFFFFFFFFu, kX86pEcx},
+      {0x00010000u, 0x00010000u, kX86pEax},
+      {3u, 0x80000000u, kX86pEdx},
+  };
+  X86pCpu initial;
+  uint32_t address = kGuestBase + kDataOffset;
+  unsigned index;
+
+  for (index = 0u; index < sizeof cases / sizeof cases[0]; index++) {
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0xF7u;
+    fixture->guest[1] = (uint8_t)(0xE0u + cases[index].reg); /* MUL r32 */
+    append_stopper(fixture->guest + 2u);
+    initial = explicit_cpu(index & 31u);
+    initial.reg[kX86pEax] = cases[index].eax;
+    initial.reg[cases[index].reg] = cases[index].operand;
+    compare_one_success(fixture, initial, 2u, 0);
+  }
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xF7u;
+  fixture->guest[1] = 0x25u; /* MUL dword [disp32] */
+  put_u32(fixture->guest + 2u, address);
+  append_stopper(fixture->guest + 6u);
+  put_u32(fixture->guest + kDataOffset, 0x80000001u);
+  initial = explicit_cpu(19u);
+  initial.reg[kX86pEax] = 3u;
+  compare_one_success(fixture, initial, 6u, 0);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xF7u;
+  fixture->guest[1] = 0x25u;
+  put_u32(fixture->guest + 2u, kGuestBase + kGuestSize - 3u);
+  append_stopper(fixture->guest + 6u);
+  initial = explicit_cpu(23u);
+  compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
 }
 
 static void
@@ -683,6 +733,7 @@ int main(void) {
   test_setcc_memory_fault_and_addr16_refusal(&fixture);
   test_leave_success_and_fault(&fixture);
   test_cdq_sign_edges(&fixture);
+  test_mul32_register_memory_alias_and_fault(&fixture);
   test_div32_success_and_faults(&fixture);
   test_idiv32_success_and_faults(&fixture);
   test_imul32_register_memory_edges_and_fault(&fixture);
@@ -691,7 +742,7 @@ int main(void) {
   test_xchg32_register_memory_alias_and_fault(&fixture);
   test_x87_constant_loads_and_full_stack(&fixture);
   jc_code_region_destroy(&fixture.code);
-  printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87 constants\n",
+  printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87 constants\n",
          g_checks,
          g_failures);
   return g_failures == 0 ? 0 : 1;
