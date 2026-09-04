@@ -32,14 +32,16 @@
 #include <string.h>
 #include <sys/mman.h>
 
-static unsigned long g_checks;
-static unsigned long g_failed;
-static unsigned long g_oracle_runs;
-
 #if defined(__x86_64__)
 #define HAVE_ORACLE 1
 #else
 #define HAVE_ORACLE 0
+#endif
+
+#if HAVE_ORACLE
+static unsigned long g_checks;
+static unsigned long g_failed;
+static unsigned long g_oracle_runs;
 #endif
 
 /* How the instruction under test names its operands. */

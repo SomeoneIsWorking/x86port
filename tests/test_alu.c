@@ -21,8 +21,10 @@
 static int g_checks;
 static int g_failed;
 static int g_test_failed;
+#if defined(__x86_64__) || defined(__i386__)
 static unsigned long g_hw_cases;
 static unsigned long g_hw_mismatch;
+#endif
 
 #define CHECK(cond)                                                                                                    \
   do {                                                                                                                 \
