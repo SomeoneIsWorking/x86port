@@ -362,7 +362,7 @@ static int can_emit(const X86pInsn *insn) {
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
     return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
-           x87_store_mem_is_emittable(insn) || x87_constant_is_emittable(insn);
+           x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn);
   default:
     return 0;
   }
@@ -1718,11 +1718,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       }
       break;
     case kX86pInsnX87:
-      /* FLD, the FADD/FSUB/FMUL/FDIV family, and FST/FSTP (to register or
-         memory) reach here; none write EFLAGS, so last_kind -- the predecessor
-         for the next carry-in -- is unchanged. */
+      /* FLD, FCOM/FCOMP against memory, the FADD/FSUB/FMUL/FDIV family, and
+         FST/FSTP (to register or memory) reach here; none write EFLAGS, so
+         last_kind -- the predecessor for the next carry-in -- is unchanged. */
       if (x87_arith_is_emittable(&insn)) {
         emit_x87_arith(&ctx, &insn, pc);
+      } else if (x87_compare_mem_is_emittable(&insn)) {
+        emit_x87_compare_mem(&ctx, &insn, pc);
       } else if (x87_store_reg_is_emittable(&insn)) {
         emit_x87_store_reg(&ctx, &insn);
       } else if (x87_store_mem_is_emittable(&insn)) {
