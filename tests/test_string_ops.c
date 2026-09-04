@@ -28,9 +28,17 @@
 #include <string.h>
 #include <sys/mman.h>
 
-static unsigned long g_checks;
+#if defined(__x86_64__)
+#define HAVE_ORACLE 1
+#else
+#define HAVE_ORACLE 0
+#endif
+
 static unsigned long g_failed;
+#if HAVE_ORACLE
+static unsigned long g_checks;
 static unsigned long g_oracle_runs;
+#endif
 
 #define CHECK(c)                                                                                                       \
   do {                                                                                                                 \
@@ -40,12 +48,6 @@ static unsigned long g_oracle_runs;
       printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);                                                          \
     }                                                                                                                  \
   } while (0)
-
-#if defined(__x86_64__)
-#define HAVE_ORACLE 1
-#else
-#define HAVE_ORACLE 0
-#endif
 
 #define BUF 512u
 #define GUEST_BASE 0x00020000u
@@ -58,7 +60,9 @@ static unsigned long g_oracle_runs;
 #define SRC_OFF 0x80u
 #define DST_OFF 0x140u
 
+#if HAVE_ORACLE
 static uint8_t g_guest[BUF];
+#endif
 
 typedef struct Outcome {
   uint8_t mem[BUF];
@@ -169,6 +173,7 @@ static void oracle(uint8_t opcode,
 }
 #endif /* HAVE_ORACLE */
 
+#if HAVE_ORACLE
 static uint32_t model_eflags(const X86pCpu *cpu) {
   return x86p_eflags(&cpu->flags) & X86P_ARITH_FLAGS;
 }
@@ -181,6 +186,7 @@ static void fill(uint8_t *p, size_t n, unsigned seed) {
     p[i] = (uint8_t)((seed * 37u + i * 17u + (i / 4u)) & 0xFFu);
   }
 }
+#endif
 
 typedef struct Case {
   const char *name;

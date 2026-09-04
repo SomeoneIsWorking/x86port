@@ -663,7 +663,9 @@ int main(void) {
   /* Stated up front, because every arithmetic number below is only a parity
      claim when this holds. */
   printf("host long double is x87 extended (64-bit mantissa): %s\n", x86p_x87_precision_is_exact() ? "yes" : "NO");
+#if HAVE_HW_ORACLE
   build_vals();
+#endif
 
   RUN(test_st_is_a_position_not_a_register);
   RUN(test_top_appears_in_the_status_word);

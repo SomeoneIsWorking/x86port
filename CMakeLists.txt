@@ -60,6 +60,7 @@ add_library(x86port_runtime STATIC
   src/x86port/x87.c
   src/x86port/x87_transcendental.c
   src/x86port/emit_x64.c
+  src/x86port/emit_arm64.c
   src/x86port/jit_x64.c
   src/x86port/jit_x64_x87.c
   src/x86port/jit_profile.c
@@ -205,6 +206,15 @@ add_executable(test_emit_x64 tests/test_emit_x64.c)
 target_link_libraries(test_emit_x64 PRIVATE x86port Zydis)
 target_compile_options(test_emit_x64 PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_emit_x64 COMMAND test_emit_x64)
+
+# No Zydis-grade decode oracle exists for AArch64 here, so this test decodes
+# with its own independently-written bitfield extractor instead (see the file
+# header). It needs only the encoder, so it links x86port_runtime directly
+# rather than the alias that pulls in Zydis.
+add_executable(test_emit_arm64 tests/test_emit_arm64.c)
+target_link_libraries(test_emit_arm64 PRIVATE x86port_runtime)
+target_compile_options(test_emit_arm64 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_emit_arm64 COMMAND test_emit_arm64)
 
 # The differential: translated code against the interpreter, whole machine.
 add_executable(test_jit_x64 tests/test_jit_x64.c)

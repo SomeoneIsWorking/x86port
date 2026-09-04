@@ -30,18 +30,22 @@
 #include <string.h>
 #include <sys/mman.h>
 
-static unsigned long g_checks;
-static unsigned long g_failed;
-static unsigned long g_oracle_runs;
-
 #if defined(__x86_64__)
 #define HAVE_ORACLE 1
 #else
 #define HAVE_ORACLE 0
 #endif
 
+#if HAVE_ORACLE
+static unsigned long g_checks;
+static unsigned long g_failed;
+static unsigned long g_oracle_runs;
+#endif
+
 #define BASE 0x00030000u
+#if HAVE_ORACLE
 static uint8_t g_code_mem[64];
+#endif
 
 typedef struct Case {
   const char *name;
