@@ -248,6 +248,30 @@ static void test_store32_every_base_and_displacement(void) {
   }
 }
 
+static void test_store64_is_a_qword_store(void) {
+  int base;
+  size_t i;
+  for (base = 0; base < kX64RegCount; base++) {
+    for (i = 0; i < sizeof kDisps / sizeof kDisps[0]; i++) {
+      uint8_t buf[16];
+      X86pEmit e;
+      Decoded d;
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_emit_store64(&e, (X86pHostReg)base, kDisps[i], kX64R9);
+      d = emit_and_decode(&e);
+      if (!d.ok) {
+        continue;
+      }
+      CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_MOV);
+      CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+      CHECK(d.ops[0].size == 64);
+      CHECK(reg_id(d.ops[0].mem.base) == base);
+      CHECK((int32_t)d.ops[0].mem.disp.value == kDisps[i]);
+      CHECK(d.ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER && reg_id(d.ops[1].reg.value) == kX64R9);
+    }
+  }
+}
+
 static void test_store8_imm_is_a_byte_store(void) {
   int base;
   for (base = 0; base < kX64RegCount; base++) {
@@ -578,6 +602,7 @@ int main(void) {
   RUN(test_mov_r32_imm32);
   RUN(test_load32_every_base_and_displacement);
   RUN(test_store32_every_base_and_displacement);
+  RUN(test_store64_is_a_qword_store);
   RUN(test_store8_imm_is_a_byte_store);
   RUN(test_alu_r32_r32_every_op);
   RUN(test_alu_r32_imm32_every_op);

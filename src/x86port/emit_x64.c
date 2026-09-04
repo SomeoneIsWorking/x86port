@@ -130,6 +130,12 @@ void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg 
   modrm_mem(e, src, base, disp);
 }
 
+void x86p_emit_store64(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src) {
+  rex(e, 1, src, base);
+  put(e, 0x89u);
+  modrm_mem(e, src, base, disp);
+}
+
 void x86p_emit_mov_r64_imm64(X86pEmit *e, X86pHostReg dst, uint64_t imm) {
   rex(e, 1, kX64Rax, dst);
   put(e, (uint8_t)(0xB8u + ((unsigned)dst & 7u)));

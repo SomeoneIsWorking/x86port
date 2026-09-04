@@ -127,6 +127,9 @@ void x86p_emit_load32(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t di
 /* mov [base + disp], r32 */
 void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
 
+/* mov [base + disp], r64 */
+void x86p_emit_store64(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
+
 /* mov r64, imm64 -- how the address of a helper function reaches the code. */
 void x86p_emit_mov_r64_imm64(X86pEmit *e, X86pHostReg dst, uint64_t imm);
 
