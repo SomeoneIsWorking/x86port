@@ -1,0 +1,84 @@
+name: x86-64 runtime CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86-64:
+    name: Linux x86-64 / Clang
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: x86port
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: SomeoneIsWorking/jit-common
+          ref: 5a04445b593ba18ca768b88a4b47447dc05f3bcc
+          path: jit-common
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install native verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends clang clang-format clang-tidy cmake ninja-build
+      - name: Configure and build the x64 product and oracle fixtures
+        working-directory: x86port
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build/ci/linux-x86-64 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DX86PORT_JITCOMMON_DIR=../jit-common
+          cmake --build build/ci/linux-x86-64 --parallel
+      - name: Run runtime, boundary, differential, and policy tests
+        working-directory: x86port
+        run: ctest --test-dir build/ci/linux-x86-64 --output-on-failure
+
+  macos-x86-64:
+    name: macOS x86-64 / Apple Clang
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: x86port
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: SomeoneIsWorking/jit-common
+          ref: 5a04445b593ba18ca768b88a4b47447dc05f3bcc
+          path: jit-common
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install native verification tools
+        run: |
+          brew install llvm ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+      - name: Configure and build the x64 product and oracle fixtures
+        working-directory: x86port
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build/ci/macos-x86-64 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DX86PORT_JITCOMMON_DIR=../jit-common
+          cmake --build build/ci/macos-x86-64 --parallel
+      - name: Run runtime, boundary, differential, and policy tests
+        working-directory: x86port
+        run: ctest --test-dir build/ci/macos-x86-64 --output-on-failure
