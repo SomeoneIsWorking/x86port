@@ -845,6 +845,55 @@ static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixt
   CHECK(strstr(reason, "FNSTSW") != NULL);
 }
 
+static void test_x87_clear_exceptions_exact_state_and_neighbor_refusal(Fixture *fixture) {
+  X86pCpu initial = explicit_cpu(27u);
+  X86pCpu result = initial;
+  X86pInsn decoded;
+  X86pJitBlock block;
+  X86pJitStatus translation;
+  char reason[256] = {0};
+  long double registers[X86P_X87_REGS];
+  uint8_t tags[X86P_X87_REGS];
+  unsigned index;
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xDBu;
+  fixture->guest[1] = 0xE2u; /* FNCLEX: the X-Men 2 frontier encoding. */
+  append_stopper(fixture->guest + 2u);
+  CHECK(x86p_decode(fixture->guest, 2u, &decoded) == 2u);
+  CHECK(decoded.op == kX86pInsnX87);
+  CHECK(decoded.x87 == (uint8_t)kX86pX87InsnClearExc);
+  CHECK(decoded.operands == 0);
+
+  for (index = 0u; index < 3u; index++) {
+    CHECK(x86p_x87_push(&initial.x87, (long double)(index + 1u)) != 0);
+  }
+  initial.x87.control = UINT16_C(0x0B7F);
+  initial.x87.status = UINT16_C(0xFFFF);
+  memcpy(registers, initial.x87.reg, sizeof registers);
+  memcpy(tags, initial.x87.tag, sizeof tags);
+  if (compare_one_success_result(fixture, initial, 2u, 1, &result)) {
+    CHECK(result.x87.status == (uint16_t)(initial.x87.status & (uint16_t)~X86P_X87_FNCLEX_MASK));
+    CHECK(result.x87.top == initial.x87.top);
+    CHECK(result.x87.control == initial.x87.control);
+    CHECK(memcmp(result.x87.tag, tags, sizeof tags) == 0);
+    for (index = 0u; index < X86P_X87_REGS; index++) {
+      CHECK(result.x87.reg[index] == registers[index]);
+    }
+  }
+
+  /* DB E3 is neighboring FNINIT, not a second spelling of FNCLEX. Until it
+     has its own emitter it must remain a named product refusal. */
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0xDBu;
+  fixture->guest[1] = 0xE3u;
+  append_stopper(fixture->guest + 2u);
+  reason[0] = '\0';
+  translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
+  CHECK(translation == kX86pJitUnsupportedAtEntry);
+  CHECK(strstr(reason, "FNINIT") != NULL);
+}
+
 int main(void) {
   Fixture fixture;
 
@@ -869,6 +918,7 @@ int main(void) {
   test_x87_constant_loads_and_full_stack(&fixture);
   test_x87_memory_compare_status_pop_nan_and_fault(&fixture);
   test_x87_store_status_ax_projection_and_memory_refusal(&fixture);
+  test_x87_clear_exceptions_exact_state_and_neighbor_refusal(&fixture);
   jc_code_region_destroy(&fixture.code);
   printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87\n",
          g_checks,

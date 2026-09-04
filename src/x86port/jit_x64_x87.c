@@ -130,6 +130,13 @@ int x87_status_ax_is_emittable(const X86pInsn *insn) {
          o0->reg == kX86pEax && o0->size == 2;
 }
 
+/* FNCLEX is exactly the zero-operand DB E2 instruction. Keeping the shape in
+   the predicate prevents another x87 instruction, or a malformed decoded
+   instruction carrying operands, from reaching its status-only emitter. */
+int x87_clear_exceptions_is_emittable(const X86pInsn *insn) {
+  return insn->x87 == (uint8_t)kX86pX87InsnClearExc && insn->operands == 0;
+}
+
 /* ---- shared emission helpers ----------------------------------------- */
 
 /* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
@@ -158,6 +165,14 @@ void emit_x87_status_ax(BlockCtx *c) {
   x87_lea_self(c->e);
   x87_call(c->e, (const void *)&x86p_x87_status);
   x86p_emit_store16_reg(c->e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rax);
+}
+
+/* FNCLEX changes no integer flags or registers. The shared semantic owner
+   clears precisely the architectural exception/busy mask in the guest x87
+   status field and leaves every other x87 field untouched. */
+void emit_x87_clear_exceptions(BlockCtx *c) {
+  x87_lea_self(c->e);
+  x87_call(c->e, (const void *)&x86p_x87_clear_exceptions);
 }
 
 /* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The

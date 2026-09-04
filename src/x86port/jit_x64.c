@@ -363,7 +363,7 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnX87:
     return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
            x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) ||
-           x87_status_ax_is_emittable(insn);
+           x87_status_ax_is_emittable(insn) || x87_clear_exceptions_is_emittable(insn);
   default:
     return 0;
   }
@@ -1372,9 +1372,6 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
   emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, dw), kX64Rax, dw);
 }
 
-/* The x87 emission family (x87_lea_self, emit_x87_load/arith/store_reg/store_mem)
-   lives in jit_x64_x87.c. */
-
 /*
  * Prologue: save RBX, park the X86pCpu pointer in it.
  *
@@ -1734,6 +1731,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_x87_constant(&ctx, &insn);
       } else if (x87_status_ax_is_emittable(&insn)) {
         emit_x87_status_ax(&ctx);
+      } else if (x87_clear_exceptions_is_emittable(&insn)) {
+        emit_x87_clear_exceptions(&ctx);
       } else {
         emit_x87_load(&ctx, &insn, pc);
       }

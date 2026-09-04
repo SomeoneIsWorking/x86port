@@ -118,6 +118,38 @@ static void test_top_appears_in_the_status_word(void) {
   }
 }
 
+static void test_clear_exceptions_preserves_unrelated_state(void) {
+  X86pX87 f;
+  long double registers[X86P_X87_REGS];
+  uint8_t tags[X86P_X87_REGS];
+  uint8_t top;
+  uint16_t control;
+  uint16_t status;
+  int i;
+
+  x86p_x87_reset(&f);
+  for (i = 0; i < 3; i++) {
+    CHECK(x86p_x87_push(&f, (long double)(i + 1)));
+  }
+  f.control = UINT16_C(0x0B7F);
+  f.status = UINT16_C(0xFFFF);
+  memcpy(registers, f.reg, sizeof registers);
+  memcpy(tags, f.tag, sizeof tags);
+  top = f.top;
+  control = f.control;
+  status = f.status;
+
+  x86p_x87_clear_exceptions(&f);
+
+  CHECK_EQ_U(f.status, status & (uint16_t)~X86P_X87_FNCLEX_MASK);
+  CHECK_EQ_U(f.top, top);
+  CHECK_EQ_U(f.control, control);
+  CHECK(memcmp(f.tag, tags, sizeof tags) == 0);
+  for (i = 0; i < X86P_X87_REGS; i++) {
+    CHECK(f.reg[i] == registers[i]);
+  }
+}
+
 /* Overflow and underflow are REPORTED. Silently wrapping TOP produces an
    engine that drifts from hardware with no symptom for thousands of
    instructions. */
@@ -635,6 +667,7 @@ int main(void) {
 
   RUN(test_st_is_a_position_not_a_register);
   RUN(test_top_appears_in_the_status_word);
+  RUN(test_clear_exceptions_preserves_unrelated_state);
   RUN(test_stack_overflow_and_underflow_are_reported);
   RUN(test_empty_register_is_not_zero);
   RUN(test_precision_control_rounds_results);
