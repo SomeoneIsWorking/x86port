@@ -13,6 +13,7 @@
 #include "cpu.h"
 #include "decode.h"
 #include "emit_x64.h"
+#include "jit_x64_abi.h"
 
 #include <stdint.h>
 

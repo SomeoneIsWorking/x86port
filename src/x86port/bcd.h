@@ -9,12 +9,11 @@
  * functions of AX and EFLAGS -- no CPU, no memory, nothing to mock. The
  * plumbing lives in exec.c where every other instruction's does.
  *
- * ON THE UNDEFINED FLAGS. The SDM leaves OF undefined for all six, and CF/AF
- * undefined for AAM and AAD. "Undefined" describes the specification, not the
- * silicon: this CPU does something specific and a guest that saves EFLAGS can
- * see it. tests/test_bcd.c compares the whole word against the real
- * instruction, so what this file does with those bits is measured rather than
- * assumed -- the same discipline that found four defects in flags.c.
+ * ON THE UNDEFINED FLAGS. The SDM leaves OF undefined for all six and leaves
+ * additional flags undefined for several forms. This module uses one
+ * deterministic policy derived from the original reference host.
+ * tests/test_integer_tail.c gates architecturally defined results and flags,
+ * while reporting host variation in undefined bits separately.
  */
 #ifndef X86PORT_BCD_H
 #define X86PORT_BCD_H

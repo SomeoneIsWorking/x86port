@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-
 PRODUCT_FORBIDDEN_SYMBOLS = frozenset(
     {
         "x86p_engine_from_env",
@@ -41,16 +40,27 @@ def global_symbols(nm: Path, archive: Path, *, defined_only: bool) -> set[str]:
     }
 
 
+def watched_symbols(symbols: set[str], watched: frozenset[str]) -> set[str]:
+    """Return watched C symbols across ELF and Mach-O nm spelling.
+
+    Mach-O prefixes external C symbols with one underscore. Normalizing only
+    the names this boundary actually watches avoids changing unrelated archive
+    symbol counts or conflating a legitimate ELF symbol that starts with an
+    underscore.
+    """
+    return {name for name in watched if name in symbols or f"_{name}" in symbols}
+
+
 def verify_product_boundary(nm: Path, product: Path, oracle: Path) -> tuple[int, int]:
     """Prove forbidden oracle symbols are absent from product and present in oracle."""
     product_symbols = global_symbols(nm, product, defined_only=False)
     oracle_symbols = global_symbols(nm, oracle, defined_only=True)
 
-    leaked = sorted(PRODUCT_FORBIDDEN_SYMBOLS & product_symbols)
+    leaked = sorted(watched_symbols(product_symbols, PRODUCT_FORBIDDEN_SYMBOLS))
     if leaked:
         raise RuntimeError(f"product archive references test-only symbols: {', '.join(leaked)}")
 
-    missing = sorted(ORACLE_REQUIRED_SYMBOLS - oracle_symbols)
+    missing = sorted(ORACLE_REQUIRED_SYMBOLS - watched_symbols(oracle_symbols, ORACLE_REQUIRED_SYMBOLS))
     if missing:
         raise RuntimeError(f"oracle archive is not a positive control; missing: {', '.join(missing)}")
 

@@ -69,7 +69,7 @@ const char *x86p_jit_status_name(X86pJitStatus s) {
 }
 
 int x86p_jit_available(void) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(_M_X64)
   return 1;
 #else
   return 0;
@@ -803,7 +803,7 @@ static int emit_compute_carry_in(X86pEmit *e, int last_kind) {
     return 0;
   default:
     /* Unknown predecessor: ask the one authority. Once per block. */
-    x86p_emit_lea64(e, kX64Rdi, CPU_REG, flags_off());
+    x86p_emit_lea64(e, X86P_JIT_HOST_ARG0, CPU_REG, flags_off());
     x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_flag_cf);
     x86p_emit_call_r64(e, kX64Rax);
     x86p_emit_mov_r32_r32(e, CARRY_REG, kX64Rax);
@@ -811,13 +811,10 @@ static int emit_compute_carry_in(X86pEmit *e, int last_kind) {
   }
 }
 
-/*
- * x86p_alu(op, a, b, w, &cpu->flags) -> result in EAX.
- *
- * System V argument order is RDI, RSI, RDX, RCX, R8. The two operand loads run
- * FIRST, because they read through CPU_REG; the later argument setup writes
- * registers they would otherwise have to avoid.
- */
+/* x86p_alu(op, a, b, w, &cpu->flags) -> result in EAX. Argument placement is
+ * owned by jit_x64_abi.h. The operand loads run first because they read through
+ * CPU_REG; the later argument setup writes registers they would otherwise have
+ * to avoid. */
 /*
  * The inlined form: native host arithmetic plus the lazy tuple written
  * directly, with no call at all.
@@ -1006,12 +1003,12 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
 
   if (divisor->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, divisor, insn_eip, 4);
-    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG, 0);
   } else {
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(divisor->reg));
+    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, CPU_REG, reg_off(divisor->reg));
   }
-  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rdx, (uint32_t)signed_divide);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, (uint32_t)signed_divide);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_div32);
   x86p_emit_call_r64(c->e, kX64Rax);
   x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
@@ -1037,11 +1034,11 @@ static void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   if (operand->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, operand, insn_eip, 4);
-    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG, 0);
   } else {
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(operand->reg));
+    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, CPU_REG, reg_off(operand->reg));
   }
-  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_mul32);
   x86p_emit_call_r64(c->e, kX64Rax);
 }
@@ -1061,22 +1058,22 @@ static void emit_imul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (insn->operands == 2) {
     if (source->kind == kX86pOperandMem) {
       emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_emit_load32(c->e, kX64Rcx, HOSTPTR_REG, 0);
+      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG3, HOSTPTR_REG, 0);
     } else {
-      x86p_emit_load32(c->e, kX64Rcx, CPU_REG, reg_off(source->reg));
+      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG3, CPU_REG, reg_off(source->reg));
     }
-    x86p_emit_load32(c->e, kX64Rdx, CPU_REG, reg_off(destination->reg));
+    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off(destination->reg));
   } else {
     if (source->kind == kX86pOperandMem) {
       emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_emit_load32(c->e, kX64Rdx, HOSTPTR_REG, 0);
+      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, HOSTPTR_REG, 0);
     } else {
-      x86p_emit_load32(c->e, kX64Rdx, CPU_REG, reg_off(source->reg));
+      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off(source->reg));
     }
-    x86p_emit_mov_r32_imm32(c->e, kX64Rcx, insn->operand[2].imm);
+    x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, insn->operand[2].imm);
   }
-  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, destination->reg);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, destination->reg);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_imul32);
   x86p_emit_call_r64(c->e, kX64Rax);
 }
@@ -1095,11 +1092,11 @@ static int jit_string(X86pCpu *cpu, const X86pMem *mem, uint32_t operation, uint
 static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmitSite failed;
 
-  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rsi, (uint64_t)(uintptr_t)c->mem);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rdx, insn->str);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rcx, insn->rep);
-  x86p_emit_mov_r32_imm32(c->e, kX64R8, insn->str_width);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_imm64(c->e, X86P_JIT_HOST_ARG1, (uint64_t)(uintptr_t)c->mem);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, insn->str);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, insn->rep);
+  x86p_jit_abi_emit_arg32_imm(c->e, X86P_JIT_HOST_ABI, 4u, insn->str_width);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_string);
   x86p_emit_call_r64(c->e, kX64Rax);
   x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
@@ -1264,22 +1261,27 @@ static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
 
   /* Register-only: can_emit keeps memory operands away from ADC and SBB. */
   const int w = dst->size;
-  emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
+  emit_load_w(e, X86P_JIT_HOST_ARG1, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
   if (src->kind == kX86pOperandImm) {
     /* Masked by the DESTINATION width, which is what x86p_alu does to `b`.
        Not by the immediate's own size: `83 /r` reports size 1 and carries an
        already sign-extended dword, so masking it to a byte would turn
        ADD EAX, -1 into ADD EAX, 255. */
-    x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm & width_mask(w)); /* b */
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG2, src->imm & width_mask(w)); /* b */
   } else {
     /* At the SOURCE's own width. For the binary operations that is the
        destination's width, but a shift's count is CL -- one byte -- and
        loading four would pass the whole of ECX as the count. */
-    emit_load_w(e, kX64Rdx, CPU_REG, reg_off_w(src->reg, src->size), src->size);
+    emit_load_w(e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off_w(src->reg, src->size), src->size);
   }
-  x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)insn->alu);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)w);
-  x86p_emit_lea64(e, kX64R8, CPU_REG, flags_off());
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG0, (uint32_t)insn->alu);
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG3, (uint32_t)w);
+  x86p_emit_lea64(e, kX64Rax, CPU_REG, flags_off());
+  if (X86P_JIT_HOST_ABI == kX86pJitHostAbiWin64) {
+    x86p_emit_store64(e, kX64Rsp, x86p_jit_abi_stack_arg_offset(4u), kX64Rax);
+  } else {
+    x86p_emit_mov_r64_r64(e, x86p_jit_abi_arg(kX86pJitHostAbiSystemV, 4u), kX64Rax);
+  }
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_alu);
   x86p_emit_call_r64(e, kX64Rax);
   if (alu_writes_dest(insn->alu)) {
@@ -1373,23 +1375,25 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
 }
 
 /*
- * Prologue: save RBX, park the X86pCpu pointer in it.
- *
- * System V requires RSP to be 16-byte aligned immediately before a CALL. On
- * entry to this block RSP is 8 mod 16; one 8-byte push aligns calls to narrow
- * semantic helpers such as x86p_alu. No helper may decode or dispatch a guest
- * instruction: an instruction without an emitter is a named refusal.
+ * Prologue: preserve every nonvolatile register this emitter uses, park the
+ * X86pCpu pointer in RBX, align calls, and reserve Win64 shadow/stack-argument
+ * space when that is the host ABI. jit_x64_abi.h owns the exact sequence. No
+ * helper may decode or dispatch a guest instruction: an instruction without
+ * an emitter is a named refusal.
  */
 
 static void emit_prologue(X86pEmit *e) {
-  x86p_emit_push_r64(e, CPU_REG);
-  x86p_emit_mov_r64_r64(e, CPU_REG, kX64Rdi);
+  x86p_jit_abi_emit_enter(e, X86P_JIT_HOST_ABI, CPU_REG);
+}
+
+static void emit_restore_host_frame(X86pEmit *e) {
+  x86p_jit_abi_emit_leave(e, X86P_JIT_HOST_ABI, CPU_REG);
 }
 
 static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
   x86p_emit_store32_imm(e, CPU_REG, eip_off(), next_eip);
   x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
-  x86p_emit_pop_r64(e, CPU_REG);
+  emit_restore_host_frame(e);
   x86p_emit_ret(e);
 }
 
@@ -1398,7 +1402,7 @@ static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
 static void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit) {
   x86p_emit_store32(e, CPU_REG, eip_off(), eip_reg);
   x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
-  x86p_emit_pop_r64(e, CPU_REG);
+  emit_restore_host_frame(e);
   x86p_emit_ret(e);
 }
 
@@ -1411,8 +1415,8 @@ static void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exi
  * ZF that TEST set is still live at the CMOV.
  */
 static void emit_condition_value(X86pEmit *e, uint8_t cond) {
-  x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)cond);
-  x86p_emit_lea64(e, kX64Rsi, CPU_REG, flags_off());
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG0, (uint32_t)cond);
+  x86p_emit_lea64(e, X86P_JIT_HOST_ARG1, CPU_REG, flags_off());
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cond);
   x86p_emit_call_r64(e, kX64Rax);
 }
@@ -1802,7 +1806,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
     x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitMemoryFault);
-    x86p_emit_pop_r64(&e, CPU_REG);
+    emit_restore_host_frame(&e);
     x86p_emit_ret(&e);
   }
 
@@ -1813,7 +1817,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
     x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitDivideError);
-    x86p_emit_pop_r64(&e, CPU_REG);
+    emit_restore_host_frame(&e);
     x86p_emit_ret(&e);
   }
 

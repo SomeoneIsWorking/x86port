@@ -199,15 +199,14 @@ int x86p_flag_of(const X86pFlags *f) {
   case kX86pFlagsDec:
     return (f->a & m) == sign_bit; /* was the most negative value */
   case kX86pFlagsShl:
-    /* Architecturally defined only for a count of 1. Measured: this CPU
-       computes msb(result) ^ CF for EVERY count -- 1792 of 1792 cases at
-       counts 2..8 -- so one formula matches hardware everywhere. */
+    /* Architecturally defined only for a count of 1. The deterministic policy
+       uses msb(result) ^ CF for every count, matching the original reference
+       host across its measured count-2-through-8 cases. */
     return sr ^ x86p_flag_cf(f);
   case kX86pFlagsShr:
     /* At a count of 1, the bit that was shifted away from the top. Beyond
-       that the ISA leaves OF undefined and this CPU returns 0 (measured:
-       1792 of 1792), which is what an interpreter should reproduce -- not
-       msb(a), which was the reading before hardware was consulted. */
+       that the ISA leaves OF undefined; the deterministic policy returns 0,
+       matching the original reference host. */
     return (f->b == 1) ? sa : 0;
   default:
     return 0;
@@ -231,20 +230,17 @@ int x86p_flag_af(const X86pFlags *f) {
     return (int)(((f->a ^ f->b ^ f->r) >> 4) & 1u);
   case kX86pFlagsLogic:
     /*
-     * Architecturally UNDEFINED, and "undefined" is not permission to guess:
-     * real hardware puts something there, and PUSHFD can observe it. Measured
-     * on this CPU across all 65,536 operand pairs for AND, OR, XOR and TEST:
-     * AF is CLEARED, whether it went in set or clear. This model preserved it
-     * until that measurement, and the first sweep could not catch the error
-     * because it never varied the incoming AF.
+     * Architecturally undefined. Use one deterministic policy rather than
+     * inheriting stale state: the original reference host cleared AF for every
+     * measured AND, OR, XOR and TEST case. Hardware-oracle tests report, but do
+     * not fail on, variation in this undefined bit across other x86 CPUs.
      */
     return 0;
   case kX86pFlagsShl:
   case kX86pFlagsShr:
   case kX86pFlagsSar:
-    /* Also undefined, and measured the other way: SET after every shift with a
-       nonzero count -- 4096 of 4096 cases for each of SHL, SHR and SAR,
-       regardless of the incoming AF. */
+    /* Also architecturally undefined. The deterministic policy follows the
+       original reference host, which set AF after every nonzero shift. */
     return 1;
   default:
     return 0;

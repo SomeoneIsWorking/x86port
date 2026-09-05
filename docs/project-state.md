@@ -44,11 +44,20 @@ The CI workflow runs the full asset-free CMake test graph against the pinned
 `jit-common` checkout, including product/oracle link inspection and synthetic
 JIT execution:
 
+The 2026-09-05 combined Linux gate used `uv run --frozen python tools/verify.py`
+with Clang 22.1.8 for C and C++, exact `jit-common`
+`4512a2054b0ecf737b6dd0b03f23713d23550b3c`, and passed all 26 CTests. The
+Win64 ABI executable positive/negative probe ran locally through `ms_abi`;
+this proves the emitted calling convention on the local host, while actual
+Windows OS evidence still requires its hosted job. Pointer-valued x87 helper
+adapters remove host by-value argument-layout assumptions; they do not solve
+MSVC's narrower register representation.
+
 | Host | State | Evidence or exact gap |
 | --- | --- | --- |
-| Linux x86-64 | supported | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. |
-| Windows x86-64 | unsupported | The current top-level CMake graph unconditionally links the POSIX `m` library into `x86port_runtime`; Windows has no such library, so the native x64 product cannot link and a Windows job would fail before exercising it. Portability must be fixed at that owner before adding a Windows job. |
-| macOS x86-64 | supported | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the complete CTest graph against the x64 emitter. |
+| Linux x86-64 | configured; hosted re-run pending | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. Run 33887133221 exposed that hardware-oracle tests treated ISA-undefined flags as a cross-CPU contract; the corrected local Clang discriminators pass and retain undefined-bit variation counts, but hosted confirmation requires the next pushed run. |
+| Windows x86-64 | partial; hosted run pending | The workflow builds and runs the product/oracle fixtures with clang-cl, an initialized MSVC x64 environment, and LLVM COFF symbol inspection. `jit_x64_abi.h` owns entry/helper registers, nonvolatile saves, stack alignment, shadow space, and fifth arguments. The executable ABI positive/negative probe runs through shared code memory on Windows too. The MSVC ABI represents `long double` as binary64, so value-bearing x87 translation explicitly refuses instead of rounding extended values. Completing Windows x87 requires host-independent f80 register storage and arithmetic/conversion/rounding semantics; the x87 conformance tests remain in CI and this host is not release-qualified. |
+| macOS x86-64 | configured; hosted re-run pending | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the product and portable oracle graph against the x64 emitter. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the portable product/oracle archive boundary recognizes Mach-O's leading C-symbol underscore. Hosted confirmation requires the next pushed run. |
 | macOS arm64 / Android arm64-v8a | unsupported | `src/x86port` only emits x86-64 host code. The missing ARM64 backend is S007; bounded fallback cannot qualify a host backend, so no configure-only or interpreter-only job is published. |
 
 ## Evidence and exact gaps
@@ -64,10 +73,18 @@ silence those differences.
 ### S002 — shared CPU and semantic model
 
 The repository contains explicit CPU/memory state and separate flag, integer,
-SIMD, string, privilege, BCD, and x87 semantic owners. Committed hardware-oracle
-evidence includes 2,187,776 flag comparisons and 2,342,080 integer-ALU
-comparisons. Gap: complete title-required instruction, exception, interrupt,
-and timing coverage has not been demonstrated under the new product boundary.
+SIMD, string, privilege, BCD, and x87 semantic owners. Local hardware-oracle
+evidence includes 2,258,432 flag comparisons, 2,342,080 integer-ALU
+comparisons, and 6,792 integer-tail instructions. Results and architecturally
+defined flags are correctness gates; each oracle separately reports a
+denominator for ISA-undefined flag variation rather than assuming one host
+CPU's values are portable. The SAR oracle keeps CF in its correctness mask
+at and beyond the operand width; only SHL/SHR omit that undefined CF case.
+The byte-width flag sweep covers every nonzero masked count through 31.
+Gap: complete title-required instruction, exception,
+interrupt, and timing coverage has not been demonstrated under the new product
+boundary, and the corrected multi-host oracle policy still needs a hosted
+confirmation run.
 
 ### S003 — test-only interpreter oracle
 
@@ -75,7 +92,9 @@ Evidence: `x86port_test_oracle` is created only when this repository is the top-
 CMake project. It owns `exec.c`, `x87_exec.c`, decode-cache support, and CPU
 comparison, while its differential tests use the shipping decoder, state,
 memory, and semantic helpers from `x86port_runtime`. The product-boundary test
-uses the oracle archive as a positive and controlled-negative symbol fixture.
+uses the oracle archive as a positive and controlled-negative symbol fixture
+and normalizes only its watched C symbols across ELF spelling and Mach-O's
+leading underscore.
 
 ### S004 — x64 JIT
 

@@ -21,6 +21,13 @@ static int32_t x87_off(void) {
   return (int32_t)offsetof(X86pCpu, x87);
 }
 
+/* The current x87 state owner stores register values as host long double. A
+ * Win64 compiler whose long double is binary64 cannot faithfully translate an
+ * x87 instruction, even if the helper-call register sequence is otherwise
+ * valid. Keep the integer JIT available there, but make every x87 predicate a
+ * named translation refusal until the state owner gains a host-independent
+ * extended representation. MinGW-style targets with real 80-bit long double
+ * remain supported through pointer-valued wrappers below. */
 /* ---- predicates -------------------------------------------------------- */
 
 /*
@@ -33,7 +40,8 @@ static int32_t x87_off(void) {
  */
 int x87_load_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o;
-  if (insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int || insn->operands != 1) {
+  if (!x86p_x87_precision_is_exact() || insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int ||
+      insn->operands != 1) {
     return 0;
   }
   o = &insn->operand[0];
@@ -52,7 +60,7 @@ int x87_load_is_emittable(const X86pInsn *insn) {
  */
 int x87_arith_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  if (insn->x87 != (uint8_t)kX86pX87InsnArith || insn->x87_mem_int) {
+  if (!x86p_x87_precision_is_exact() || insn->x87 != (uint8_t)kX86pX87InsnArith || insn->x87_mem_int) {
     return 0;
   }
   if ((unsigned)insn->x87_op >= (unsigned)kX86pX87OpCount) {
@@ -75,8 +83,8 @@ int x87_arith_is_emittable(const X86pInsn *insn) {
  */
 int x87_compare_mem_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return insn->x87 == (uint8_t)kX86pX87InsnCompare && !insn->x87_mem_int && insn->operands == 1 &&
-         o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnCompare && !insn->x87_mem_int &&
+         insn->operands == 1 && o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
 }
 
 /*
@@ -85,8 +93,8 @@ int x87_compare_mem_is_emittable(const X86pInsn *insn) {
  */
 int x87_store_reg_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandSt && o0->reg >= 0 &&
-         o0->reg < X86P_X87_REGS;
+  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 &&
+         o0->kind == kX86pOperandSt && o0->reg >= 0 && o0->reg < X86P_X87_REGS;
 }
 
 /*
@@ -99,12 +107,12 @@ int x87_store_reg_is_emittable(const X86pInsn *insn) {
  */
 int x87_store_mem_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 && o0->kind == kX86pOperandMem &&
-         (o0->size == 4 || o0->size == 8) && !o0->addr16;
+  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 &&
+         o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
 }
 
 int x87_constant_is_emittable(const X86pInsn *insn) {
-  if (insn->operands != 0) {
+  if (!x86p_x87_precision_is_exact() || insn->operands != 0) {
     return 0;
   }
   switch ((X86pX87Insn)insn->x87) {
@@ -139,9 +147,9 @@ int x87_clear_exceptions_is_emittable(const X86pInsn *insn) {
 
 /* ---- shared emission helpers ----------------------------------------- */
 
-/* lea rdi, [&cpu->x87] -- the first argument to every x86p_x87_* helper. */
+/* First argument to every x86p_x87_* helper. */
 static void x87_lea_self(X86pEmit *e) {
-  x86p_emit_lea64(e, kX64Rdi, CPU_REG, x87_off());
+  x86p_emit_lea64(e, X86P_JIT_HOST_ARG0, CPU_REG, x87_off());
 }
 
 /* mov rax, imm64(fn); call rax. */
@@ -150,9 +158,48 @@ static void x87_call(X86pEmit *e, const void *fn) {
   x86p_emit_call_r64(e, kX64Rax);
 }
 
+/* Keep long double out of the generated-code ABI. System V passes an 80-bit
+ * long double by value in memory while Win64 passes non-register-sized values
+ * indirectly. These pointer-valued adapters give both emitters one ordinary
+ * register-argument contract and dereference only inside compiler-generated C. */
+static int jit_x87_push(X86pX87 *x87, const long double *value) {
+  return x86p_x87_push(x87, *value);
+}
+
+static int jit_x87_set(X86pX87 *x87, uint32_t index, const long double *value) {
+  return x86p_x87_set(x87, (int)index, *value);
+}
+
+static int jit_x87_arith(X86pX87 *x87, uint32_t operation_destination_reverse, const long double *source) {
+  X86pX87Op operation = (X86pX87Op)(operation_destination_reverse & 0xFFu);
+  int destination = (int)((operation_destination_reverse >> 8) & 0xFFu);
+  int reverse = (int)((operation_destination_reverse >> 16) & 1u);
+  return x86p_x87_arith(x87, operation, destination, *source, reverse);
+}
+
+static int jit_x87_compare(X86pX87 *x87, const long double *value) {
+  return x86p_x87_compare(x87, *value);
+}
+
+static uint32_t jit_x87_to_f32(const X86pX87 *x87, const long double *value) {
+  return x86p_x87_to_f32(x87, *value);
+}
+
+static uint64_t jit_x87_to_f64(const X86pX87 *x87, const long double *value) {
+  return x86p_x87_to_f64(x87, *value);
+}
+
+static int32_t x87_scratch_off(void) {
+  return X86P_JIT_HOST_CALL_FRAME_BYTES;
+}
+
+static void x87_lea_scratch(X86pEmit *e, X86pHostReg destination) {
+  x86p_emit_lea64(e, destination, kX64Rsp, x87_scratch_off());
+}
+
 void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
   x87_lea_self(c->e);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, insn->x87);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, insn->x87);
   x87_call(c->e, (const void *)&x86p_x87_push_constant);
 }
 
@@ -175,13 +222,12 @@ void emit_x87_clear_exceptions(BlockCtx *c) {
   x87_call(c->e, (const void *)&x86p_x87_clear_exceptions);
 }
 
-/* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte [rsp] (DB /7). The
-   widen-and-spill leaves the host x87 stack balanced and an 80-bit copy of the
-   memory float at [rsp], which is where System V wants an outgoing long double
-   argument and where the interpreter's read_float lands the same bits. */
+/* fld dword/qword [r11] (D9 /0 or DD /0); fstp tbyte into the ABI-owned scratch
+   slot. The widen-and-spill leaves the host x87 stack balanced and an 80-bit
+   copy of the memory float for the pointer-valued helper adapter. */
 static void x87_widen_mem_to_scratch(X86pEmit *e, int w) {
   x86p_emit_x87_m(e, (w == 4) ? 0xD9u : 0xDDu, 0u, HOSTPTR_REG, 0);
-  x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, 0);
+  x86p_emit_x87_m(e, 0xDBu, 7u, kX64Rsp, x87_scratch_off());
 }
 
 /* ---- emission -------------------------------------------------------- */
@@ -196,12 +242,11 @@ static void x87_widen_mem_to_scratch(X86pEmit *e, int w) {
  * empty -- the interpreter's own order, because the push would renumber the
  * position being read.
  *
- * A 16-byte scratch slot is opened on the stack for the long double: System V
- * passes an 80-bit value to a function in memory, and x86p_x87_get writes its
- * result there. `sub rsp, 16` keeps the 16-byte alignment a CALL needs. The
- * memory form's bounds check runs BEFORE the sub, so the fault stub -- which
- * pops RBX and returns assuming the post-prologue RSP -- is never reached with
- * the slot still open.
+ * A 16-byte scratch slot is opened on the stack for the long double. On Win64
+ * it sits above the active shadow/stack-argument area; on System V it begins at
+ * RSP. `sub rsp, 16` keeps the 16-byte alignment a CALL needs. The memory
+ * form's bounds check runs BEFORE the sub, so the fault stub -- which restores
+ * the ABI frame and returns -- is never reached with the slot still open.
  */
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
@@ -213,7 +258,8 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
     x87_widen_mem_to_scratch(e, w);
     x87_lea_self(e);
-    x87_call(e, (const void *)&x86p_x87_push);
+    x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
+    x87_call(e, (const void *)&jit_x87_push);
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
     return;
   }
@@ -221,14 +267,15 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o->reg);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)o->reg);
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
   x87_call(e, (const void *)&x86p_x87_get);
   x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
   {
     X86pEmitSite skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: source register was empty */
     x87_lea_self(e);
-    x87_call(e, (const void *)&x86p_x87_push);
+    x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
+    x87_call(e, (const void *)&jit_x87_push);
     x86p_emit_bind(e, skip);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
@@ -238,8 +285,8 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
  * FADD / FSUB / FMUL / FDIV (+R, +P). The source operand is widened to 80 bits
  * into a 16-byte stack slot -- from memory with a host `fld`, or from a stack
  * register with x86p_x87_get -- and x86p_x87_arith runs the real op under the
- * guest control word. System V passes the long double `src` in memory, so the
- * slot IS the outgoing argument; `reverse` follows in ECX.
+ * guest control word. A pointer-valued adapter keeps the host's by-value long
+ * double convention out of emitted code on both ABIs.
  *
  * A named source register that is empty is a stack fault that arith_operands
  * turns into a whole no-op -- no arithmetic, no pop -- so that path jumps
@@ -251,6 +298,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const int two_op = (insn->operands == 2);
   const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
   X86pEmitSite skip;
+  uint32_t operation_destination_reverse;
   int have_skip = 0;
   int i;
 
@@ -261,8 +309,8 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   } else {
     x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
-    x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
+    x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
     x87_call(e, (const void *)&x86p_x87_get);
     x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
     skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: empty source register */
@@ -270,14 +318,14 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
 
   x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)insn->x87_op);
-  x86p_emit_mov_r32_imm32(e, kX64Rdx, (uint32_t)dst);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)insn->x87_reverse);
-  x87_call(e, (const void *)&x86p_x87_arith); /* src at [rsp] */
+  operation_destination_reverse = (uint32_t)insn->x87_op | ((uint32_t)dst << 8) | ((uint32_t)insn->x87_reverse << 16);
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
+  x87_call(e, (const void *)&jit_x87_arith);
 
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
     x87_call(e, (const void *)&x86p_x87_pop);
   }
 
@@ -304,10 +352,11 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_widen_mem_to_scratch(e, o0->size);
   x87_lea_self(e);
-  x87_call(e, (const void *)&x86p_x87_compare); /* other at [rsp] */
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
+  x87_call(e, (const void *)&jit_x87_compare);
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
@@ -326,17 +375,18 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
 
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
   x87_call(e, (const void *)&x86p_x87_get);
   x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
   skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty */
   x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, (uint32_t)o0->reg);
-  x87_call(e, (const void *)&x86p_x87_set); /* value at [rsp] */
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)o0->reg);
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
+  x87_call(e, (const void *)&jit_x87_set);
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_bind(e, skip);
@@ -366,14 +416,15 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
-  x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
-  x86p_emit_lea64(e, kX64Rdx, kX64Rsp, 0);
+  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
   x87_call(e, (const void *)&x86p_x87_get);
   x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
   empty = x86p_emit_jcc_rel32(e, 0x4u); /* jz: ST(0) empty -> no store, no pop, no fault */
 
   x87_lea_self(e);
-  x87_call(e, (w == 4) ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64); /* value at [rsp] */
+  x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
+  x87_call(e, (w == 4) ? (const void *)&jit_x87_to_f32 : (const void *)&jit_x87_to_f64);
   x86p_emit_mov_r64_r64(e, kX64R9, kX64Rax);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
 
@@ -385,7 +436,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, kX64Rsi, 0u);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   done = x86p_emit_jmp_rel32(e);

@@ -631,8 +631,8 @@ static void execute(Ctx *c) {
   }
 
     /* ---- the decimal adjustments, the bit tests, and the rest of the integer
-       tail. Everything below is exact and specified; where the SDM says a flag
-       is undefined the behaviour is measured against the host, not invented. */
+       tail. Defined behavior follows the ISA; undefined flags use the semantic
+       owners' deterministic policies. */
 
   case kX86pInsnBcd: {
     uint16_t ax = (uint16_t)x86p_reg_read(cpu, kX86pEax, 2);

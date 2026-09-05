@@ -56,10 +56,18 @@ A consuming `add_subdirectory` build receives only `x86port_runtime` and its
 `x86port` alias.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+uv run --frozen python tools/verify.py --cc clang --cxx clang++
 ```
+
+The verifier requires the exact `jit-common` revision named in
+`tools/x86port_checks/build.py`; use `--jit-common PATH` to select an isolated
+checkout. Its CMake/Ninja dependencies and Python interpreter are shared by
+the local and hosted build/test paths. macOS verification passes
+`--cc /usr/bin/clang --cxx /usr/bin/clang++` to exercise AppleClang. Windows
+uses `--cc clang-cl --cxx clang-cl` from an x64 Visual Studio developer
+environment with LLVM's `llvm-nm` installed. Windows support remains partial:
+the MSVC x87 value representation still needs the f80 work recorded in the
+project-state inventory; CI retains the corresponding runtime tests.
 
 This is a library, not a runnable game, so it has no `run.sh`. A consuming title
 owns provisioning, packaging, and its default launcher.

@@ -26,6 +26,7 @@
  * supported set reaches those; a fixed seed keeps a failure reproducible.
  */
 #include "alu.h"
+#include "code_memory.h"
 #include "cpu.h"
 #include "decode.h"
 #include "exec.h"
@@ -34,8 +35,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 static int g_checks;
 static int g_failed;
@@ -92,6 +98,25 @@ static uint8_t g_before[GUEST_SIZE];
 static uint8_t g_after_interp[GUEST_SIZE];
 
 static void guest_mem_init(void) {
+#if defined(_WIN32)
+  SYSTEM_INFO info;
+  size_t page;
+  size_t span;
+  DWORD old_protection;
+  uint8_t *base;
+  GetSystemInfo(&info);
+  page = (size_t)info.dwPageSize;
+  span = page * 2u;
+  base = (uint8_t *)VirtualAlloc(NULL, span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (!base) {
+    printf("FATAL: could not reserve %zu bytes for the guest mapping and its guard\n", span);
+    exit(1);
+  }
+  if (!VirtualProtect(base + page, page, PAGE_NOACCESS, &old_protection)) {
+    printf("FATAL: could not make the guard page unreadable; an over-wide read would go unnoticed\n");
+    exit(1);
+  }
+#else
   long page = sysconf(_SC_PAGESIZE);
   size_t span;
   uint8_t *base;
@@ -109,6 +134,7 @@ static void guest_mem_init(void) {
     printf("FATAL: could not make the guard page unreadable; an over-wide read would go unnoticed\n");
     exit(1);
   }
+#endif
   if (GUEST_SIZE > (size_t)page) {
     printf("FATAL: the guest mapping is larger than a page and cannot end on one\n");
     exit(1);
@@ -126,17 +152,55 @@ static X86pMem guest_mem(void) {
 
 /* ---- host code memory ---------------------------------------------------- */
 
-/*
- * RWX in one mapping, which production must never do -- jit-common's
- * code_memory exists precisely because W^X, Apple's MAP_JIT and Android's
- * SELinux policy make that unavailable. It is acceptable HERE because the
- * translator takes a caller-owned buffer and never publishes it itself, so this
- * test exercises the same translate() a real caller would; wiring it to a
- * JcCodeRegion changes the allocation and nothing else.
- */
+static JcCodeRegion g_code_region;
+static int g_code_published;
+
 static void *code_alloc(size_t n) {
-  void *p = mmap(NULL, n, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  return (p == MAP_FAILED) ? NULL : p;
+  char reason[192] = {0};
+  memset(&g_code_region, 0, sizeof g_code_region);
+  g_code_published = 0;
+  if (jc_code_region_create(n, &g_code_region, reason, (unsigned)sizeof reason) != kJcCodeOk) {
+    printf("    REFUSED: code memory: %s\n", reason);
+    return NULL;
+  }
+  return g_code_region.write;
+}
+
+static void code_free(void *code, size_t n) {
+  (void)code;
+  (void)n;
+  jc_code_region_destroy(&g_code_region);
+  g_code_published = 0;
+}
+
+static X86pJitStatus translate(const X86pMem *mem,
+                               uint32_t eip,
+                               void *code,
+                               size_t code_cap,
+                               X86pJitBlock *block,
+                               char *reason,
+                               unsigned reason_len) {
+  X86pJitStatus status;
+  if (code != g_code_region.write) {
+    snprintf(reason, reason_len, "code pointer is not the active writable region");
+    return kX86pJitOutOfSpace;
+  }
+  if (g_code_published && jc_code_begin_write(&g_code_region) != kJcCodeOk) {
+    snprintf(reason, reason_len, "could not reopen code region for writing");
+    return kX86pJitOutOfSpace;
+  }
+  g_code_published = 0;
+  status = x86p_jit_translate(mem, eip, code, code_cap, block, reason, reason_len);
+  if (status != kX86pJitOk) {
+    return status;
+  }
+  if (jc_code_publish(&g_code_region, block->host_bytes) != kJcCodeOk) {
+    snprintf(reason, reason_len, "could not publish translated code");
+    return kX86pJitOutOfSpace;
+  }
+  block->entry = g_code_region.exec;
+  g_code_published = 1;
+  return status;
 }
 
 /* ---- guest program generation -------------------------------------------- */
@@ -1035,7 +1099,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
-    st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    st = translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       /* The generator produced a shape this backend refuses BY NAME -- a
          memory-form ADC, say. Refusing is the designed behaviour, not a
@@ -1253,7 +1317,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
              blk.host_bytes);
     }
   }
-  munmap(code, 65536);
+  code_free(code, 65536);
 }
 
 /* ---- the negatives: refusals are named and are not silent ---------------- */
@@ -1341,7 +1405,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
-    st = x86p_jit_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    st = translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       g_refused++;
       continue; /* a shape this backend refuses by name */
@@ -1400,7 +1464,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
       g_failed++;
     }
   }
-  munmap(code, 65536);
+  code_free(code, 65536);
 }
 
 static void test_unsupported_at_entry_produces_no_block(void) {
@@ -1422,12 +1486,12 @@ static void test_unsupported_at_entry_produces_no_block(void) {
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
-  st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
+  st = translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
   CHECK(strstr(reason, "RCPPS") != NULL);
-  munmap(code, 4096);
+  code_free(code, 4096);
 }
 
 static void test_block_stops_at_unsupported_with_eip_on_it(void) {
@@ -1451,10 +1515,10 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   g_guest[6] = 0x53u;
   g_guest[7] = 0xC0u;
 
-  st = x86p_jit_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
+  st = translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
   if (st != kX86pJitOk) {
-    munmap(code, 4096);
+    code_free(code, 4096);
     return;
   }
   CHECK(blk.insns == 1u);
@@ -1469,7 +1533,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
      can hand exactly that one to the interpreter. Pointing past it would skip
      an instruction, silently. */
   CHECK(cpu.eip == GUEST_BASE + 5u);
-  munmap(code, 4096);
+  code_free(code, 4096);
 }
 
 static void test_out_of_space_is_refused_not_truncated(void) {
@@ -1492,10 +1556,10 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   /* A buffer too small for even the prologue plus one instruction. The result
      must be a refusal -- a truncated block would end without a RET. */
   reason[0] = '\0';
-  st = x86p_jit_translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
+  st = translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOutOfSpace || st == kX86pJitUnsupportedAtEntry);
   CHECK(reason[0] != '\0');
-  munmap(code, 4096);
+  code_free(code, 4096);
 }
 
 static void test_fetch_fault_at_an_unmapped_eip(void) {
@@ -1510,10 +1574,10 @@ static void test_fetch_fault_at_an_unmapped_eip(void) {
     return;
   }
   reason[0] = '\0';
-  st = x86p_jit_translate(&mem, GUEST_BASE + GUEST_SIZE + 0x1000u, code, 4096, &blk, reason, sizeof reason);
+  st = translate(&mem, GUEST_BASE + GUEST_SIZE + 0x1000u, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitFetchFault);
   CHECK(reason[0] != '\0');
-  munmap(code, 4096);
+  code_free(code, 4096);
 }
 
 int main(void) {
