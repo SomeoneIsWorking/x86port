@@ -57,8 +57,8 @@ MSVC's narrower register representation.
 
 | Host | State | Evidence or exact gap |
 | --- | --- | --- |
-| Linux x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the complete Clang CTest graph. The corrected hardware-oracle policy preserves ISA-defined flags and separately counts undefined-bit variation. This is synthetic framework evidence, not title gameplay. |
-| Windows x86-64 | partial; hosted compile failure diagnosed | Job [101287874606](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423/job/101287874606) stopped before CTest: the incoming ARM64 encoder test bypassed the warning owner and sent GCC `-Wall` to clang-cl, enabling its all-warnings mode. That target now calls `x86p_strict_target`, like every other fixture; local clang-cl driver positive/negative checks distinguish the flag sets, but Windows rerun evidence remains required. `jit_x64_abi.h` owns entry/helper registers, nonvolatile saves, stack alignment, shadow space, and fifth arguments. The MSVC ABI represents `long double` as binary64, so value-bearing x87 translation explicitly refuses. Completing Windows x87 requires host-independent f80 storage and arithmetic/conversion/rounding semantics; x87 conformance tests remain in CI and this host is not release-qualified. |
+| Linux x86-64 | hosted re-verification pending | Run [33959623707](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959623707) exposed an immediate-count oracle defect in SHLD/SHRD after the prior run passed on another host. S002 records the corrected count-source/mask contract and local hardware evidence; a new hosted run is required. |
+| Windows x86-64 | partial; hosted re-verification pending | Run [33959623707](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959623707) compiled successfully and reached every synthetic test; only the x87 control fixture failed because it expected value-bearing translation on binary64 `long double`. That fixture now checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds exercise both branches, not Windows OS conformance. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; hosted re-verification is pending and this host is not release-qualified. |
 | macOS x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the Intel Apple Clang product and portable-oracle graph. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the archive boundary recognizes Mach-O's leading C-symbol underscore. This does not qualify Apple Silicon. |
 | macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. Shared precision admission now refuses those value-bearing forms. ARM64 runtime CI and renewed conformance evidence are still required. |
 | Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
@@ -78,12 +78,20 @@ silence those differences.
 The repository contains explicit CPU/memory state and separate flag, integer,
 SIMD, string, privilege, BCD, and x87 semantic owners. Local hardware-oracle
 evidence includes 2,258,432 flag comparisons, 2,342,080 integer-ALU
-comparisons, and 6,792 integer-tail instructions. Results and architecturally
+comparisons, and 7,296 integer-tail instructions. Results and architecturally
 defined flags are correctness gates; each oracle separately reports a
 denominator for ISA-undefined flag variation rather than assuming one host
 CPU's values are portable. The SAR oracle keeps CF in its correctness mask
 at and beyond the operand width; only SHL/SHR omit that undefined CF case.
 The byte-width flag sweep covers every nonzero masked count through 31.
+Double-shift masks derive the effective count from the decoded immediate or CL,
+not from an unrelated register-sweep value. Controlled mask-corruption checks
+retain defined-bit failures while accepting undefined-bit variation. The
+SHLD/SHRD boundary at a 16-bit count of 16 executes against hardware and compares
+the result and CF/SF/ZF/PF; only greater counts are refused, as specified in the
+[Intel SDM SHLD/SHRD reference](https://cdrdv2-public.intel.com/835757/325383-sdm-vol-2abcd.pdf).
+OF is undefined above count one and AF is undefined for every nonzero count;
+neither invalidates the other outputs at the width boundary.
 Gap: complete title-required instruction, exception,
 interrupt, and timing coverage has not been demonstrated under the new product
 boundary, and the corrected multi-host oracle policy still needs a hosted

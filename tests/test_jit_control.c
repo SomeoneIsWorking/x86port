@@ -3,6 +3,7 @@
 #include "code_memory.h"
 #include "cpu_compare.h"
 #include "exec.h"
+#include "jit_engine.h"
 #include "jit_x64.h"
 #include "x87.h"
 
@@ -27,6 +28,8 @@ typedef struct Fixture {
 
 static int g_checks;
 static int g_failures;
+static unsigned g_x87_value_cases;
+static unsigned g_x87_precision_refusals;
 
 #define CHECK(condition)                                                                                               \
   do {                                                                                                                 \
@@ -708,6 +711,49 @@ static void test_xchg32_register_memory_alias_and_fault(Fixture *fixture) {
   compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
 }
 
+static void expect_x87_precision_refusal(Fixture *fixture, X86pCpu initial) {
+  X86pCpu cpu = initial;
+  X86pInsn decoded;
+  X86pJitEngine *engine;
+  X86pJitEngineStats stats;
+  char reason[256] = {0};
+
+  CHECK(!x86p_x87_precision_is_exact());
+  if (x86p_decode(fixture->guest, X86P_MAX_INSN_LEN, &decoded) == 0u) {
+    CHECK(0 && "precision-refusal fixture must decode");
+    return;
+  }
+  CHECK(decoded.op == kX86pInsnX87);
+  CHECK(!x86p_jit_can_translate(&decoded));
+  memcpy(fixture->before, fixture->guest, sizeof fixture->before);
+  engine = x86p_jit_engine_create(&fixture->mem, 65536u, 256u, reason, sizeof reason);
+  CHECK(engine != NULL);
+  if (!engine) {
+    printf("  precision-refusal fixture: %s\n", reason);
+    return;
+  }
+  CHECK(x86p_jit_engine_run(engine, &cpu, 1u, reason, sizeof reason) == kX86pRunUnsupported);
+  CHECK(strstr(reason, decoded.mnemonic) != NULL);
+  CHECK(x86p_cpu_diff(&cpu, &initial, NULL, NULL) == 0u);
+  CHECK(memcmp(fixture->guest, fixture->before, sizeof fixture->guest) == 0);
+  x86p_jit_engine_stats(engine, &stats);
+  CHECK(stats.blocks_entered == 0u);
+  CHECK(stats.blocks_translated == 0u);
+  CHECK(stats.guest_insns_translated == 0u);
+  CHECK(stats.translate_refusals == 1u);
+  x86p_jit_engine_destroy(engine);
+  g_x87_precision_refusals++;
+}
+
+static void compare_x87_value_success(Fixture *fixture, X86pCpu initial, uint32_t length) {
+  g_x87_value_cases++;
+  if (x86p_x87_precision_is_exact()) {
+    compare_one_success(fixture, initial, length, 1);
+  } else {
+    expect_x87_precision_refusal(fixture, initial);
+  }
+}
+
 static void test_x87_constant_loads_and_full_stack(Fixture *fixture) {
   static const uint8_t second_opcode[] = {0xE8u, 0xE9u, 0xEAu, 0xEBu, 0xECu, 0xEDu, 0xEEu};
   X86pCpu initial;
@@ -719,7 +765,7 @@ static void test_x87_constant_loads_and_full_stack(Fixture *fixture) {
     fixture->guest[1] = second_opcode[index];
     append_stopper(fixture->guest + 2u);
     initial = explicit_cpu(index & 31u);
-    compare_one_success(fixture, initial, 2u, 1);
+    compare_x87_value_success(fixture, initial, 2u);
   }
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
@@ -730,7 +776,7 @@ static void test_x87_constant_loads_and_full_stack(Fixture *fixture) {
   for (index = 0u; index < X86P_X87_REGS; index++) {
     CHECK(x86p_x87_push(&initial.x87, (long double)(index + 1u)) != 0);
   }
-  compare_one_success(fixture, initial, 2u, 1);
+  compare_x87_value_success(fixture, initial, 2u);
 }
 
 static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
@@ -758,7 +804,7 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
     initial.x87.status = X86P_X87_ZE | X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
     CHECK(x86p_x87_push(&initial.x87, 1.0L) != 0);
     /* Full CPU comparison includes C0/C2/C3/IE, tags, TOP and the one pop. */
-    compare_one_success(fixture, initial, 3u, 1);
+    compare_x87_value_success(fixture, initial, 3u);
   }
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
@@ -769,7 +815,7 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   put_u32(fixture->guest + kDataOffset, UINT32_C(0x3F800000));
   initial = explicit_cpu(9u);
   CHECK(x86p_x87_push(&initial.x87, 1.0L) != 0);
-  compare_one_success(fixture, initial, 6u, 1);
+  compare_x87_value_success(fixture, initial, 6u);
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
   fixture->guest[0] = 0xDCu;
@@ -778,7 +824,7 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   append_stopper(fixture->guest + 6u);
   put_u64(fixture->guest + kDataOffset, UINT64_C(0x3FF0000000000000));
   initial = explicit_cpu(14u);
-  compare_one_success(fixture, initial, 6u, 1);
+  compare_x87_value_success(fixture, initial, 6u);
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
   fixture->guest[0] = 0xDCu;
@@ -788,7 +834,12 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   initial = explicit_cpu(20u);
   CHECK(x86p_x87_push(&initial.x87, 2.0L) != 0);
   /* The failed read must not compare or pop; the full-state diff proves both. */
-  compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
+  g_x87_value_cases++;
+  if (x86p_x87_precision_is_exact()) {
+    compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
+  } else {
+    expect_x87_precision_refusal(fixture, initial);
+  }
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
   fixture->guest[0] = 0xD8u;
@@ -920,6 +971,11 @@ int main(void) {
   test_x87_store_status_ax_projection_and_memory_refusal(&fixture);
   test_x87_clear_exceptions_exact_state_and_neighbor_refusal(&fixture);
   jc_code_region_destroy(&fixture.code);
+  CHECK(g_x87_value_cases == 15u);
+  CHECK(g_x87_precision_refusals == (x86p_x87_precision_is_exact() ? 0u : g_x87_value_cases));
+  printf("x87 value forms: %u cases, %u explicit precision refusals; status-only execution checked independently\n",
+         g_x87_value_cases,
+         g_x87_precision_refusals);
   printf("%d check(s), %d failure(s): SETcc, LEAVE, CDQ, MUL, DIV/IDIV, IMUL, REP CMPSB, XCHG, and x87\n",
          g_checks,
          g_failures);

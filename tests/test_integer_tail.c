@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -36,6 +37,10 @@
 #define COMPARED_FLAGS (X86P_CF | X86P_PF | X86P_AF | X86P_ZF | X86P_SF | X86P_OF)
 
 #if defined(__x86_64__)
+
+static int defined_flags_differ(uint32_t host, uint32_t model, uint32_t mask) {
+  return ((host ^ model) & mask) != 0u;
+}
 
 static unsigned long g_checks;
 static unsigned long g_failed;
@@ -332,7 +337,7 @@ static void report(const char *what, const Regs *start, const char *field, uint3
  */
 /*
  * `expect_refusal` says this input is outside the instruction's defined domain
- * -- a 16-bit double shift by sixteen or more -- and the model is required to
+ * -- a 16-bit double shift by more than sixteen -- and the model is required to
  * REFUSE it rather than produce a value. That is a check, not a skip: a model
  * that silently invented a plausible result here would pass a test that merely
  * ignored these inputs, and the whole point of naming the domain in
@@ -472,7 +477,7 @@ static void compare(const char *what,
     }
   }
   g_checks++;
-  if ((hf & defined_flags) != (mf & defined_flags)) {
+  if (defined_flags_differ(hf, mf, defined_flags)) {
     report(what, start, "defined EFLAGS", hf & defined_flags, mf & defined_flags);
   }
 }
@@ -579,9 +584,12 @@ static uint32_t two_defined_flags(FlagRule rule, uint32_t count, unsigned bits) 
   if (count == 0u) {
     return COMPARED_FLAGS;
   }
+  if (count > bits) {
+    return 0u;
+  }
   {
     uint32_t flags = X86P_PF | X86P_ZF | X86P_SF;
-    if (count < bits) {
+    if (count <= bits) {
       flags |= X86P_CF;
     }
     if (count == 1u) {
@@ -591,11 +599,78 @@ static uint32_t two_defined_flags(FlagRule rule, uint32_t count, unsigned bits) 
   }
 }
 
-static void
-sweep_two(const char *what, const uint8_t *code, unsigned len, unsigned undefined_from, FlagRule flag_rule) {
+/* Resolve the decoded third operand: an immediate count never reads CL.
+ * Intel SDM SHLD/SHRD defines AF only at zero, OF only at zero/one, and
+ * CF through count==operand width. Counts above width have no defined result. */
+static uint32_t double_shift_count(const X86pInsn *insn, uint32_t ecx) {
+  const X86pOperand *count = &insn->operand[2];
+  if (insn->operands == 3 && (insn->op == kX86pInsnShld || insn->op == kX86pInsnShrd)) {
+    if (count->kind == kX86pOperandImm) {
+      return count->imm & 31u;
+    }
+    if (count->kind == kX86pOperandReg && count->reg == kX86pEcx && count->size == 1) {
+      return ecx & 31u;
+    }
+  }
+  printf("REFUSED: double-shift fixture has no supported decoded count operand\n");
+  exit(1);
+}
+
+static void check_count_contract(int ok, const char *expectation) {
+  g_checks++;
+  if (!ok) {
+    g_failed++;
+    printf("FAIL double-shift oracle contract: %s\n", expectation);
+  }
+}
+
+static void test_double_shift_count_and_flag_contract(void) {
+  static const struct {
+    uint8_t bytes[5];
+    unsigned len;
+    uint32_t ecx;
+    uint32_t count;
+    uint32_t mask;
+  } cases[] = {
+      {{0x0F, 0xA4, 0xD0, 11}, 4u, 0u, 11u, X86P_CF | X86P_PF | X86P_ZF | X86P_SF},
+      {{0x0F, 0xAC, 0xD0, 11}, 4u, 32u, 11u, X86P_CF | X86P_PF | X86P_ZF | X86P_SF},
+      {{0x0F, 0xA4, 0xD0, 0}, 4u, 11u, 0u, COMPARED_FLAGS},
+      {{0x0F, 0xAC, 0xD0, 32}, 4u, 1u, 0u, COMPARED_FLAGS},
+      {{0x0F, 0xA4, 0xD0, 1}, 4u, 0u, 1u, COMPARED_FLAGS & ~X86P_AF},
+      {{0x0F, 0xA5, 0xD0}, 3u, 32u, 0u, COMPARED_FLAGS},
+      {{0x0F, 0xAD, 0xD0}, 3u, 33u, 1u, COMPARED_FLAGS & ~X86P_AF},
+      {{0x66, 0x0F, 0xA5, 0xD0}, 4u, 16u, 16u, X86P_CF | X86P_PF | X86P_ZF | X86P_SF},
+      {{0x66, 0x0F, 0xAD, 0xD0}, 4u, 17u, 17u, 0u},
+  };
+  unsigned i;
+  for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    X86pInsn decoded;
+    uint32_t mask;
+    uint32_t count;
+    if (x86p_decode(cases[i].bytes, cases[i].len, &decoded) != cases[i].len) {
+      check_count_contract(0, "fixture must decode completely");
+      continue;
+    }
+    count = double_shift_count(&decoded, cases[i].ecx);
+    mask = two_defined_flags(kFlagsDoubleShift, count, (unsigned)decoded.operand[0].size * 8u);
+    check_count_contract(count == cases[i].count, "decoded immediate and CL counts must stay distinct");
+    check_count_contract(mask == cases[i].mask, "defined flags must follow the effective count");
+    check_count_contract(!defined_flags_differ(0u, COMPARED_FLAGS & ~cases[i].mask, mask),
+                         "undefined-bit variation must not fail");
+    check_count_contract(cases[i].mask == 0u || defined_flags_differ(0u, cases[i].mask, mask),
+                         "defined-bit corruption must fail");
+  }
+}
+
+static void sweep_two(const char *what, const uint8_t *code, unsigned len, FlagRule flag_rule) {
   static const uint32_t kVals[] = {0x00000000u, 0x00000001u, 0x80000000u, 0xFFFFFFFFu, 0x12345678u, 0xA5A5A5A5u};
-  static const uint32_t kCounts[] = {0u, 1u, 7u, 15u, 16u, 31u, 32u, 33u};
+  static const uint32_t kCounts[] = {0u, 1u, 7u, 15u, 16u, 17u, 31u, 32u, 33u};
+  X86pInsn decoded;
   unsigned d, s, k;
+  if (x86p_decode(code, len, &decoded) != len) {
+    printf("REFUSED: cannot decode %s to derive its flag contract\n", what);
+    exit(1);
+  }
   for (d = 0; d < sizeof kVals / sizeof kVals[0]; d++) {
     for (s = 0; s < sizeof kVals / sizeof kVals[0]; s++) {
       for (k = 0; k < sizeof kCounts / sizeof kCounts[0]; k++) {
@@ -606,14 +681,15 @@ sweep_two(const char *what, const uint8_t *code, unsigned len, unsigned undefine
         r.ecx = kCounts[k];
         r.ebx = BASE + MEM_OPERAND_OFF;
         r.eflags = 0x00000002u;
-        const unsigned bits = undefined_from != 0u ? undefined_from : 32u;
+        const unsigned bits = (unsigned)decoded.operand[0].size * 8u;
+        const uint32_t count = flag_rule == kFlagsDoubleShift ? double_shift_count(&decoded, r.ecx) : 0u;
         compare(what,
                 code,
                 len,
                 &r,
                 kModeLong,
-                two_defined_flags(flag_rule, kCounts[k], bits),
-                undefined_from != 0u && (kCounts[k] & 31u) >= undefined_from,
+                two_defined_flags(flag_rule, count, bits),
+                flag_rule == kFlagsDoubleShift && count > bits,
                 0u);
       }
     }
@@ -705,6 +781,8 @@ int main(void) {
   return 77;
 #endif
 
+  test_double_shift_count_and_flag_contract();
+
 #define SIMPLE(x, flags) sweep_simple(#x, k_##x, (unsigned)sizeof k_##x, kModeLong, (flags))
 /* The seven long mode dropped. Same sweep, entered through a 32-bit code
    segment; if that path cannot be set up the run refuses rather than quietly
@@ -726,17 +804,15 @@ int main(void) {
   SIMPLE(clc, COMPARED_FLAGS);
   SIMPLE(cmc, COMPARED_FLAGS);
 #undef SIMPLE
-/* The 16-bit double shifts have a count of sixteen or more outside their
-   defined domain; every other form here is defined for every masked count. */
-#define SHIFT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 0u, kFlagsDoubleShift)
-#define SHIFT16(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 16u, kFlagsDoubleShift)
-#define BIT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 0u, kFlagsBitTest)
+/* Width and count source come from the actual decoded instruction. */
+#define SHIFT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, kFlagsDoubleShift)
+#define BIT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, kFlagsBitTest)
   SHIFT(shld_cl);
   SHIFT(shrd_cl);
   SHIFT(shld_i);
   SHIFT(shrd_i);
-  SHIFT16(shld16);
-  SHIFT16(shrd16);
+  SHIFT(shld16);
+  SHIFT(shrd16);
   BIT(bt);
   BIT(bts);
   BIT(btr);
@@ -746,7 +822,6 @@ int main(void) {
   BIT(btr_i);
   BIT(btc_i);
 #undef BIT
-#undef SHIFT16
 #undef SHIFT
 #define STRING(x) sweep_bit_string(#x, k_##x, (unsigned)sizeof k_##x)
   STRING(bt_m);

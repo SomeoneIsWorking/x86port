@@ -58,13 +58,12 @@ int x86p_double_shift(
      is why a 16-bit double shift can be handed a count of 20 at all. */
   count &= 31u;
   /*
-   * A count of the operand width or more is outside the defined domain: Intel
-   * says "greater than the operand size", AMD says "greater than or equal to",
-   * and the silicon settles it -- a 16-bit SHLD by exactly 16 produces an OF
-   * that no reading of the result explains, so the domain is AMD's. This only
-   * ever arises at 16-bit width, since a 32-bit count is masked to 31.
+   * Only counts greater than the operand width are outside the defined
+   * domain (Intel SDM, SHLD/SHRD). At exactly 16, the source fills the
+   * destination and CF is still defined; OF is undefined, as for every
+   * count greater than one. Undefined OF cannot invalidate the result.
    */
-  *defined = (count < bits);
+  *defined = (count <= bits);
   if (count == 0u) {
     return 0; /* writes nothing, flags included */
   }
