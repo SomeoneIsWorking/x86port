@@ -68,6 +68,25 @@ int main(void) {
   x86p_cpu_reset(&cpu);
   cpu.eip = 0x10000;
   cpu.reg[kX86pEsp] = 0x10800;
+  for (unsigned width = 1; width <= 4; width *= 2) {
+    for (unsigned direction = 0; direction < 2; direction++) {
+      for (unsigned kind = 0; kind < 3; kind++) {
+        X86pCpu copy = cpu;
+        uint8_t bytes[3];
+        size_t n = 0;
+        if (width == 2) {
+          bytes[n++] = 0x66;
+        }
+        bytes[n++] = 0xF3;
+        bytes[n++] = width == 1 ? 0xA4 : 0xA5;
+        copy.df = (uint8_t)direction;
+        copy.reg[kX86pEcx] = 16;
+        copy.reg[kX86pEsi] = 0x10400;
+        copy.reg[kX86pEdi] = kind == 0 ? 0x10600 : kind == 1 ? 0x10401 : 0x11000 - width;
+        check_case(bytes, n, copy, kind == 2 && !direction);
+      }
+    }
+  }
   for (unsigned ah = 0; ah < 256; ah++) {
     cpu.reg[kX86pEax] = 0x12340055 | (ah << 8);
     x86p_flags_set(&cpu.flags, kX86pFlagsAdd, 0x7FFFFFFF, 1, 0x80000000, 4);

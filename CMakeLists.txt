@@ -222,6 +222,11 @@ target_link_libraries(test_exec PRIVATE x86port_runtime x86port_test_oracle)
 target_compile_options(test_exec PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_exec COMMAND test_exec)
 
+add_executable(test_string_copy tests/test_string_copy.c)
+target_link_libraries(test_string_copy PRIVATE x86port_runtime x86port_test_oracle)
+target_compile_options(test_string_copy PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_string_copy COMMAND test_string_copy)
+
 add_executable(test_x87_narrow tests/test_x87_narrow.c)
 target_link_libraries(test_x87_narrow PRIVATE x86port_runtime)
 target_compile_options(test_x87_narrow PRIVATE -Wall -Wextra -Werror)
