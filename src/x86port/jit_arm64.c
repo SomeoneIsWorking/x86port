@@ -230,6 +230,9 @@ static int can_emit(const X86pInsn *insn) {
                                    operand_is_imm(&insn->operand[0]));
   case kX86pInsnPop:
     return insn->operands == 1 && operand_writable(&insn->operand[0]);
+  case kX86pInsnPushfd:
+  case kX86pInsnPopfd:
+    return insn->operands == 0;
   case kX86pInsnCall:
     return insn->operands == 1 && (operand_is_imm(&insn->operand[0]) || operand_is_reg32(&insn->operand[0]) ||
                                    operand_is_mem32(&insn->operand[0]));
@@ -849,9 +852,10 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   emit_push_x0(c, insn_eip);
 }
 
-static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  const X86pOperand *o = &insn->operand[0];
-
+/* Pop whatever is at [ESP] into X0 and advance ESP past it, the one
+   implementation of the stack load shared by POP and POPFD (mirrors
+   emit_push_x0 above for PUSH). The caller decides where X0 ends up. */
+static void emit_pop_x0(BlockCtx *c, uint32_t insn_eip) {
   x86p_a64_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
   emit_host_pointer(c->e, &c->plan);
@@ -860,6 +864,12 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_mov_w_w(c->e, kA64X1, EA_REG);
   x86p_a64_emit_alu_w_imm(c->e, kA64Add, kA64X1, 4u);
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kA64X1);
+}
+
+static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const X86pOperand *o = &insn->operand[0];
+
+  emit_pop_x0(c, insn_eip);
 
   if (o->kind == kX86pOperandMem) {
     emit_mem_prepare(c, o, insn_eip);
@@ -867,6 +877,38 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     return;
   }
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(o->reg), kA64X0);
+}
+
+/*
+ * PUSHFD and POPFD are where the two representations of EFLAGS meet: the six
+ * arithmetic flags are derived from the lazy (kind, a, b, r) record, and DF is
+ * held apart because nothing computes it (see X86pCpu::df). Both halves cross
+ * through one call each, matching exec.c's interpreter path and jit_x64.c's
+ * identical jit_pushfd_value/jit_popfd_apply exactly rather than reproducing
+ * that merge as a second authority here.
+ */
+static uint32_t jit_pushfd_value(X86pCpu *cpu) {
+  return x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u);
+}
+
+static void jit_popfd_apply(X86pCpu *cpu, uint32_t v) {
+  x86p_flags_set_explicit(&cpu->flags, v);
+  cpu->df = (v & X86P_DF) ? 1u : 0u;
+}
+
+static void emit_pushfd(BlockCtx *c, uint32_t insn_eip) {
+  x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
+  emit_call(c->e, (void *)&jit_pushfd_value);
+  /* The return is a uint32_t (W0); emit_push_x0's store32 reads only W0, so
+     whatever the ABI left in X0's upper half is irrelevant here. */
+  emit_push_x0(c, insn_eip);
+}
+
+static void emit_popfd(BlockCtx *c, uint32_t insn_eip) {
+  emit_pop_x0(c, insn_eip); /* X0 = popped value, already the second AAPCS64 arg */
+  x86p_a64_emit_mov_w_w(c->e, kA64X1, kA64X0);
+  x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
+  emit_call(c->e, (void *)&jit_popfd_apply);
 }
 
 /* INC, DEC, NEG and NOT -- see jit_x64.c's emit_alu_unary_inline for the CF
@@ -1382,6 +1424,16 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnPop:
       emit_pop(&ctx, &insn, pc);
+      break;
+    case kX86pInsnPushfd:
+      emit_pushfd(&ctx, pc);
+      break;
+    case kX86pInsnPopfd:
+      emit_popfd(&ctx, pc);
+      /* x86p_flags_set_explicit unconditionally records Explicit, exactly
+         like ADC/SBB below -- the next carry-in is statically known rather
+         than worth a helper call to ask. */
+      last_kind = (int)kX86pFlagsExplicit;
       break;
     case kX86pInsnAlu: {
       X86pA64Alu host;
