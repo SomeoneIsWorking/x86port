@@ -35,9 +35,10 @@ options.
 - A runtime-populated code cache is disposable user data. It is never a
   fresh-install prerequisite or a checked-in product input.
 - x64 and ARM64 lowering backends exist, but instruction and host conformance
-  remain partial. Shared x87 admission refuses value-bearing translation on
-  hosts without exact extended state; lack of a qualified backend is never a
-  reason to interpret the whole product.
+  remain partial. Shared x87 admission retains the user-approved playable Apple ARM64
+  binary64 path with an explicit precision limitation; other narrow-state hosts
+  refuse value-bearing forms. Lack of a backend never permits whole-product
+  interpretation.
 
 The product/test link boundary now satisfies this contract at framework level:
 `x86port_runtime` has no interpreter selector or interpreter dispatch edge, and

@@ -5,6 +5,7 @@
 #include "exec.h"
 #include "jit_engine.h"
 #include "jit_x64.h"
+#include "jit_x87_predicates.h"
 #include "x87.h"
 
 #include <stdint.h>
@@ -747,7 +748,7 @@ static void expect_x87_precision_refusal(Fixture *fixture, X86pCpu initial) {
 
 static void compare_x87_value_success(Fixture *fixture, X86pCpu initial, uint32_t length) {
   g_x87_value_cases++;
-  if (x86p_x87_precision_is_exact()) {
+  if (x87_values_are_emittable()) {
     compare_one_success(fixture, initial, length, 1);
   } else {
     expect_x87_precision_refusal(fixture, initial);
@@ -787,9 +788,6 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
       UINT64_C(0x7FF8000000000001), /* quiet NaN: unordered and IE set. */
   };
   X86pCpu initial;
-  X86pJitBlock block;
-  X86pJitStatus translation;
-  char reason[256] = {0};
   unsigned index;
 
   for (index = 0u; index < sizeof operands / sizeof operands[0]; index++) {
@@ -835,7 +833,7 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   CHECK(x86p_x87_push(&initial.x87, 2.0L) != 0);
   /* The failed read must not compare or pop; the full-state diff proves both. */
   g_x87_value_cases++;
-  if (x86p_x87_precision_is_exact()) {
+  if (x87_values_are_emittable()) {
     compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
   } else {
     expect_x87_precision_refusal(fixture, initial);
@@ -843,11 +841,9 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
   fixture->guest[0] = 0xD8u;
-  fixture->guest[1] = 0xD9u; /* FCOMP ST(1): deliberately outside this memory milestone. */
+  fixture->guest[1] = 0xD9u; /* FCOMP ST(1) now shares the register-stack owner. */
   append_stopper(fixture->guest + 2u);
-  translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
-  CHECK(translation == kX86pJitUnsupportedAtEntry);
-  CHECK(strstr(reason, "FCOMP") != NULL);
+  compare_x87_value_success(fixture, initial, 2u);
 }
 
 static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixture) {
@@ -948,6 +944,13 @@ static void test_x87_clear_exceptions_exact_state_and_neighbor_refusal(Fixture *
 int main(void) {
   Fixture fixture;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+  CHECK(x87_values_are_emittable());
+  CHECK(!x86p_x87_precision_is_exact());
+#else
+  CHECK(x87_values_are_emittable() == x86p_x87_precision_is_exact());
+#endif
+
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND: SETcc/LEAVE differential claims nothing\n");
     return 77;
@@ -971,8 +974,8 @@ int main(void) {
   test_x87_store_status_ax_projection_and_memory_refusal(&fixture);
   test_x87_clear_exceptions_exact_state_and_neighbor_refusal(&fixture);
   jc_code_region_destroy(&fixture.code);
-  CHECK(g_x87_value_cases == 15u);
-  CHECK(g_x87_precision_refusals == (x86p_x87_precision_is_exact() ? 0u : g_x87_value_cases));
+  CHECK(g_x87_value_cases == 16u);
+  CHECK(g_x87_precision_refusals == (x87_values_are_emittable() ? 0u : g_x87_value_cases));
   printf("x87 value forms: %u cases, %u explicit precision refusals; status-only execution checked independently\n",
          g_x87_value_cases,
          g_x87_precision_refusals);

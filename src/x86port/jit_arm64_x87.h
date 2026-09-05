@@ -23,4 +23,10 @@ void emit_x87_constant(BlockCtx *c, const X86pInsn *insn);
 void emit_x87_status_ax(BlockCtx *c);
 void emit_x87_clear_exceptions(BlockCtx *c);
 
+int x87_control_is_emittable(const X86pInsn *insn);
+void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+
+int x87_fn_is_emittable(const X86pInsn *insn);
+void emit_x87_fn(BlockCtx *c, const X86pInsn *insn);
+
 #endif /* X86PORT_JIT_ARM64_X87_H */

@@ -2,18 +2,61 @@
 #include "cpu.h"
 #include "x87.h"
 
-/* Shape and value-precision admission are shared by every host emitter.
- * Value-bearing forms require exact extended state; status-only forms do not. */
+int x87_values_are_emittable(void) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  /* STOPGAP: host-independent f80 storage/arithmetic is the proper fidelity fix.
+   * The user explicitly approved retaining the playable Mac binary64 path;
+   * this admission must not be reported as exact x87 representation. */
+  return 1;
+#else
+  return x86p_x87_precision_is_exact();
+#endif
+}
+
+int x87_register_is_emittable(const X86pInsn *insn) {
+  if (!x87_values_are_emittable()) {
+    return 0;
+  }
+  switch (insn->x87) {
+  case kX86pX87InsnCompare:
+  case kX86pX87InsnExchange:
+    return insn->operands == 0 || (insn->operands == 1 && insn->operand[0].kind == kX86pOperandSt &&
+                                   insn->operand[0].reg >= 0 && insn->operand[0].reg < X86P_X87_REGS);
+  case kX86pX87InsnChangeSign:
+  case kX86pX87InsnAbs:
+  case kX86pX87InsnTest:
+    return insn->operands == 0;
+  default:
+    return 0;
+  }
+}
+
+int x87_fn_is_emittable(const X86pInsn *insn) {
+  return x87_values_are_emittable() && insn->x87 == kX86pX87InsnFn && insn->operands == 0 &&
+         insn->x87_fn < kX86pX87FnCount && insn->x87_fn != kX86pX87FnXtract;
+}
+
+int x87_control_is_emittable(const X86pInsn *insn) {
+  return (insn->x87 == kX86pX87InsnLoadControl || insn->x87 == kX86pX87InsnStoreControl) && insn->operands == 1 &&
+         insn->operand[0].kind == kX86pOperandMem && insn->operand[0].size == 2 && !insn->operand[0].addr16;
+}
+
+/* Shape and value admission are shared by every host emitter. Status/control
+ * forms do not require value admission; exactness remains separate metadata. */
 
 /*
  * FLD accepts register copies and binary32/binary64 memory operands only
- * when the semantic state can preserve extended precision. Memory widening
- * belongs to each backend, not this shape check. FLD m80 and integer-source
- * FILD are not admitted by this predicate.
+ * under the admitted value representation. FILD also accepts 16/32/64-bit
+ * integer memory. Widening belongs to each backend; FLD m80 remains refused.
  */
 int x87_load_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o;
-  if (!x86p_x87_precision_is_exact() || insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int ||
+  if (x87_values_are_emittable() && insn->x87 == kX86pX87InsnLoadInt) {
+    o = &insn->operand[0];
+    return insn->operands == 1 && o->kind == kX86pOperandMem && !o->addr16 &&
+           (o->size == 2 || o->size == 4 || o->size == 8);
+  }
+  if (!x87_values_are_emittable() || insn->x87 != (uint8_t)kX86pX87InsnLoad || insn->x87_mem_int ||
       insn->operands != 1) {
     return 0;
   }
@@ -33,7 +76,7 @@ int x87_load_is_emittable(const X86pInsn *insn) {
  */
 int x87_arith_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  if (!x86p_x87_precision_is_exact() || insn->x87 != (uint8_t)kX86pX87InsnArith || insn->x87_mem_int) {
+  if (!x87_values_are_emittable() || insn->x87 != (uint8_t)kX86pX87InsnArith) {
     return 0;
   }
   if ((unsigned)insn->x87_op >= (unsigned)kX86pX87OpCount) {
@@ -45,28 +88,28 @@ int x87_arith_is_emittable(const X86pInsn *insn) {
   if (insn->operands == 1 && o0->kind == kX86pOperandSt) {
     return o0->reg >= 0 && o0->reg < X86P_X87_REGS;
   }
-  return insn->operands == 1 && o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+  return insn->operands == 1 && o0->kind == kX86pOperandMem &&
+         (insn->x87_mem_int ? (o0->size == 2 || o0->size == 4) : (o0->size == 4 || o0->size == 8)) && !o0->addr16;
 }
 
 /*
- * FCOM / FCOMP against a 32- or 64-bit memory float. The integer-source FICOM
- * family is deliberately separate: it has different widening semantics.
- * Register and implicit compare forms also remain refused until their empty
- * source-stack behavior has its own emitted control-flow coverage.
+ * FCOM / FCOMP against memory float or integer operands. Register and implicit
+ * forms use x87_register_is_emittable and their own stack-behavior emitter.
  */
 int x87_compare_mem_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnCompare && !insn->x87_mem_int &&
-         insn->operands == 1 && o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+  return x87_values_are_emittable() && insn->x87 == (uint8_t)kX86pX87InsnCompare && insn->operands == 1 &&
+         o0->kind == kX86pOperandMem &&
+         (insn->x87_mem_int ? (o0->size == 2 || o0->size == 4) : (o0->size == 4 || o0->size == 8)) && !o0->addr16;
 }
 
 /*
- * FST / FSTP to a stack position (not memory). Both slots are 80-bit, so there
- * is no narrowing and no control-word question.
+ * FST / FSTP to a stack position (not memory). Both slots share the same host
+ * representation, so this transfer adds no narrowing.
  */
 int x87_store_reg_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 &&
+  return x87_values_are_emittable() && insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 &&
          o0->kind == kX86pOperandSt && o0->reg >= 0 && o0->reg < X86P_X87_REGS;
 }
 
@@ -77,12 +120,13 @@ int x87_store_reg_is_emittable(const X86pInsn *insn) {
  */
 int x87_store_mem_is_emittable(const X86pInsn *insn) {
   const X86pOperand *o0 = &insn->operand[0];
-  return x86p_x87_precision_is_exact() && insn->x87 == (uint8_t)kX86pX87InsnStore && insn->operands == 1 &&
-         o0->kind == kX86pOperandMem && (o0->size == 4 || o0->size == 8) && !o0->addr16;
+  return x87_values_are_emittable() && (insn->x87 == kX86pX87InsnStore || insn->x87 == kX86pX87InsnStoreInt) &&
+         insn->operands == 1 && o0->kind == kX86pOperandMem &&
+         (o0->size == 4 || o0->size == 8 || (insn->x87 == kX86pX87InsnStoreInt && o0->size == 2)) && !o0->addr16;
 }
 
 int x87_constant_is_emittable(const X86pInsn *insn) {
-  if (!x86p_x87_precision_is_exact() || insn->operands != 0) {
+  if (!x87_values_are_emittable() || insn->operands != 0) {
     return 0;
   }
   switch ((X86pX87Insn)insn->x87) {

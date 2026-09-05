@@ -30,6 +30,7 @@
  * math library produces.
  */
 #include "simd_internal.h"
+#include "simd_packed.h"
 
 #include "flags.h"
 
@@ -114,9 +115,17 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
 
   switch (op) {
   case kX86pSimdAddps:
+    x86p_simd_addps(r.b, b->b);
+    break;
   case kX86pSimdSubps:
+    x86p_simd_subps(r.b, b->b);
+    break;
   case kX86pSimdMulps:
+    x86p_simd_mulps(r.b, b->b);
+    break;
   case kX86pSimdDivps:
+    x86p_simd_divps(r.b, b->b);
+    break;
   case kX86pSimdMinps:
   case kX86pSimdMaxps:
     for (i = 0; i < n; i++) {
@@ -124,18 +133,6 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
       float y = vec_f32(b, i);
       float v;
       switch (op) {
-      case kX86pSimdAddps:
-        v = x + y;
-        break;
-      case kX86pSimdSubps:
-        v = x - y;
-        break;
-      case kX86pSimdMulps:
-        v = x * y;
-        break;
-      case kX86pSimdDivps:
-        v = x / y;
-        break;
       case kX86pSimdMinps:
         v = min_ss(x, y);
         break;

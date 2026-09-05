@@ -1,23 +1,8 @@
-/*
- * x87_transcendental.h -- the x87 functions, evaluated on an x87 unit.
- *
- * FSIN is not sinl(). The x87 unit computes it with its own polynomial to its
- * own precision, and the C library computes it with a different one; they
- * agree to about eighteen digits and differ below that. For a guest that
- * accumulates transforms across a frame, "differ below that" is drift, and the
- * test that would catch it is the one nobody writes.
- *
- * So these do not approximate the instruction -- they ARE the instruction.
- * Each one loads its operands in the 80-bit format, executes the real x87
- * opcode, and stores the 80-bit result back. That is exact by construction on
- * any host with an x87 unit, which is every x86 host this framework's JIT
- * targets.
- *
- * ON A HOST WITHOUT ONE, THEY REFUSE. x86p_x87_fn returns 0 and the engine
- * names the instruction rather than substituting a library call whose low bits
- * are different. A port that needs these on ARM needs a decision about what
- * "correct" means there, and silently picking libm would be making that
- * decision by accident.
+/* x87 transcendental evaluation. Intel hosts use their x87 instructions;
+ * other hosts use pinned Bochs/SoftFloat extended-precision math. The software
+ * path is tolerance-tested against x87, not claimed bit-identical to its
+ * microcode. CPU storage still has the precision reported by
+ * x86p_x87_precision_is_exact(). Unmasked exception delivery is not modelled.
  */
 #ifndef X86PORT_X87_TRANSCENDENTAL_H
 #define X86PORT_X87_TRANSCENDENTAL_H
@@ -34,6 +19,8 @@ extern "C" {
  * FYL2X is not a logarithm, it is ST1*log2(ST0). Naming them after the maths
  * is how a caller ends up passing the operands the other way round.
  */
+/* This parameter crosses the C/C++ boundary; both sides assert its C ABI width.
+ * NOLINTNEXTLINE(performance-enum-size) */
 typedef enum X86pX87Fn {
   kX86pX87FnSqrt = 0, /* FSQRT    ST0 <- sqrt(ST0)                        */
   kX86pX87FnSin,      /* FSIN     ST0 <- sin(ST0)                        */
@@ -55,7 +42,7 @@ typedef enum X86pX87Fn {
 } X86pX87Fn;
 
 /*
- * Evaluate on the host's x87 unit.
+ * Evaluate using the host-specific implementation.
  *
  * `a` is ST(0) and `b` is ST(1) for the two-operand forms. `r0` receives the
  * value that ends up in ST(0) and `r1` the SECOND result for the two that
@@ -64,17 +51,29 @@ typedef enum X86pX87Fn {
  *
  * `status` receives the condition-code bits the instruction wrote, which is
  * how FPREM reports that its reduction is incomplete and how the comparisons
- * report unordered. Returns 0 if this host has no x87 unit, in which case
- * nothing is written and the caller must refuse the instruction by name.
+ * report unordered. Returns 0 for unsupported functions; the caller must
+ * refuse the instruction by name. Software FXTRACT remains unsupported.
  */
 int x86p_x87_fn(
     X86pX87Fn fn, long double a, long double b, long double *r0, long double *r1, int *pushed, uint16_t *status);
 
-/* Whether this build can evaluate them at all -- that is, whether the host has
-   an x87 unit to run them on. Asked by the engine before claiming coverage. */
+/* Whether this build has a numerical implementation. Individual operation
+   support is still checked by x86p_x87_fn. */
 int x86p_x87_fn_available(void);
 
 const char *x86p_x87_fn_name(X86pX87Fn fn);
+
+int x86p_x87_fn_software(
+    X86pX87Fn fn, long double a, long double b, long double *r0, long double *r1, int *pushed, uint16_t *status);
+
+int x86p_x87_fn_software_control(X86pX87Fn fn,
+                                 uint16_t control,
+                                 long double a,
+                                 long double b,
+                                 long double *r0,
+                                 long double *r1,
+                                 int *pushed,
+                                 uint16_t *status);
 
 #ifdef __cplusplus
 } /* extern "C" */

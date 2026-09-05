@@ -240,6 +240,18 @@ void x86p_cpu_reset(X86pCpu *cpu);
 int x86p_push32(X86pCpu *cpu, const X86pMem *m, uint32_t value);
 int x86p_pop32(X86pCpu *cpu, const X86pMem *m, uint32_t *out);
 
+/* Transfer the five status flags through AH; preserve OF and other registers. */
+void x86p_cpu_rdtsc(X86pCpu *cpu);
+
+/* Commit a 32-bit double shift to a prevalidated register or memory address.
+ * The host emitter owns bounds/fault exits; this owner preserves zero-count
+ * destination and lazy flags and publishes changed value/flags together. */
+void x86p_cpu_double_shift32(X86pCpu *cpu, void *destination, uint32_t source, uint32_t count, uint32_t left);
+void x86p_cpu_cpuid(X86pCpu *cpu);
+int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition);
+void x86p_cpu_sahf(X86pCpu *cpu);
+void x86p_cpu_lahf(X86pCpu *cpu);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

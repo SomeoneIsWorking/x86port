@@ -338,6 +338,29 @@ static void test_identity_mapping_is_not_an_unconfigured_one(void) {
   CHECK_EQ_U(v, 0x12345678u); /* untouched by the refused read */
 }
 
+static void test_double_shift_publication_preserves_masked_zero_and_unaligned_bounds(void) {
+  X86pCpu cpu;
+  x86p_cpu_reset(&cpu);
+  x86p_flags_set(&cpu.flags, kX86pFlagsAdd, 0x7FFFFFFFu, 1u, 0x80000000u, 4);
+  const X86pFlags lazy = cpu.flags;
+  uint8_t bytes[] = {0xAA, 0x78, 0x56, 0x34, 0x12, 0xBB};
+  const uint8_t original[] = {0xAA, 0x78, 0x56, 0x34, 0x12, 0xBB};
+  for (unsigned left = 0; left < 2; left++) {
+    for (unsigned count = 0; count <= 32; count += 32) {
+      x86p_cpu_double_shift32(&cpu, bytes + 1, 0x9ABCDEF0u, count, left);
+      CHECK(cpu.flags.kind == lazy.kind);
+      CHECK(cpu.flags.a == lazy.a && cpu.flags.b == lazy.b && cpu.flags.r == lazy.r);
+      CHECK(cpu.flags.w == lazy.w && cpu.flags.carry_in == lazy.carry_in);
+      CHECK(memcmp(bytes, original, sizeof bytes) == 0);
+    }
+  }
+  x86p_cpu_double_shift32(&cpu, bytes + 1, 0x9ABCDEF0u, 33, 1);
+  const uint8_t shifted[] = {0xAA, 0xF1, 0xAC, 0x68, 0x24, 0xBB};
+  CHECK(memcmp(bytes, shifted, sizeof bytes) == 0);
+  CHECK(x86p_flag_cf(&cpu.flags) == 0);
+  CHECK(x86p_flag_of(&cpu.flags) == 0);
+}
+
 int main(void) {
   RUN(test_register_order_is_the_encoding_order);
   RUN(test_byte_registers_alias_high_bytes);
@@ -350,6 +373,7 @@ int main(void) {
   RUN(test_push_and_pop);
   RUN(test_faulting_push_leaves_esp_alone);
   RUN(test_identity_mapping_is_not_an_unconfigured_one);
+  RUN(test_double_shift_publication_preserves_masked_zero_and_unaligned_bounds);
   printf("%d check(s), %d failed, %d failing test(s)\n", g_checks, g_failed, g_test_failed);
   return g_test_failed ? 1 : 0;
 }

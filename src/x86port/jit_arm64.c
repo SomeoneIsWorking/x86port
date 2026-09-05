@@ -93,7 +93,8 @@ static int operand_writable(const X86pOperand *o) {
 }
 
 static int is_relative_branch(const X86pInsn *insn) {
-  if (insn->op != (uint8_t)kX86pInsnJmp && insn->op != (uint8_t)kX86pInsnJcc) {
+  if (insn->op != (uint8_t)kX86pInsnJmp && insn->op != (uint8_t)kX86pInsnJcc && insn->op != kX86pInsnLoop &&
+      insn->op != kX86pInsnLoope && insn->op != kX86pInsnLoopne) {
     return 0;
   }
   return insn->operands >= 1 && insn->operand[0].kind == kX86pOperandImm && insn->operand[0].relative;
@@ -178,6 +179,11 @@ static int can_emit(const X86pInsn *insn) {
   switch (insn->op) {
   case kX86pInsnNop:
     return 1;
+  case kX86pInsnShld:
+  case kX86pInsnShrd:
+    return double_shift_is_emittable(insn);
+  case kX86pInsnSimd:
+    return simd_bits_is_emittable(insn);
   case kX86pInsnMov:
     return mov_is_emittable(insn);
   case kX86pInsnMovzx:
@@ -191,9 +197,8 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnSetcc:
     return insn->cond < (uint8_t)kX86pCondCount && insn->operands == 1 && mov_operand_ok(&insn->operand[0], 1, 1);
   case kX86pInsnAlu:
-    if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluSar) {
-      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
-             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
+    if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluRcr) {
+      return insn->operands == 2 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
              (insn->operand[1].kind == kX86pOperandImm ||
               (insn->operand[1].kind == kX86pOperandReg && insn->operand[1].reg == kX86pEcx &&
                insn->operand[1].size == 1));
@@ -202,8 +207,8 @@ static int can_emit(const X86pInsn *insn) {
       return 0;
     }
     if (insn->alu == (uint8_t)kX86pAluAdc || insn->alu == (uint8_t)kX86pAluSbb) {
-      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
-             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) && insn->operand[1].kind != kX86pOperandMem &&
+      return insn->operands == 2 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
+             (insn->operand[0].kind != kX86pOperandMem || insn->operand[1].kind != kX86pOperandMem) &&
              mov_operand_ok(&insn->operand[1], insn->operand[0].size, 0);
     }
     return mov_is_emittable(insn);
@@ -212,6 +217,12 @@ static int can_emit(const X86pInsn *insn) {
                                    operand_is_imm(&insn->operand[0]));
   case kX86pInsnPop:
     return insn->operands == 1 && operand_writable(&insn->operand[0]);
+  case kX86pInsnRdtsc:
+  case kX86pInsnCpuid:
+  case kX86pInsnCld:
+  case kX86pInsnStd:
+  case kX86pInsnSahf:
+  case kX86pInsnLahf:
   case kX86pInsnPushfd:
   case kX86pInsnPopfd:
     return insn->operands == 0;
@@ -228,8 +239,11 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnIdiv:
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
   case kX86pInsnMul:
-    return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
+    return insn->operands == 1 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
   case kX86pInsnImul:
+    if (insn->operands == 1) {
+      return mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
+    }
     return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
            operand_is_reg32(&insn->operand[0]) &&
            (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]));
@@ -244,9 +258,11 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnLea:
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
-    return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
-           x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) ||
-           x87_status_ax_is_emittable(insn) || x87_clear_exceptions_is_emittable(insn);
+    return x87_register_is_emittable(insn) || x87_fn_is_emittable(insn) || x87_control_is_emittable(insn) ||
+           (insn->x87 == kX86pX87InsnWait && insn->operands == 0) || x87_load_is_emittable(insn) ||
+           x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) || x87_store_mem_is_emittable(insn) ||
+           x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) || x87_status_ax_is_emittable(insn) ||
+           x87_clear_exceptions_is_emittable(insn);
   default:
     return 0;
   }
@@ -653,26 +669,6 @@ static void emit_prologue(X86pA64Emit *e) {
   x86p_a64_emit_mov_x_x(e, CPU_REG, kA64X0);
 }
 
-static void emit_epilogue(X86pA64Emit *e, uint32_t next_eip, X86pJitExit exit) {
-  x86p_a64_emit_store32_imm(e, CPU_REG, eip_off(), next_eip);
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)exit);
-  x86p_a64_emit_pop_pair(e, CPU_REG, kA64Lr);
-  x86p_a64_emit_ret(e);
-}
-
-static void emit_epilogue_from(X86pA64Emit *e, X86pA64Reg eip_reg, X86pJitExit exit) {
-  x86p_a64_emit_store32(e, CPU_REG, eip_off(), eip_reg);
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)exit);
-  x86p_a64_emit_pop_pair(e, CPU_REG, kA64Lr);
-  x86p_a64_emit_ret(e);
-}
-
-/*
- * A conditional branch, emitted WITHOUT a forward jump -- see jit_x64.c's
- * emit_jcc for why CSEL replaces a patched jump here exactly as CMOVcc does
- * there. `mov`/`cset` do not disturb NZCV, so the ordering only has to keep
- * the TST that reads x86p_cond's return value adjacent to the CSEL.
- */
 static void emit_condition_value(X86pA64Emit *e, uint8_t cond) {
   x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
   x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
@@ -880,6 +876,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       uint32_t target = next + insn.operand[0].imm;
       if (insn.op == (uint8_t)kX86pInsnJmp) {
         emit_epilogue(&e, target, kX86pJitExitBlockEnd);
+      } else if (insn.op != kX86pInsnJcc) {
+        emit_loop(&ctx, &insn, target, next);
       } else {
         emit_jcc(&e, insn.cond, target, next);
       }
@@ -891,6 +889,14 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 
     switch (insn.op) {
     case kX86pInsnNop:
+      break;
+    case kX86pInsnShld:
+    case kX86pInsnShrd:
+      emit_double_shift(&ctx, &insn, pc);
+      last_kind = -1;
+      break;
+    case kX86pInsnSimd:
+      emit_simd_bits(&ctx, &insn, pc);
       break;
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
@@ -935,7 +941,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       last_kind = -1;
       break;
     case kX86pInsnImul:
-      emit_imul32(&ctx, &insn, pc);
+      if (insn.operands == 1) {
+        emit_mul32(&ctx, &insn, pc);
+      } else {
+        emit_imul32(&ctx, &insn, pc);
+      }
       last_kind = -1;
       break;
     case kX86pInsnString:
@@ -945,7 +955,17 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       }
       break;
     case kX86pInsnX87:
-      if (x87_arith_is_emittable(&insn)) {
+      /* The synchronous, masked-exception x87 model has no pending work. */
+      if (insn.x87 == kX86pX87InsnWait) {
+        break;
+      }
+      if (x87_register_is_emittable(&insn)) {
+        emit_x87_register(&ctx, &insn);
+      } else if (x87_fn_is_emittable(&insn)) {
+        emit_x87_fn(&ctx, &insn);
+      } else if (x87_control_is_emittable(&insn)) {
+        emit_x87_control(&ctx, &insn, pc);
+      } else if (x87_arith_is_emittable(&insn)) {
         emit_x87_arith(&ctx, &insn, pc);
       } else if (x87_compare_mem_is_emittable(&insn)) {
         emit_x87_compare_mem(&ctx, &insn, pc);
@@ -969,6 +989,17 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnPop:
       emit_pop(&ctx, &insn, pc);
       break;
+    case kX86pInsnRdtsc:
+    case kX86pInsnCpuid:
+    case kX86pInsnCld:
+    case kX86pInsnStd:
+    case kX86pInsnSahf:
+    case kX86pInsnLahf:
+      emit_cpu_transfer(&ctx, insn.op);
+      if (insn.op == kX86pInsnSahf) {
+        last_kind = (int)kX86pFlagsExplicit;
+      }
+      break;
     case kX86pInsnPushfd:
       emit_pushfd(&ctx, pc);
       break;
@@ -990,8 +1021,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_kind = (int)kind;
         }
       } else {
-        emit_alu(&e, &insn);
-        if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluSar) {
+        emit_alu_helper(&ctx, &insn, pc);
+        if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluRcr) {
           last_kind = -1;
         } else {
           last_kind = (int)kX86pFlagsExplicit;

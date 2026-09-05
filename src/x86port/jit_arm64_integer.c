@@ -4,10 +4,6 @@
 #include "jit_arm64_integer.h"
 #include "alu.h"
 
-static int alu_writes_dest(uint8_t op) {
-  return op != (uint8_t)kX86pAluCmp && op != (uint8_t)kX86pAluTest;
-}
-
 /* "cmp DST, [base+disp]" has no single AArch64 instruction: load the operand
    into the encoder's other scratch (X8) and compare. Only ever the second of
    a two-instruction sequence with nothing live in X8 across it. */
@@ -233,30 +229,6 @@ void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int signed
   note_divide_fault(c, failed);
 }
 
-/* The shipping emitter calls the canonical widening-multiply semantics after
-   capturing the explicit operand -- identical to jit_x64.c's jit_mul32. */
-static void jit_mul32(X86pCpu *cpu, uint32_t operand) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  x86p_alu_mul(cpu->reg[kX86pEax], operand, 4, &low, &high, &cpu->flags);
-  cpu->reg[kX86pEax] = low;
-  cpu->reg[kX86pEdx] = high;
-}
-
-void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  const X86pOperand *operand = &insn->operand[0];
-
-  if (operand->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, operand, insn_eip, 4);
-    x86p_a64_emit_load32(c->e, kA64X1, HOSTPTR_REG, 0);
-  } else {
-    x86p_a64_emit_load32(c->e, kA64X1, CPU_REG, reg_off(operand->reg));
-  }
-  x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
-  emit_call(c->e, (void *)&jit_mul32);
-}
-
 static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
   uint32_t low = 0u;
   uint32_t high = 0u;
@@ -376,27 +348,4 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
     emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kA64X1, w);
   }
   return (int)kind;
-}
-
-/* The shift / ADC / SBB path: register-only (can_emit keeps memory operands
-   away from them), calling x86p_alu(op, a, b, w, &flags) -> result in X0. */
-void emit_alu(X86pA64Emit *e, const X86pInsn *insn) {
-  const X86pOperand *dst = &insn->operand[0];
-  const X86pOperand *src = &insn->operand[1];
-  const int w = dst->size;
-
-  emit_load_w(e, kA64X1, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
-  if (src->kind == kX86pOperandImm) {
-    x86p_a64_emit_mov_w_imm32(e, kA64X2, src->imm & width_mask(w)); /* b */
-  } else {
-    /* At the SOURCE's own width: a shift's count is CL, one byte. */
-    emit_load_w(e, kA64X2, CPU_REG, reg_off_w(src->reg, src->size), src->size);
-  }
-  x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)w);
-  x86p_a64_emit_lea64(e, kA64X4, CPU_REG, flags_off());
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)insn->alu);
-  emit_call(e, (void *)&x86p_alu);
-  if (alu_writes_dest(insn->alu)) {
-    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kA64X0, w);
-  }
 }
