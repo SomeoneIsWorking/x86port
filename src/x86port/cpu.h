@@ -186,6 +186,12 @@ int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n);
 uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max);
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n);
 
+/* Bulk-copy admission for repeated guest moves. Copies only nonempty, wholly
+   mapped, disjoint spans with no write observer installed. Returns 0 without
+   effects otherwise; callers must retain element-wise execution for partial
+   faults, overlap propagation, and exact observer ordering. */
+int x86p_mem_copy_disjoint(const X86pMem *m, uint32_t dst, uint32_t src, uint32_t n);
+
 /* Whether an access of `w` bytes at `addr` is wholly mapped. Exposed so a
    caller can check before doing work it would have to undo. */
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w);
