@@ -109,6 +109,17 @@ int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint3
   return 1;
 }
 
+int x86p_mem_copy_disjoint(const X86pMem *m, uint32_t dst, uint32_t src, uint32_t n) {
+  if (g_write_observer || !span_ok(m, src, n) || !span_ok(m, dst, n)) {
+    return 0;
+  }
+  if ((uint64_t)src < (uint64_t)dst + n && (uint64_t)dst < (uint64_t)src + n) {
+    return 0;
+  }
+  memcpy(x86p_mem_at(m, dst), x86p_mem_at(m, src), n);
+  return 1;
+}
+
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w) {
   uint32_t off;
   if (!m || m->size == 0 || (w != 1 && w != 2 && w != 4)) {

@@ -355,3 +355,41 @@ at masked-zero counts, and check unaligned writes and count masking. Existing
 JIT register, memory, alias, and fault cases exercise the same owner. The combined
 30-test gate was rerun after these shipping corrections and passed; focused
 binary64-contract startup/control tests also passed.
+
+## Repeated memory-copy overhead (2026-09-05)
+
+The shared string semantic owner now bulk-copies forward REP MOVS only when
+both complete spans fit the memory mapping, do not wrap guest addresses, are
+disjoint, and no memory-write observer is installed. Memory-span admission and
+host pointer translation remain in `cpu.c`. Backward, overlapping, watched,
+and partially invalid copies retain element-wise progress and fault reporting.
+
+`test_string_copy` passes 11,247 checks on ARM64 and Rosetta x64, comparing CPU
+state, bytes, fault addresses, and write-observer counts/order against
+single-element execution across byte/word/dword widths, both directions,
+overlap, zero/huge counts, mapping ends, and 32-bit address wrap. Direct
+admission controls prove both accepted and refused bulk copies. Eighteen
+emitted-code REP MOVS cases bring `test_jit_startup` to 4,204 passing cases on
+both hosts. The optional 100,000-copy benchmark measured 4 KB forward MOVSD at
+9,482.1 -> 104.0 ns/copy on this Mac; this measures the leaf operation, not FPS.
+The full 30-test graph retains four unavailable hardware-oracle failures on
+ARM64 and the three previously recorded integer/flag oracle failures under
+Rosetta. This does not resolve those baseline gaps or establish Fedora CI.
+
+The exact `f84d2a832abc11fe9990274e15e423477caa3e46` follow-up was integrated
+with `96f7665` without losing its FWAIT and shared double-shift corrections.
+The combined Linux Clang 22.1.8 gate passed all 31 CTests. The local copy test
+passed 11,271 checks, including six additional malformed width/prefix/operation
+refusals with unchanged CPU and memory; the emitted startup test passed 4,213
+cases with zero refusals or failures. Touched compiled units pass clang-tidy,
+all touched first-party source passes formatting, and the unchanged second build
+performs no work. These are local synthetic results, not hosted or gameplay FPS
+qualification of the follow-up.
+
+Copy admission preserves the existing memory and invalidation contracts rather
+than extending them: the caller provides valid host backing, and span checks
+validate guest bounds and wrap, not host page permissions. With an observer
+installed the fast path refuses and retains per-element write notification.
+Without one, the existing caller-owned explicit JIT invalidation (or diagnostic
+no-cache mode) remains necessary for code writes; neither the previous scalar
+path nor this bulk path supplies automatic cache invalidation.

@@ -158,6 +158,18 @@ X86pStringStatus x86p_string_execute(X86pCpu *cpu, const X86pMem *mem, const X86
     return kX86pStringOk;
   }
 
+  /* A forward, disjoint, fully mapped MOVS can copy in bulk. All other cases
+     keep the iteration boundary, including the precise state at a fault. */
+  if (op == kX86pStringMovs && !cpu->df) {
+    uint64_t bytes = (uint64_t)cpu->reg[kX86pEcx] * (unsigned)w;
+    if (bytes <= UINT32_MAX && x86p_mem_copy_disjoint(mem, cpu->reg[kX86pEdi], cpu->reg[kX86pEsi], (uint32_t)bytes)) {
+      cpu->reg[kX86pEsi] += (uint32_t)bytes;
+      cpu->reg[kX86pEdi] += (uint32_t)bytes;
+      cpu->reg[kX86pEcx] = 0;
+      return kX86pStringOk;
+    }
+  }
+
   /*
    * The repeat. ECX is tested BEFORE the first iteration, so REP with ECX == 0
    * does nothing at all -- it does not do one pass and then check.
