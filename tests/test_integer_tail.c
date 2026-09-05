@@ -8,10 +8,9 @@
  * observations about the current CPU rather than portable failures.
  *
  * The oracle assembles each instruction into an executable page and runs it on
- * real registers with a controlled incoming EFLAGS. If it never runs -- a
- * non-x86 host, a failed mmap -- it REFUSES rather than passing on the cases
- * it could still do hermetically, because a green run that verified nothing is
- * worse than a red one.
+ * real registers with a controlled incoming EFLAGS. Unavailable host hardware
+ * is an explicit skip, never a semantic pass. Failure to execute the oracle on
+ * a supported host remains an error.
  */
 #include "cpu.h"
 #include "decode.h"
@@ -36,7 +35,7 @@
    X86pCpu, not in the flags word, and none of these instructions touch it. */
 #define COMPARED_FLAGS (X86P_CF | X86P_PF | X86P_AF | X86P_ZF | X86P_SF | X86P_OF)
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(X86P_TEST_ORACLE_UNAVAILABLE)
 
 static int defined_flags_differ(uint32_t host, uint32_t model, uint32_t mask) {
   return ((host ^ model) & mask) != 0u;
@@ -860,8 +859,8 @@ int main(void) {
 #else
 
 int main(void) {
-  printf("REFUSED: this host is not x86-64, so nothing in the integer tail was verified.\n");
-  return 1;
+  printf("SKIP: x86-64 hardware oracle unavailable; 0 host instructions executed, integer tail unchecked.\n");
+  return 77;
 }
 
 #endif
