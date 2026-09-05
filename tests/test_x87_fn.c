@@ -23,16 +23,12 @@
 #include "cpu.h"
 #include "decode.h"
 #include "exec.h"
+#include "oracle_code.h"
 #include "x87.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
-
-static unsigned long g_checks;
-static unsigned long g_failed;
-static unsigned long g_oracle_runs;
 
 #if defined(__x86_64__)
 #define HAVE_ORACLE 1
@@ -40,8 +36,16 @@ static unsigned long g_oracle_runs;
 #define HAVE_ORACLE 0
 #endif
 
+#if HAVE_ORACLE
+static unsigned long g_checks;
+static unsigned long g_failed;
+static unsigned long g_oracle_runs;
+#endif
+
 #define BASE 0x00030000u
+#if HAVE_ORACLE
 static uint8_t g_code_mem[64];
+#endif
 
 typedef struct Case {
   const char *name;
@@ -67,7 +71,7 @@ I(k_fprem1, 0xD9u, 0xF5u)
 I(k_fabs, 0xD9u, 0xE1u)
 I(k_fchs, 0xD9u, 0xE0u)
 
-#define C(n, b) {n, b, (unsigned)(sizeof b)}
+#define C(n, b) {(n), (b), (unsigned)(sizeof(b))}
 static const Case kCases[] = {
     C("FSQRT", k_fsqrt),
     C("FSIN", k_fsin),
@@ -106,7 +110,7 @@ typedef struct HostOut {
   unsigned top; /* how far TOP moved: 0 unchanged, 1 pushed, -1 as 7 */
 } HostOut;
 
-static uint8_t *g_page;
+static JcCodeRegion g_code_region;
 
 /*
  * Run the instruction on a host stack holding, from the top down, a, b and a
@@ -125,14 +129,7 @@ static void oracle(const Case *c, long double a, long double b, HostOut *out) {
   unsigned n = 0;
   void (*fn)(void);
 
-  if (!g_page) {
-    g_page = (uint8_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (g_page == MAP_FAILED) {
-      g_page = NULL;
-      g_failed++;
-      return;
-    }
-  }
+  uint8_t *g_page = oracle_code_write(&g_code_region);
   in[0] = -12345.0L; /* sentinel */
   in[1] = b;
   in[2] = a;
@@ -189,7 +186,7 @@ static void oracle(const Case *c, long double a, long double b, HostOut *out) {
   sw_before = 0u;
   sw_after = 0u;
   (void)sw_after;
-  memcpy(&fn, &g_page, sizeof fn);
+  fn = (void (*)(void))oracle_code_publish(&g_code_region, n);
   fn();
   out->st0 = res[0];
   out->st1 = res[1];
@@ -275,6 +272,7 @@ int main(void) {
   }
   printf(
       "%lu check(s), %lu failure(s); %lu instruction(s) executed on the host CPU\n", g_checks, g_failed, g_oracle_runs);
+  jc_code_region_destroy(&g_code_region);
   return g_failed ? 1 : 0;
 #else
   printf("REFUSED: this host is not x86-64, so nothing here was verified.\n");

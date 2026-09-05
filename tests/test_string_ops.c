@@ -21,16 +21,25 @@
 #include "cpu.h"
 #include "decode.h"
 #include "flags.h"
+#include "oracle_code.h"
 #include "string_ops.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
 
-static unsigned long g_checks;
+#if defined(__x86_64__)
+#define HAVE_ORACLE 1
+#else
+#define HAVE_ORACLE 0
+#endif
+
 static unsigned long g_failed;
+#if HAVE_ORACLE
+static unsigned long g_checks;
 static unsigned long g_oracle_runs;
+static JcCodeRegion g_code_region;
+#endif
 
 #define CHECK(c)                                                                                                       \
   do {                                                                                                                 \
@@ -40,12 +49,6 @@ static unsigned long g_oracle_runs;
       printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);                                                          \
     }                                                                                                                  \
   } while (0)
-
-#if defined(__x86_64__)
-#define HAVE_ORACLE 1
-#else
-#define HAVE_ORACLE 0
-#endif
 
 #define BUF 512u
 #define GUEST_BASE 0x00020000u
@@ -58,7 +61,9 @@ static unsigned long g_oracle_runs;
 #define SRC_OFF 0x80u
 #define DST_OFF 0x140u
 
+#if HAVE_ORACLE
 static uint8_t g_guest[BUF];
+#endif
 
 typedef struct Outcome {
   uint8_t mem[BUF];
@@ -106,18 +111,9 @@ static void oracle(uint8_t opcode,
    * instruction that still assembles, and the typo would be invisible -- the
    * test would compare the model against the wrong oracle and agree.
    */
-  static uint8_t *code;
+  uint8_t *code = oracle_code_write(&g_code_region);
   unsigned n = 0;
 
-  if (!code) {
-    code = (uint8_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (code == MAP_FAILED) {
-      printf("    REFUSED: no executable page for the oracle\n");
-      g_failed++;
-      code = NULL;
-      return;
-    }
-  }
   if (prefix) {
     code[n++] = prefix;
   }
@@ -126,6 +122,7 @@ static void oracle(uint8_t opcode,
   }
   code[n++] = opcode;
   code[n++] = 0xC3u; /* RET */
+  code = oracle_code_publish(&g_code_region, n);
 
   /*
    * Memory operands throughout, not registers: eleven register operands is
@@ -169,6 +166,7 @@ static void oracle(uint8_t opcode,
 }
 #endif /* HAVE_ORACLE */
 
+#if HAVE_ORACLE
 static uint32_t model_eflags(const X86pCpu *cpu) {
   return x86p_eflags(&cpu->flags) & X86P_ARITH_FLAGS;
 }
@@ -181,6 +179,7 @@ static void fill(uint8_t *p, size_t n, unsigned seed) {
     p[i] = (uint8_t)((seed * 37u + i * 17u + (i / 4u)) & 0xFFu);
   }
 }
+#endif
 
 typedef struct Case {
   const char *name;
@@ -339,6 +338,7 @@ int main(void) {
   }
   printf(
       "%lu check(s), %lu failure(s); %lu instruction(s) executed on the host CPU\n", g_checks, g_failed, g_oracle_runs);
+  jc_code_region_destroy(&g_code_region);
 #else
   printf("REFUSED: this host is not x86-64, so no instruction was executed and\n"
          "nothing here was verified. The string operations are UNCHECKED on this build.\n");
