@@ -526,24 +526,37 @@ static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
 }
 #else
 static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
-  /* No x87 unit: steer the standard rounding direction for the narrowing
-     conversion, which C99 Annex F ties to the current mode. Restored after,
-     like the host-FPU path. */
-  const int save = fegetround();
+#pragma STDC FENV_ACCESS ON
   uint64_t bits = 0;
+#if LDBL_MANT_DIG == DBL_MANT_DIG && LDBL_MAX_EXP == DBL_MAX_EXP
+  /* This host already stores the guest value as binary64. Copying its bits
+     needs no conversion and cannot depend on the requested rounding mode. */
+  if (is64) {
+    const double out = (double)v;
+    memcpy(&bits, &out, sizeof out);
+    return bits;
+  }
+#endif
+  const int save = fegetround();
+  int rounding;
   switch (cw & X86P_X87_RC_MASK) {
   case X86P_X87_RC_DOWN:
-    fesetround(FE_DOWNWARD);
+    rounding = FE_DOWNWARD;
     break;
   case X86P_X87_RC_UP:
-    fesetround(FE_UPWARD);
+    rounding = FE_UPWARD;
     break;
   case X86P_X87_RC_TRUNCATE:
-    fesetround(FE_TOWARDZERO);
+    rounding = FE_TOWARDZERO;
     break;
   default:
-    fesetround(FE_TONEAREST);
+    rounding = FE_TONEAREST;
     break;
+  }
+  /* Keep host state unchanged when it already matches. Never cache it: host
+     services and another guest context can change the thread's environment. */
+  if (rounding != save) {
+    fesetround(rounding);
   }
   if (is64) {
     double out = (double)v;
@@ -554,7 +567,9 @@ static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
     memcpy(&narrow, &out, sizeof out);
     bits = narrow;
   }
-  fesetround(save);
+  if (rounding != save) {
+    fesetround(save);
+  }
   return bits;
 }
 #endif

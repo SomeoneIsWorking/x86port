@@ -38,6 +38,7 @@
 #ifndef X86PORT_X87_H
 #define X86PORT_X87_H
 
+#include "x87_transcendental.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -84,6 +85,8 @@ extern "C" {
    nearest, extended precision. */
 #define X86P_X87_CW_INIT 0x037Fu
 
+/* Public C ABI: the C++ adapter must not narrow this enum independently.
+ * NOLINTNEXTLINE(performance-enum-size) */
 typedef enum X86pX87Tag {
   kX86pX87TagValid = 0,
   kX86pX87TagZero = 1,
@@ -175,6 +178,8 @@ long double x86p_x87_round(const X86pX87 *f, long double v);
  * than four more entry points, because the reverse forms differ ONLY in
  * operand order and duplicating them is how one of them acquires a bug.
  */
+/* Public C ABI; width is checked in both C and the C++ adapter.
+ * NOLINTNEXTLINE(performance-enum-size) */
 typedef enum X86pX87Op {
   kX86pX87Add = 0,
   kX86pX87Sub,
@@ -196,6 +201,8 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
  * holds, and a literal written out in C source is a different number in the
  * last few bits.
  */
+/* Public C ABI; width is checked in both C and the C++ adapter.
+ * NOLINTNEXTLINE(performance-enum-size) */
 typedef enum X86pX87Insn {
   kX86pX87InsnLoad = 0,     /* FLD: push a float from memory or ST(i) */
   kX86pX87InsnLoadInt,      /* FILD: push an integer from memory */
@@ -283,6 +290,18 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]);
    truncate, unless the control word says truncate. Returns 0 when the value
    does not fit, which is a guest-visible invalid operation. */
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out);
+
+int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn);
+
+long double x86p_x87_integer_value(uint64_t bits, unsigned width);
+uint64_t x86p_x87_to_i16(X86pX87 *f, long double value);
+uint64_t x86p_x87_to_i32(X86pX87 *f, long double value);
+uint64_t x86p_x87_to_i64(X86pX87 *f, long double value);
+
+void x86p_x87_compare_register(X86pX87 *f, int index, unsigned pops);
+void x86p_x87_exchange(X86pX87 *f, int index);
+void x86p_x87_sign(X86pX87 *f, int absolute);
+void x86p_x87_test(X86pX87 *f);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -79,7 +79,9 @@ static void x87_call(X86pA64Emit *e, const void *fn) {
 /* Read the raw bits at a bounds-checked guest float operand into W0/X0. */
 static void x87_load_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_mem_prepare_w(c, o, insn_eip, w);
-  if (w == 4) {
+  if (w == 2) {
+    x86p_a64_emit_load16_zx(c->e, kA64X0, HOSTPTR_REG, 0);
+  } else if (w == 4) {
     x86p_a64_emit_load32(c->e, kA64X0, HOSTPTR_REG, 0);
   } else {
     x86p_a64_emit_load64(c->e, kA64X0, HOSTPTR_REG, 0);
@@ -90,7 +92,9 @@ static void x87_load_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, 
    sitting in `src`. */
 static void x87_store_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w, X86pA64Reg src) {
   emit_mem_prepare_w(c, o, insn_eip, w);
-  if (w == 4) {
+  if (w == 2) {
+    x86p_a64_emit_store16_reg(c->e, HOSTPTR_REG, 0, src);
+  } else if (w == 4) {
     x86p_a64_emit_store32(c->e, HOSTPTR_REG, 0, src);
   } else {
     x86p_a64_emit_store64(c->e, HOSTPTR_REG, 0, src);
@@ -100,7 +104,12 @@ static void x87_store_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip,
 /* x86p_x87_from_f32(w0) / x86p_x87_from_f64(x0) -- the exact bit-pattern to
    `long double` conversion x87.h already owns; see the file comment for why
    this replaces x64's hardware `fld` widen. Leaves the result in D0. */
-static void x87_from_bits(X86pA64Emit *e, int w) {
+static void x87_from_bits(X86pA64Emit *e, int w, int integer) {
+  if (integer) {
+    x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
+    x87_call(e, (const void *)&x86p_x87_integer_value);
+    return;
+  }
   x87_call(e, (w == 4) ? (const void *)&x86p_x87_from_f32 : (const void *)&x86p_x87_from_f64);
 }
 
@@ -143,8 +152,13 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (o->kind == kX86pOperandMem) {
     const int w = o->size; /* 4 or 8 -- can_emit gate */
     x87_load_bits(c, o, insn_eip, w);
-    x87_from_bits(e, w); /* D0 = the widened value */
-    x87_lea_self(e);     /* X0 = &cpu->x87; D0 survives (GP-only in between) */
+    if (insn->x87 == kX86pX87InsnLoadInt) {
+      x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
+      x87_call(e, (const void *)&x86p_x87_integer_value);
+    } else {
+      x87_from_bits(e, w, 0);
+    }
+    x87_lea_self(e); /* X0 = &cpu->x87; D0 survives (GP-only in between) */
     x87_call(e, (const void *)&x86p_x87_push);
     return;
   }
@@ -185,7 +199,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   if (o0->kind == kX86pOperandMem) {
     x87_load_bits(c, o0, insn_eip, o0->size);
-    x87_from_bits(e, o0->size); /* D0 = src */
+    x87_from_bits(e, o0->size, insn->x87_mem_int); /* D0 = src */
   } else {
     x86p_a64_emit_sub_sp_imm(e, 16u);
     x87_lea_self(e);
@@ -230,7 +244,7 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
   int i;
 
   x87_load_bits(c, o0, insn_eip, o0->size);
-  x87_from_bits(e, o0->size); /* D0 = other */
+  x87_from_bits(e, o0->size, insn->x87_mem_int); /* D0 = other */
   x87_lea_self(e);
   x87_call(e, (const void *)&x86p_x87_compare);
   for (i = 0; i < (int)insn->x87_pops; i++) {
@@ -306,7 +320,12 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* D0 = value */
   x87_lea_self(e);
-  x87_call(e, (w == 4) ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64);
+  x87_call(e,
+           insn->x87 == kX86pX87InsnStoreInt
+               ? (w == 2   ? (const void *)&x86p_x87_to_i16
+                  : w == 4 ? (const void *)&x86p_x87_to_i32
+                           : (const void *)&x86p_x87_to_i64)
+               : (w == 4 ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64));
   x86p_a64_emit_mov_x_x(e, CARRY_REG, kA64X0); /* narrowed bits (all 64), parked past sp restore */
   x86p_a64_emit_add_sp_imm(e, 16u);
 
@@ -321,4 +340,22 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_bind(e, empty);
   x86p_a64_emit_add_sp_imm(e, 16u);
   x86p_a64_emit_bind(e, done);
+}
+
+void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  const int32_t offset = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, control));
+  emit_mem_prepare_w(c, &insn->operand[0], insn_eip, 2);
+  if (insn->x87 == kX86pX87InsnLoadControl) {
+    x86p_a64_emit_load16_zx(c->e, kA64X0, HOSTPTR_REG, 0);
+    x86p_a64_emit_store16_reg(c->e, CPU_REG, offset, kA64X0);
+  } else {
+    x86p_a64_emit_load16_zx(c->e, kA64X0, CPU_REG, offset);
+    x86p_a64_emit_store16_reg(c->e, HOSTPTR_REG, 0, kA64X0);
+  }
+}
+
+void emit_x87_fn(BlockCtx *c, const X86pInsn *insn) {
+  x87_lea_self(c->e);
+  x86p_a64_emit_mov_w_imm32(c->e, kA64X1, insn->x87_fn);
+  x87_call(c->e, (const void *)&x86p_x87_apply_fn);
 }

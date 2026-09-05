@@ -11,13 +11,15 @@ CONFIG_OWNER = Path("src/x86port/config.c")
 SOURCE_LINE_LIMIT = 1200
 # Existing x64 lowering debt is frozen, not permission for new monoliths.
 # Ratchet this exact ceiling downward as responsibilities are extracted.
-LEGACY_SOURCE_LIMITS = {Path("src/x86port/jit_x64.c"): 1925}
+LEGACY_SOURCE_LIMITS = {Path("src/x86port/jit_x64.c"): 1885}
 
 _TARGET_PATTERN = re.compile(
     r"add_library\(\s*(?P<target>[A-Za-z0-9_]+)\s+STATIC(?P<body>.*?)\)",
     re.DOTALL,
 )
-_SOURCE_TOKEN = re.compile(r"(?:^|\s)(src/x86port/[A-Za-z0-9_./-]+\.[ch])(?=\s|$)")
+_SOURCE_TOKEN = re.compile(
+    r"(?:^|\s)(src/x86port/[A-Za-z0-9_./-]+\.(?:c|cpp|h))(?=\s|$)"
+)
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 _OUTPUT_PATTERNS = (
     re.compile(r"\b(?:v?printf|v?fprintf|puts|fputs|perror)\s*\("),
@@ -127,10 +129,11 @@ def selftest() -> int:
     backend_fixture = """
 set(BACKEND src/x86port/jit_x64.c)
 set(BACKEND src/x86port/jit_arm64.c)
-add_library(x86port_runtime STATIC src/x86port/cpu.c ${BACKEND})
+add_library(x86port_runtime STATIC src/x86port/cpu.c src/x86port/x87_softfloat.cpp ${BACKEND})
 """
     expected_sources = {
         Path("src/x86port/cpu.c"),
+        Path("src/x86port/x87_softfloat.cpp"),
         Path("src/x86port/jit_x64.c"),
         Path("src/x86port/jit_arm64.c"),
     }

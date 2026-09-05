@@ -667,12 +667,10 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   char reason[256];
 
   memset(g_guest, 0x90, sizeof g_guest);
-  /* ROL EAX, 1 (D1 /0): shared oracle semantics exist (x86p_alu implements
-     every rotate for the interpreter), but rotates are deliberately not
-     modelled by either JIT backend -- see can_emit's ALU case, which refuses
-     everything past SAR/SHR/SHL on purpose, not for lack of an opcode. */
-  g_guest[0] = 0xD1;
-  g_guest[1] = 0xC0;
+  /* RCPPS remains a named unsupported instruction in both backends. */
+  g_guest[0] = 0x0F;
+  g_guest[1] = 0x53;
+  g_guest[2] = 0xC0;
 
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
@@ -684,7 +682,7 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   before = cpu;
   CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunUnsupported);
   CHECK(x86p_cpu_diff(&cpu, &before, NULL, NULL) == 0u);
-  CHECK(strstr(reason, "ROL") != NULL);
+  CHECK(strstr(reason, "RCPPS") != NULL);
   x86p_jit_engine_stats(eng, &stats);
   CHECK(stats.blocks_entered == 0u);
   CHECK(stats.translate_refusals == 1u);

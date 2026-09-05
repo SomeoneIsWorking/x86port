@@ -748,21 +748,12 @@ static void execute(Ctx *c) {
     return;
   }
 
-  case kX86pInsnSahf: {
-    /* Only the low byte, and only five of its bits: bit 1 reads as one, bits
-       3 and 5 as zero, on every x86 that has ever shipped. */
-    const uint32_t ah = x86p_reg_read(cpu, kX86pEax, 2) >> 8;
-    const uint32_t keep = x86p_eflags(&cpu->flags) & ~(uint32_t)0xFFu;
-    x86p_flags_set_explicit(&cpu->flags, keep | ((ah & 0xD5u) | 0x02u));
+  case kX86pInsnSahf:
+    x86p_cpu_sahf(cpu);
     return;
-  }
-
-  case kX86pInsnLahf: {
-    const uint32_t f = x86p_eflags(&cpu->flags);
-    const uint32_t ax = x86p_reg_read(cpu, kX86pEax, 2);
-    x86p_reg_write(cpu, kX86pEax, 2, (ax & 0xFFu) | (((f & 0xD5u) | 0x02u) << 8));
+  case kX86pInsnLahf:
+    x86p_cpu_lahf(cpu);
     return;
-  }
 
   case kX86pInsnStc:
     x86p_flags_set_explicit(&cpu->flags, x86p_eflags(&cpu->flags) | X86P_CF);
@@ -877,19 +868,8 @@ static void execute(Ctx *c) {
   case kX86pInsnLoop:
   case kX86pInsnLoope:
   case kX86pInsnLoopne: {
-    /* ECX is decremented FIRST and the condition read after, so a loop entered
-       with ECX = 0 runs 2^32 times rather than none -- the opposite of REP,
-       which tests before. The two are easy to conflate and behave inversely. */
-    const uint32_t ecx = cpu->reg[kX86pEcx] - 1u;
-    int take;
-    cpu->reg[kX86pEcx] = ecx;
-    if (in->op == (uint8_t)kX86pInsnLoope) {
-      take = ecx != 0u && x86p_flag_zf(&cpu->flags);
-    } else if (in->op == (uint8_t)kX86pInsnLoopne) {
-      take = ecx != 0u && !x86p_flag_zf(&cpu->flags);
-    } else {
-      take = ecx != 0u;
-    }
+    const int condition = in->op == kX86pInsnLoope ? 1 : in->op == kX86pInsnLoopne ? -1 : 0;
+    const int take = x86p_cpu_loop(cpu, in->address_width, condition);
     if (take) {
       const uint32_t t = branch_target(c, o0);
       if (c->fault) {
@@ -1038,22 +1018,13 @@ static void execute(Ctx *c) {
     return;
   }
 
-  case kX86pInsnCpuid: {
-    X86pCpuidResult r;
-    x86p_cpuid(cpu->reg[kX86pEax], cpu->reg[kX86pEcx], &r);
-    cpu->reg[kX86pEax] = r.eax;
-    cpu->reg[kX86pEbx] = r.ebx;
-    cpu->reg[kX86pEcx] = r.ecx;
-    cpu->reg[kX86pEdx] = r.edx;
+  case kX86pInsnCpuid:
+    x86p_cpu_cpuid(cpu);
     return;
-  }
 
-  case kX86pInsnRdtsc: {
-    const uint64_t t = x86p_rdtsc_next(&cpu->tsc);
-    cpu->reg[kX86pEax] = (uint32_t)t;
-    cpu->reg[kX86pEdx] = (uint32_t)(t >> 32);
+  case kX86pInsnRdtsc:
+    x86p_cpu_rdtsc(cpu);
     return;
-  }
 
   case kX86pInsnUnsupported:
   case kX86pInsnOpCount:

@@ -769,6 +769,7 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
 
   memset(out, 0, sizeof *out);
   out->length = insn.length;
+  out->address_width = insn.address_width;
   out->mnemonic = upper_mnemonic(insn.mnemonic);
   out->operands = insn.operand_count_visible;
   map_mnemonic(&insn, out);

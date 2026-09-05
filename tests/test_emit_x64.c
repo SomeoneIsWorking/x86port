@@ -623,19 +623,51 @@ static void test_win64_fifth_argument_slot(void) {
   }
 }
 
+static void test_host_abi_pointer_arguments(void) {
+  uint8_t buf[32];
+  X86pEmit e;
+  Decoded d;
+  for (unsigned abi = kX86pJitHostAbiSystemV; abi <= kX86pJitHostAbiWin64; ++abi) {
+    for (unsigned index = 0; index <= 4; ++index) {
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_jit_abi_emit_arg64_reg(&e, (X86pJitHostAbi)abi, index, kX64Rax);
+      d = emit_and_decode(&e);
+      if (!d.ok) {
+        continue;
+      }
+      CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_MOV);
+      CHECK(d.ops[0].size == 64);
+      CHECK(reg_id(d.ops[1].reg.value) == kX64Rax);
+      if (abi == kX86pJitHostAbiWin64 && index == 4) {
+        CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+        CHECK(reg_id(d.ops[0].mem.base) == kX64Rsp);
+        CHECK(d.ops[0].mem.disp.value == 32);
+      } else {
+        CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER);
+        CHECK(reg_id(d.ops[0].reg.value) == (int)x86p_jit_abi_arg((X86pJitHostAbi)abi, index));
+      }
+    }
+  }
+}
+
 #if X86P_TEST_CAN_EXECUTE_MS_ABI
-typedef uint32_t(X86P_TEST_MS_ABI *MsAbiEntry)(uint32_t first);
+typedef uint64_t(X86P_TEST_MS_ABI *MsAbiEntry)(uint32_t first);
 
 static uint32_t X86P_TEST_MS_ABI
 ms_abi_probe(uint32_t first, uint32_t second, uint32_t third, uint32_t fourth, uint32_t fifth) {
   return first + second * 3u + third * 5u + fourth * 7u + fifth * 11u;
 }
 
-static uint32_t execute_ms_abi_probe(uint32_t fifth) {
+static uint64_t X86P_TEST_MS_ABI
+ms_abi_pointer_probe(uint32_t first, uint32_t second, uint32_t third, uint32_t fourth, const uint64_t *fifth) {
+  return *fifth ^ (first + second * 3u + third * 5u + fourth * 7u);
+}
+
+static uint64_t execute_ms_abi_probe(uint64_t fifth, int pointer_argument) {
   JcCodeRegion region = {0};
   char reason[192] = {0};
   X86pEmit e;
-  uint32_t result;
+  uint64_t result;
   if (jc_code_region_create(4096u, &region, reason, sizeof reason) != kJcCodeOk) {
     printf("    REFUSED Win64 ABI code memory: %s\n", reason);
     return UINT32_MAX;
@@ -646,8 +678,14 @@ static uint32_t execute_ms_abi_probe(uint32_t fifth) {
   x86p_jit_abi_emit_arg32_imm(&e, kX86pJitHostAbiWin64, 1u, 13u);
   x86p_jit_abi_emit_arg32_imm(&e, kX86pJitHostAbiWin64, 2u, 17u);
   x86p_jit_abi_emit_arg32_imm(&e, kX86pJitHostAbiWin64, 3u, 19u);
-  x86p_jit_abi_emit_arg32_imm(&e, kX86pJitHostAbiWin64, 4u, fifth);
-  x86p_emit_mov_r64_imm64(&e, kX64Rax, (uint64_t)(uintptr_t)&ms_abi_probe);
+  if (pointer_argument) {
+    x86p_emit_mov_r64_imm64(&e, kX64Rax, fifth);
+    x86p_jit_abi_emit_arg64_reg(&e, kX86pJitHostAbiWin64, 4u, kX64Rax);
+  } else {
+    x86p_jit_abi_emit_arg32_imm(&e, kX86pJitHostAbiWin64, 4u, (uint32_t)fifth);
+  }
+  x86p_emit_mov_r64_imm64(
+      &e, kX64Rax, pointer_argument ? (uint64_t)(uintptr_t)&ms_abi_pointer_probe : (uint64_t)(uintptr_t)&ms_abi_probe);
   x86p_emit_call_r64(&e, kX64Rax);
   x86p_jit_abi_emit_leave(&e, kX86pJitHostAbiWin64, kX64Rbx);
   x86p_emit_ret(&e);
@@ -664,11 +702,26 @@ static uint32_t execute_ms_abi_probe(uint32_t fifth) {
 static void test_win64_executable_call_contract(void) {
 #if X86P_TEST_CAN_EXECUTE_MS_ABI
   const uint32_t expected = 11u + 13u * 3u + 17u * 5u + 19u * 7u + 23u * 11u;
-  CHECK(execute_ms_abi_probe(23u) == expected);
+  CHECK(execute_ms_abi_probe(23u, 0) == expected);
   /* Prove the discriminator sees the other answer: the fifth stack argument
      participates in the result rather than the probe accidentally checking
      only the four register arguments. */
-  CHECK(execute_ms_abi_probe(29u) != expected);
+  CHECK(execute_ms_abi_probe(29u, 0) != expected);
+#else
+  printf("    SKIP: host Clang cannot execute an ms_abi discriminator\n");
+  CHECK(1);
+#endif
+}
+
+static void test_win64_executable_pointer_argument(void) {
+#if X86P_TEST_CAN_EXECUTE_MS_ABI
+  const uint64_t first = UINT64_C(0x1234567812345678);
+  const uint64_t second = UINT64_C(0x8765432112345678);
+  const uint64_t register_arguments = 11u + 13u * 3u + 17u * 5u + 19u * 7u;
+  CHECK(execute_ms_abi_probe((uint64_t)(uintptr_t)&first, 1) == (first ^ register_arguments));
+  CHECK(execute_ms_abi_probe((uint64_t)(uintptr_t)&second, 1) == (second ^ register_arguments));
+  /* The same low 32 bits must not hide a truncated pointer or pointee. */
+  CHECK(execute_ms_abi_probe((uint64_t)(uintptr_t)&second, 1) != (first ^ register_arguments));
 #else
   printf("    SKIP: host Clang cannot execute an ms_abi discriminator\n");
   CHECK(1);
@@ -797,7 +850,9 @@ int main(void) {
   RUN(test_host_abi_argument_locations);
   RUN(test_host_abi_frames);
   RUN(test_win64_fifth_argument_slot);
+  RUN(test_host_abi_pointer_arguments);
   RUN(test_win64_executable_call_contract);
+  RUN(test_win64_executable_pointer_argument);
   RUN(test_or_m16_imm16_sets_status_bits);
   RUN(test_x87_forms);
   RUN(test_ret);

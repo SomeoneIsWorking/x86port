@@ -65,7 +65,7 @@ qualify complete x87 semantics, ARM64 hosts, or representative consumer gameplay
 | Linux x86-64 | hosted synthetic gate passed | The completed run above verifies S002's corrected SHLD/SHRD count-source/mask contract in the hosted synthetic gate. Complete instruction coverage and representative gameplay remain unqualified. |
 | Windows x86-64 | partial; hosted synthetic gate passed | The completed native Windows run above passes the x87 control fixture, which checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds separately exercise both branches. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; this host is not release-qualified. |
 | macOS x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the Intel Apple Clang product and portable-oracle graph. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the archive boundary recognizes Mach-O's leading C-symbol underscore. This does not qualify Apple Silicon. |
-| macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. Shared precision admission now refuses those value-bearing forms. ARM64 runtime CI and renewed conformance evidence are still required. |
+| macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. The approved integration retains those value-bearing forms through the JIT without claiming exact extended precision. ARM64 runtime CI and renewed conformance evidence are still required. |
 | Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
 
 ## Evidence and exact gaps
@@ -161,10 +161,12 @@ implement an ARM64 encoder and runtime backend selected by CMake on
 of 21,130 checks across 1,258 programs. This is historical mechanism evidence,
 not verification of the merged tree or complete guest semantics: macOS uses
 binary64 `long double`, and the prior interpreter/JIT comparison shared that
-inexact x87 representation. Both host backends now use `jit_x87_predicates.c`
-to refuse value-bearing x87 translation unless the semantic owner has exact
-extended state; status-only operations remain available. A portable f80 owner
-is required for Windows and ARM64 floating-point conformance.
+inexact x87 representation. Both host backends use `jit_x87_predicates.c` for
+value admission: exact extended state, or the explicitly approved Apple ARM64
+binary64 path described below. Other narrow-state hosts still refuse value
+forms; status/control operations remain available. A portable f80 owner is
+required for exact Windows and ARM64 floating-point conformance, not for this
+approved integration.
 
 The differential uses the shipping `jit-common` region publication API for
 W^X transitions and instruction-cache coherence. Gap: ARM64 caller-saved helper
@@ -218,7 +220,7 @@ has begun moving out of the x64 backend. ARM64 integer arithmetic lowering
 owns a separate module, keeping its block orchestrator below 1,200 lines.
 The source-policy gate checks every declared product backend, including inactive
 architecture branches, and enforces a 1,200-line ceiling with the existing x64
-lowering frozen at 1,925 lines. Gap: that x64 debt still needs extraction,
+lowering ratcheted down to 1,885 lines. Gap: that x64 debt still needs extraction,
 `src/x86port/exec.c` is near the limit, and the normal verifier does not yet
 enforce clang-format, clang-tidy, all first-party structure, and portability
 as one gate.
@@ -248,3 +250,108 @@ Missing capability: migrate Little Fighter 2's existing Win32/DirectDraw and
 native seams to the canonical JIT-only product target, remove its generator and
 generated guest C, then pass representative interactive gameplay conformance
 on every declared host architecture.
+
+## Local Apple Silicon execution repair (2026-09-05)
+
+S004/S007 remain partial. Both backends now lower memory shifts/rotates and
+ADC/SBB forms without clobbering their host ABI's saved registers; status and
+CPU transfers, one-operand MUL/IMUL widths, 32-bit SHLD/SHRD, and LOOP/LOOPE/
+LOOPNE with the effective counter width are covered by `test_jit_startup`.
+`test_jit_startup` reports 4,186 translated cases with zero failures on both
+local ARM64 and Rosetta x64 builds. SSE coverage includes packed bit operations, full and partial moves, SHUFPS
+(all 256 immediates, alias and fault forms), and packed ADD/SUB/MUL/DIV through
+narrow shared semantic leaves. x87 coverage adds control-word loads/stores,
+integer memory conversions/arithmetic, register comparison/sign/exchange,
+and the supported transcendental stack operations. Unsupported instructions
+still stop by name; the product archive never links the oracle dispatcher.
+
+S009: publication now flushes only newly emitted bytes through
+`jc_code_publish_range`; it closes the write window with a zero-byte range
+when translation fails. A consumer macOS sample previously spent 404 of 414
+main-thread samples invalidating the accumulated code prefix. No persistent
+cache is introduced or required.
+
+`test_x87_software` reports 3,023 checks with zero failures on the local x64
+Rosetta run, including 3,015 independent x87 comparisons; the ARM64 run uses
+independent host math checks and cannot supply a hardware x87 oracle. Numerical
+tolerance remains 8 * DBL_EPSILON * max(1, magnitude), not bit equality.
+Bochs provenance and the adapted atan polynomial are in `prior-art.md`.
+
+Exact gaps: ARM64 x87 state is still binary64, unmasked x87 exception behavior
+and complete precision control are not established, and SIMD MXCSR rounding,
+DAZ/FTZ and exception semantics retain the existing default-environment
+limitation. FXTRACT, approximate SSE reciprocals and other unimplemented forms
+still refuse. Four hardware-oracle tests cannot run on ARM64. Rosetta is useful
+for emitted x64 ABI/result regressions, but is not Fedora or real x86-64 silicon;
+three full-suite oracle failures there remain outside this change. These are
+not gameplay conformance passes or CI results.
+
+These are the incoming Mac branch's recorded results, not a verification of
+this combined tree. The integration retains the independent Fedora/Windows
+migration and CI contracts. The user reports playable Mac gameplay with decent
+framerate; independent stock-behavior and quantified performance evidence remain
+S014 gaps.
+
+USER 2026-09-05: "Preserve the playable Mac behavior"
+
+The combined admission policy preserves that Apple ARM64 execution path while
+`x86p_x87_precision_is_exact()` remains false. The proper fidelity fix is
+host-independent f80 storage and arithmetic; it is not a prerequisite for this
+integration. Windows narrow-state value-bearing forms still refuse, and no
+interpreter or gameplay execution selector is added.
+
+## Floating-point store overhead (2026-09-05)
+
+The portable x87 store conversion leaves the host rounding environment alone
+when it already matches the guest control word. On hosts whose `long double`
+is binary64, storing binary64 copies the value without a redundant rounding
+mode transition. The conversion scope explicitly enables FENV_ACCESS; a host
+service or another guest context may change the rounding mode, so no cached
+mode is assumed.
+
+`test_x87_narrow` runs 341 checks over all sixteen host/guest rounding-mode
+pairs, including positive/negative halfway, subnormal and overflow values,
+negative zero, and preservation of the host mode and pre-existing exception
+flags. ARM64 and Rosetta x64 pass. An optional ten-million-store CPU-time
+benchmark on this Mac measured f32 stores at 14.63 -> 5.56 ns and f64 at
+12.41 -> 3.89 ns; this is leaf overhead, not a gameplay FPS claim. Existing x87
+and JIT startup regressions also pass. This optimization does not change the
+previously recorded ARM64 precision limitations.
+
+## Combined Mac/Fedora integration (2026-09-05)
+
+Exact incoming Mac commit `76e76ce6f66bc0ba341ad018cd0124180820ea3e` is
+integrated with the Fedora/Windows main contracts and `jit-common`
+`03ac795cbc39843e795cb8091fb96bff2b1c9017`. The frozen combined Linux Clang
+22.1.8 gate (`tools/verify.py --build-dir build/mac-integration --cc clang
+--cxx clang++ --jobs 2`) passed all 30 CTests. The startup discriminator
+executed 4,195 translated cases with zero refusals/failures; software math
+passed 3,023 checks, including 3,015 independent x87 comparisons; narrowing
+passed 341 checks. The explicit Win64 ABI probe also executed both fifth-pointer
+positive and negative cases on the Linux host. These are synthetic results,
+not gameplay or native Windows/Mac qualification.
+
+The focused `-mlong-double-64` contract build passed startup and control tests:
+3,844 translated startup cases plus 351 named value-form refusals, and 16/16
+control-suite precision refusals. On the exact Linux build those same 16
+control cases execute. The Mac-only admission assertion requires executable
+value forms while precision metadata remains false. New native Apple Silicon
+CI runs alongside Intel macOS, Linux and Windows; its hosted result is pending.
+
+All touched first-party files pass formatting; compiled touched translation
+units pass clang-tidy. Four narrowly documented `performance-enum-size`
+exemptions preserve public C enum ABI at the new C++ boundary, with C and C++
+size assertions. The seven ARM64 lowering units pass local Clang syntax checks,
+not local ARM64 execution. The existing normal-verifier quality gap in S012 is
+unchanged. A subsequent unchanged build reported `ninja: no work to do`.
+
+Independent integration review found that x64 admitted FWAIT but dispatched it
+as FLD. The existing empty-stack fixture hid that fallthrough. A populated-stack
+discriminator reproduced eight failures across the eight nonempty depths before
+the explicit no-op dispatch fix; all nine depth cases now preserve CPU state.
+The identical SHLD/SHRD publication helpers in both backends now share
+`x86p_cpu_double_shift32`; direct tests preserve lazy flags and destination bytes
+at masked-zero counts, and check unaligned writes and count masking. Existing
+JIT register, memory, alias, and fault cases exercise the same owner. The combined
+30-test gate was rerun after these shipping corrections and passed; focused
+binary64-contract startup/control tests also passed.

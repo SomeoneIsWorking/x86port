@@ -1,4 +1,4 @@
-name: x86-64 runtime CI
+name: Runtime CI
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
+          ref: 03ac795cbc39843e795cb8091fb96bff2b1c9017
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
@@ -40,9 +40,17 @@ jobs:
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64 --cc clang --cxx clang++
 
-  macos-x86-64:
-    name: macOS x86-64 / Apple Clang
-    runs-on: macos-15-intel
+  macos:
+    name: macOS ${{ matrix.arch }} / Apple Clang
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86-64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,7 +62,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
+          ref: 03ac795cbc39843e795cb8091fb96bff2b1c9017
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
@@ -67,9 +75,9 @@ jobs:
         run: |
           brew install llvm ninja
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-      - name: Verify the x64 product and oracle fixtures
+      - name: Verify the native product and oracle fixtures
         working-directory: x86port
-        run: uv run --frozen python tools/verify.py --build-dir build/ci/macos-x86-64 --cc /usr/bin/clang --cxx /usr/bin/clang++
+        run: uv run --frozen python tools/verify.py --build-dir build/ci/macos-${{ matrix.arch }} --cc /usr/bin/clang --cxx /usr/bin/clang++
 
   windows-x86-64:
     name: Windows x86-64 / clang-cl
@@ -85,7 +93,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
+          ref: 03ac795cbc39843e795cb8091fb96bff2b1c9017
           path: jit-common
           fetch-depth: 0
           persist-credentials: false

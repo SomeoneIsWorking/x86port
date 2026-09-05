@@ -25,6 +25,11 @@
  */
 #include "x87.h"
 
+_Static_assert(sizeof(X86pX87Tag) == sizeof(unsigned int), "C ABI enum width");
+_Static_assert(sizeof(X86pX87Op) == sizeof(unsigned int), "C ABI enum width");
+_Static_assert(sizeof(X86pX87Insn) == sizeof(unsigned int), "C ABI enum width");
+_Static_assert(sizeof(X86pX87Fn) == sizeof(unsigned int), "C ABI enum width");
+
 #include <float.h>
 #include <math.h>
 #include <stdio.h>

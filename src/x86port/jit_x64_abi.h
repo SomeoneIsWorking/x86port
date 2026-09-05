@@ -58,6 +58,14 @@ static inline void x86p_jit_abi_emit_arg32_imm(X86pEmit *e, X86pJitHostAbi abi, 
   x86p_emit_store32_imm(e, kX64Rsp, x86p_jit_abi_stack_arg_offset(index), value);
 }
 
+static inline void x86p_jit_abi_emit_arg64_reg(X86pEmit *e, X86pJitHostAbi abi, unsigned index, X86pHostReg value) {
+  if (abi != kX86pJitHostAbiWin64 || index < 4u) {
+    x86p_emit_mov_r64_r64(e, x86p_jit_abi_arg(abi, index), value);
+    return;
+  }
+  x86p_emit_store64(e, kX64Rsp, x86p_jit_abi_stack_arg_offset(index), value);
+}
+
 /* Entry RSP is 8 mod 16. System V needs one push. Win64 also preserves RSI and
  * RDI because this emitter uses them as scratch even though that ABI makes
  * them nonvolatile; three pushes leave RSP aligned. The 48-byte frame contains
