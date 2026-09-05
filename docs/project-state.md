@@ -253,3 +253,21 @@ The independent Fedora migration/CI commits are not incorporated here. Local
 consumer observations reach the main menu and tutorial with nonzero JIT
 execution and zero refusals; representative interactive play and independent
 stock behavior remain S014 gaps.
+
+## Floating-point store overhead (2026-09-05)
+
+The portable x87 store conversion leaves the host rounding environment alone
+when it already matches the guest control word. On hosts whose `long double`
+is binary64, storing binary64 copies the value without a redundant rounding
+mode transition. The conversion scope explicitly enables FENV_ACCESS; a host
+service or another guest context may change the rounding mode, so no cached
+mode is assumed.
+
+`test_x87_narrow` runs 341 checks over all sixteen host/guest rounding-mode
+pairs, including positive/negative halfway, subnormal and overflow values,
+negative zero, and preservation of the host mode and pre-existing exception
+flags. ARM64 and Rosetta x64 pass. An optional ten-million-store CPU-time
+benchmark on this Mac measured f32 stores at 14.63 -> 5.56 ns and f64 at
+12.41 -> 3.89 ns; this is leaf overhead, not a gameplay FPS claim. Existing x87
+and JIT startup regressions also pass. This optimization does not change the
+previously recorded ARM64 precision limitations.
