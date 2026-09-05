@@ -65,8 +65,25 @@ qualify complete x87 semantics, ARM64 hosts, or representative consumer gameplay
 | Linux x86-64 | hosted synthetic gate passed | The completed run above verifies S002's corrected SHLD/SHRD count-source/mask contract in the hosted synthetic gate. Complete instruction coverage and representative gameplay remain unqualified. |
 | Windows x86-64 | partial; hosted synthetic gate passed | The completed native Windows run above passes the x87 control fixture, which checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds separately exercise both branches. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; this host is not release-qualified. |
 | macOS x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the Intel Apple Clang product and portable-oracle graph. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the archive boundary recognizes Mach-O's leading C-symbol underscore. This does not qualify Apple Silicon. |
-| macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. The approved integration retains those value-bearing forms through the JIT without claiming exact extended precision. ARM64 runtime CI and renewed conformance evidence are still required. |
+| macOS arm64 | partial; not release-qualified | [Native job 101311854341](https://github.com/SomeoneIsWorking/x86port/actions/runs/33968164307/job/101311854341) at `96f7665` compiled successfully and passed 26/30 tests, including product/JIT, ARM64 emission, startup/control, and software-x87 checks. Its four failures were unavailable x86-64 hardware oracles returning an error, not ARM64 JIT failures. Those suites now report explicit skips; the complete hosted gate after that classification fix remains pending. The approved JIT value path retains binary64 x87 state without claiming extended precision or gameplay/release conformance. |
 | Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
+
+`test_integer_tail`, `test_x87_fn`, `test_simd`, and `test_string_ops`
+compare against instructions executed on physical x86-64 hardware. That oracle
+is inapplicable on ARM64: exit 77 reports zero host instructions and unchecked
+semantics, never a semantic pass. Intel macOS separately skips the integer-tail
+suite because its 32-bit compatibility-mode oracle is Linux-specific. On
+supported hosts, oracle allocation/publication failures, unexpected zero
+executions, and actual mismatches remain errors. All portable semantic and
+native-host JIT/runtime tests remain required. Four compiled unavailable-branch
+fixtures exercise the actual suite entry points and require exit 77; CMake
+also asserts the real suites' skip registration. These portable fixtures do
+not execute ARM64 code or replace native hosted qualification.
+
+The classification change passed the normal Linux Clang 22.1.8 gate (35/35
+CTests): the four hardware suites executed 7,296 / 80 / 658 / 960 host
+instructions respectively with zero failures, and all four unavailable-branch
+fixtures passed. Touched first-party formatting and clang-tidy checks passed.
 
 ## Evidence and exact gaps
 
@@ -335,8 +352,9 @@ The focused `-mlong-double-64` contract build passed startup and control tests:
 3,844 translated startup cases plus 351 named value-form refusals, and 16/16
 control-suite precision refusals. On the exact Linux build those same 16
 control cases execute. The Mac-only admission assertion requires executable
-value forms while precision metadata remains false. New native Apple Silicon
-CI runs alongside Intel macOS, Linux and Windows; its hosted result is pending.
+value forms while precision metadata remains false. Native Apple Silicon CI
+runs alongside Intel macOS, Linux and Windows; its observed result and the
+hardware-oracle applicability boundary are recorded under Host CI support.
 
 All touched first-party files pass formatting; compiled touched translation
 units pass clang-tidy. Four narrowly documented `performance-enum-size`
@@ -372,9 +390,10 @@ admission controls prove both accepted and refused bulk copies. Eighteen
 emitted-code REP MOVS cases bring `test_jit_startup` to 4,204 passing cases on
 both hosts. The optional 100,000-copy benchmark measured 4 KB forward MOVSD at
 9,482.1 -> 104.0 ns/copy on this Mac; this measures the leaf operation, not FPS.
-The full 30-test graph retains four unavailable hardware-oracle failures on
-ARM64 and the three previously recorded integer/flag oracle failures under
-Rosetta. This does not resolve those baseline gaps or establish Fedora CI.
+That incoming branch's full 30-test graph recorded four unavailable
+hardware-oracle failures on ARM64 and three integer/flag oracle failures under
+Rosetta. The ARM64 classification is addressed under Host CI support; Rosetta's
+reported differences remain unresolved and are not Fedora CI evidence.
 
 The exact `f84d2a832abc11fe9990274e15e423477caa3e46` follow-up was integrated
 with `96f7665` without losing its FWAIT and shared double-shift corrections.

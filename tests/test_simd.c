@@ -32,7 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(X86P_TEST_ORACLE_UNAVAILABLE)
 #define HAVE_ORACLE 1
 #else
 #define HAVE_ORACLE 0
@@ -436,8 +436,7 @@ int main(void) {
   jc_code_region_destroy(&g_code_region);
   return g_failed ? 1 : 0;
 #else
-  printf("REFUSED: this host is not x86-64, so no instruction was executed and\n"
-         "nothing here was verified. MMX and SSE are UNCHECKED on this build.\n");
-  return 1;
+  printf("SKIP: x86-64 hardware oracle unavailable; 0 host instructions executed, MMX and SSE unchecked.\n");
+  return 77;
 #endif
 }

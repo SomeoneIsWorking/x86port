@@ -196,12 +196,12 @@ add_test(NAME test_three_dnow COMMAND test_three_dnow)
 if(NOT WIN32)
   # These suites execute host instructions from POSIX mappings. Windows still
   # builds and exercises the shipping JIT and the test-only interpreter below;
-  # the silicon-oracle suites remain on Linux/macOS where their harness exists.
+  # the silicon-oracle suites require x86-64 hardware on Linux/macOS. Other
+  # architectures report an explicit skip; their JIT tests remain mandatory.
   add_executable(test_integer_tail tests/test_integer_tail.c)
   target_link_libraries(test_integer_tail PRIVATE x86port_runtime x86port_test_oracle)
   x86p_strict_target(test_integer_tail)
   add_test(NAME test_integer_tail COMMAND test_integer_tail)
-  set_tests_properties(test_integer_tail PROPERTIES SKIP_RETURN_CODE 77)
 
   add_executable(test_x87_fn tests/test_x87_fn.c)
   target_link_libraries(test_x87_fn PRIVATE x86port_runtime x86port_test_oracle)
@@ -217,6 +217,24 @@ if(NOT WIN32)
   target_link_libraries(test_string_ops PRIVATE x86port)
   x86p_strict_target(test_string_ops)
   add_test(NAME test_string_ops COMMAND test_string_ops)
+
+  set_tests_properties(test_integer_tail test_x87_fn test_simd test_string_ops
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+  foreach(oracle IN ITEMS test_integer_tail test_x87_fn test_simd test_string_ops)
+    # The compiled fixture proves the exit; also require CTest to classify that
+    # exit as skipped for the real suite rather than as success or failure.
+    get_test_property(${oracle} SKIP_RETURN_CODE oracle_skip_code)
+    if(NOT oracle_skip_code STREQUAL "77")
+      message(FATAL_ERROR "${oracle} must classify unavailable hardware as skip 77")
+    endif()
+    add_executable(${oracle}_unavailable tests/test_oracle_unavailable.c)
+    target_compile_definitions(${oracle}_unavailable PRIVATE
+      X86P_ORACLE_SOURCE="${oracle}.c")
+    target_link_libraries(${oracle}_unavailable PRIVATE x86port_runtime)
+    x86p_strict_target(${oracle}_unavailable)
+    add_test(NAME ${oracle}_unavailable COMMAND ${oracle}_unavailable)
+  endforeach()
 endif()
 
 add_executable(test_decode tests/test_decode.c)
