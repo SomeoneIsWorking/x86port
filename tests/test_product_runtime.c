@@ -66,8 +66,13 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
   X86pJitEngineStats stats;
   X86pJitRunStatus status;
 
-  guest[0] = 0x9Cu; /* PUSHFD: decoded, but intentionally lacks a JIT emitter. */
-  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + 1u);
+  /* ROL EAX, 1 (D1 /0): decoded and interpreted (x86p_alu implements every
+     rotate), but rotates are deliberately not modelled by either JIT backend
+     -- see can_emit's ALU case. PUSHFD used to be this fixture's unsupported
+     instruction; it now has a JIT emitter in both backends. */
+  guest[0] = 0xD1u;
+  guest[1] = 0xC0u;
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + 2u);
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEsp] = kGuestBase + 0x800u;
@@ -77,8 +82,8 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
   return expect(status == kX86pRunUnsupported, "unsupported instruction did not return the product refusal") &&
          expect(cpu->eip == kGuestBase, "unsupported instruction changed EIP") &&
          expect(cpu->reg[kX86pEsp] == kGuestBase + 0x800u, "unsupported instruction changed guest state") &&
-         expect(strstr(reason, "PUSHF") != NULL, "entry refusal omitted the decoded mnemonic") &&
-         expect(strstr(reason, "9c") != NULL, "entry refusal omitted the instruction bytes") &&
+         expect(strstr(reason, "ROL") != NULL, "entry refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "d1 c0") != NULL, "entry refusal omitted the instruction bytes") &&
          expect(stats.translate_refusals == 1u, "unsupported translation was not counted");
 }
 
