@@ -49,7 +49,7 @@ JIT execution:
 | Linux x86-64 | supported | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. |
 | Windows x86-64 | unsupported | The current top-level CMake graph unconditionally links the POSIX `m` library into `x86port_runtime`; Windows has no such library, so the native x64 product cannot link and a Windows job would fail before exercising it. Portability must be fixed at that owner before adding a Windows job. |
 | macOS x86-64 | supported | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the complete CTest graph against the x64 emitter. |
-| macOS arm64 | supported | `src/x86port` now emits ARM64 host code (`jit_arm64.c`, `jit_arm64_x87.c`, `emit_arm64.c`), selected by `CMakeLists.txt` when `CMAKE_SYSTEM_PROCESSOR` matches `arm64`/`aarch64`. The full CTest graph passes 22/26 on Apple Silicon; the remaining 4 are the honest "this host is not x86-64" oracle refusals (`test_integer_tail`, `test_x87_fn`, `test_simd`, `test_string_ops`), which need real x86-64 hardware and are not part of S007. No CI job runs this yet — see S007 gap. |
+| macOS arm64 | supported | `src/x86port` now emits ARM64 host code (`jit_arm64.c`, `jit_arm64_x87.c`, `emit_arm64.c`), selected by `CMakeLists.txt` when `CMAKE_SYSTEM_PROCESSOR` matches `arm64`/`aarch64`. The full CTest graph passes 24/28 on Apple Silicon; the remaining 4 are the honest "this host is not x86-64" oracle refusals (`test_integer_tail`, `test_x87_fn`, `test_simd`, `test_string_ops`), which need real x86-64 hardware and are not part of S007. No CI job runs this yet — see S007 gap. |
 | Android arm64-v8a | unsupported | ARM64 code emission now exists (see macOS arm64 above), but nothing has exercised it under Android's toolchain, page size, or W^X model; that verification has not been attempted. |
 
 ## Evidence and exact gaps
@@ -213,3 +213,43 @@ Missing capability: migrate Little Fighter 2's existing Win32/DirectDraw and
 native seams to the canonical JIT-only product target, remove its generator and
 generated guest C, then pass representative interactive gameplay conformance
 on every declared host architecture.
+
+## Local Apple Silicon execution repair (2026-09-05)
+
+S004/S007 remain partial. Both backends now lower memory shifts/rotates and
+ADC/SBB forms without clobbering their host ABI's saved registers; status and
+CPU transfers, one-operand MUL/IMUL widths, 32-bit SHLD/SHRD, and LOOP/LOOPE/
+LOOPNE with the effective counter width are covered by `test_jit_startup`.
+`test_jit_startup` reports 4,186 translated cases with zero failures on both
+local ARM64 and Rosetta x64 builds. SSE coverage includes packed bit operations, full and partial moves, SHUFPS
+(all 256 immediates, alias and fault forms), and packed ADD/SUB/MUL/DIV through
+narrow shared semantic leaves. x87 coverage adds control-word loads/stores,
+integer memory conversions/arithmetic, register comparison/sign/exchange,
+and the supported transcendental stack operations. Unsupported instructions
+still stop by name; the product archive never links the oracle dispatcher.
+
+S009: publication now flushes only newly emitted bytes through
+`jc_code_publish_range`; it closes the write window with a zero-byte range
+when translation fails. A consumer macOS sample previously spent 404 of 414
+main-thread samples invalidating the accumulated code prefix. No persistent
+cache is introduced or required.
+
+`test_x87_software` reports 3,023 checks with zero failures on the local x64
+Rosetta run, including 3,015 independent x87 comparisons; the ARM64 run uses
+independent host math checks and cannot supply a hardware x87 oracle. Numerical
+tolerance remains 8 * DBL_EPSILON * max(1, magnitude), not bit equality.
+Bochs provenance and the adapted atan polynomial are in `prior-art.md`.
+
+Exact gaps: ARM64 x87 state is still binary64, unmasked x87 exception behavior
+and complete precision control are not established, and SIMD MXCSR rounding,
+DAZ/FTZ and exception semantics retain the existing default-environment
+limitation. FXTRACT, approximate SSE reciprocals and other unimplemented forms
+still refuse. Four hardware-oracle tests cannot run on ARM64. Rosetta is useful
+for emitted x64 ABI/result regressions, but is not Fedora or real x86-64 silicon;
+three full-suite oracle failures there remain outside this change. These are
+not gameplay conformance passes or CI results.
+
+The independent Fedora migration/CI commits are not incorporated here. Local
+consumer observations reach the main menu and tutorial with nonzero JIT
+execution and zero refusals; representative interactive play and independent
+stock behavior remain S014 gaps.

@@ -323,14 +323,12 @@ static void execute(Ctx *c) {
         return;
       }
     } else if (in->operands >= 1 && o0->kind == kX86pOperandSt) {
-      if (!x86p_x87_get(f, o0->reg, &other)) {
-        return;
-      }
+      x86p_x87_compare_register(f, o0->reg, in->x87_pops);
+      return;
     } else if (in->operands == 0) {
       /* FCOMPP compares ST(0) with ST(1) implicitly, then pops both. */
-      if (!x86p_x87_get(f, 1, &other)) {
-        return;
-      }
+      x86p_x87_compare_register(f, 1, in->x87_pops);
+      return;
     } else {
       c->status = kX86pX87ExecUnsupported;
       return;
@@ -340,34 +338,13 @@ static void execute(Ctx *c) {
     return;
   }
 
-  case kX86pX87InsnExchange: {
-    long double a, b;
-    int i = (in->operands >= 1 && o0->kind == kX86pOperandSt) ? o0->reg : 1;
-    if (!x86p_x87_get(f, 0, &a) || !x86p_x87_get(f, i, &b)) {
-      return;
-    }
-    x86p_x87_set(f, 0, b);
-    x86p_x87_set(f, i, a);
+  case kX86pX87InsnExchange:
+    x86p_x87_exchange(f, (in->operands >= 1 && o0->kind == kX86pOperandSt) ? o0->reg : 1);
     return;
-  }
-
   case kX86pX87InsnChangeSign:
-  case kX86pX87InsnAbs: {
-    long double v;
-    if (!x86p_x87_get(f, 0, &v)) {
-      return;
-    }
-    /* Sign manipulation, NOT arithmetic: it does not round, does not consult
-       precision control, and works on a NaN. `0 - v` would be a different
-       operation with different results for zero and for NaN. */
-    if (in->x87 == kX86pX87InsnAbs) {
-      v = (v < 0.0L || (v == 0.0L && signbit(v))) ? -v : v;
-    } else {
-      v = -v;
-    }
-    x86p_x87_set(f, 0, v);
+  case kX86pX87InsnAbs:
+    x86p_x87_sign(f, in->x87 == kX86pX87InsnAbs);
     return;
-  }
 
   case kX86pX87InsnConstZero:
   case kX86pX87InsnConstOne:
@@ -473,27 +450,9 @@ static void execute(Ctx *c) {
     x86p_x87_clear_exceptions(f);
     return;
 
-  case kX86pX87InsnTest: {
-    long double v = 0.0L;
-    if (!x86p_x87_get(f, 0, &v)) {
-      /* x86p_x87_get has already set the stack-fault and invalid-operation
-         flags; the instruction produces no result, exactly as the other arms
-         here do. */
-      return;
-    }
-    /* C3, C2, C0 encode the three-way result, exactly as FCOM does. */
-    f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3);
-    if (v > 0.0L) {
-      /* all three clear */
-    } else if (v < 0.0L) {
-      f->status |= X86P_X87_C0;
-    } else if (v == 0.0L) {
-      f->status |= X86P_X87_C3;
-    } else {
-      f->status |= (uint16_t)(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3); /* unordered */
-    }
+  case kX86pX87InsnTest:
+    x86p_x87_test(f);
     return;
-  }
 
   case kX86pX87InsnCompareInt: {
     /*
@@ -528,58 +487,11 @@ static void execute(Ctx *c) {
     return;
   }
 
-  case kX86pX87InsnFn: {
-    /*
-     * Evaluated on the host's own x87 unit -- see x87_transcendental.h. Not
-     * approximated with libm: FSIN and sinl() agree to about eighteen digits
-     * and differ below that, and a guest accumulating transforms across a
-     * frame turns "differ below that" into drift.
-     */
-    long double a = 0.0L;
-    long double b = 0.0L;
-    long double r0 = 0.0L;
-    long double r1 = 0.0L;
-    int pushed = 0;
-    uint16_t sw = 0u;
-    X86pX87Fn fn = (X86pX87Fn)in->x87_fn;
-    int two_operand = (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1 ||
-                       fn == kX86pX87FnScale || fn == kX86pX87FnPrem || fn == kX86pX87FnPrem1);
-
-    if (!x86p_x87_get(f, 0, &a)) {
-      /* x86p_x87_get has already set the stack-fault and invalid-operation
-         flags; the instruction produces no result, exactly as the other arms
-         here do. */
-      return;
-    }
-    if (two_operand && !x86p_x87_get(f, 1, &b)) {
-      /* x86p_x87_get has already set the stack-fault and invalid-operation
-         flags; the instruction produces no result, exactly as the other arms
-         here do. */
-      return;
-    }
-    if (!x86p_x87_fn(fn, a, b, &r0, &r1, &pushed, &sw)) {
-      /* No x87 unit on this host. Refused by name rather than substituted. */
+  case kX86pX87InsnFn:
+    if (!x86p_x87_apply_fn(f, (X86pX87Fn)in->x87_fn)) {
       c->status = kX86pX87ExecUnsupported;
-      return;
-    }
-    /* C1 and C2 are guest-visible: C2 reports an incomplete FPREM reduction
-       and an out-of-range trigonometric argument, and guest code loops on it. */
-    f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
-    f->status |= (uint16_t)(sw & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
-
-    if (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1) {
-      /* These consume BOTH registers and leave one result: pop, then replace. */
-      long double dropped;
-      (void)x86p_x87_pop(f, &dropped);
-      x86p_x87_set(f, 0, r0);
-    } else {
-      x86p_x87_set(f, 0, r0);
-      if (pushed) {
-        x86p_x87_push(f, r1);
-      }
     }
     return;
-  }
 
   case kX86pX87InsnCount:
   default:

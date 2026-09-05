@@ -38,6 +38,7 @@
 #ifndef X86PORT_X87_H
 #define X86PORT_X87_H
 
+#include "x87_transcendental.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -283,6 +284,18 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]);
    truncate, unless the control word says truncate. Returns 0 when the value
    does not fit, which is a guest-visible invalid operation. */
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out);
+
+int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn);
+
+long double x86p_x87_integer_value(uint64_t bits, unsigned width);
+uint64_t x86p_x87_to_i16(X86pX87 *f, long double value);
+uint64_t x86p_x87_to_i32(X86pX87 *f, long double value);
+uint64_t x86p_x87_to_i64(X86pX87 *f, long double value);
+
+void x86p_x87_compare_register(X86pX87 *f, int index, unsigned pops);
+void x86p_x87_exchange(X86pX87 *f, int index);
+void x86p_x87_sign(X86pX87 *f, int absolute);
+void x86p_x87_test(X86pX87 *f);
 
 #ifdef __cplusplus
 } /* extern "C" */

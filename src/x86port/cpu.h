@@ -240,6 +240,13 @@ void x86p_cpu_reset(X86pCpu *cpu);
 int x86p_push32(X86pCpu *cpu, const X86pMem *m, uint32_t value);
 int x86p_pop32(X86pCpu *cpu, const X86pMem *m, uint32_t *out);
 
+/* Transfer the five status flags through AH; preserve OF and other registers. */
+void x86p_cpu_rdtsc(X86pCpu *cpu);
+void x86p_cpu_cpuid(X86pCpu *cpu);
+int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition);
+void x86p_cpu_sahf(X86pCpu *cpu);
+void x86p_cpu_lahf(X86pCpu *cpu);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

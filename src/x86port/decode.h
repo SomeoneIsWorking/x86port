@@ -331,15 +331,16 @@ typedef struct X86pInsn {
      so this counts rather than flags -- a single bit would make FCOMPP either
      FCOMP or a second instruction, and both are wrong. */
   uint8_t x87_pops;
-  uint8_t x87_reverse; /* FSUBR/FDIVR: the operands, and only the operands */
-  uint8_t str;         /* X86pStringOp, when op == kX86pInsnString */
-  uint8_t rep;         /* X86pRepKind, when op == kX86pInsnString */
-  uint8_t str_width;   /* element size in bytes: 1, 2 or 4 */
-  uint8_t simd;        /* X86pSimdOp, when op == kX86pInsnSimd */
-  uint8_t bcd;         /* X86pBcdOp, when op == kX86pInsnBcd */
-  uint8_t bit;         /* X86pBitOp, when op == kX86pInsnBit */
-  uint8_t seg_dest;    /* X86pSegReg loaded by kX86pInsnLfp */
-  uint8_t pf;          /* X86pPfOp, when simd == kX86pSimdPf */
+  uint8_t x87_reverse;   /* FSUBR/FDIVR: the operands, and only the operands */
+  uint8_t str;           /* X86pStringOp, when op == kX86pInsnString */
+  uint8_t rep;           /* X86pRepKind, when op == kX86pInsnString */
+  uint8_t address_width; /* effective address width in bits, including LOOP counter */
+  uint8_t str_width;     /* element size in bytes: 1, 2 or 4 */
+  uint8_t simd;          /* X86pSimdOp, when op == kX86pInsnSimd */
+  uint8_t bcd;           /* X86pBcdOp, when op == kX86pInsnBcd */
+  uint8_t bit;           /* X86pBitOp, when op == kX86pInsnBit */
+  uint8_t seg_dest;      /* X86pSegReg loaded by kX86pInsnLfp */
+  uint8_t pf;            /* X86pPfOp, when simd == kX86pSimdPf */
   /* The FI forms -- FIADD, FIMUL, FICOM -- read their memory operand as a
      two's-complement INTEGER, not as a float of the same width. Recorded here
      rather than recovered from the mnemonic spelling, because a check on the
