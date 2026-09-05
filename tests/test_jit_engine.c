@@ -14,11 +14,13 @@
  * fails.
  */
 #include "code_memory.h"
+#include "cpu_compare.h"
 #include "x86port/cpu.h"
 #include "x86port/exec.h"
 #include "x86port/jit_engine.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_checks;
@@ -44,7 +46,7 @@ static int g_test_failed;
   } while (0)
 
 #define GUEST_BASE 0x00010000u
-#define GUEST_SIZE 4096u
+#define GUEST_SIZE 262144u
 
 static uint8_t g_guest[GUEST_SIZE];
 static uint8_t g_saved[GUEST_SIZE];
@@ -65,24 +67,13 @@ static void seed(X86pCpu *cpu) {
   cpu->eip = GUEST_BASE;
 }
 
+static void report_cpu_diff(const char *field, const char *a, const char *b, void *user) {
+  (void)user;
+  printf("    FAIL %s interp=%s engine=%s\n", field, a, b);
+}
+
 static int same_cpu(const X86pCpu *a, const X86pCpu *b) {
-  int i;
-  int ok = 1;
-  for (i = 0; i < kX86pRegCount; i++) {
-    if (a->reg[i] != b->reg[i]) {
-      printf("    FAIL reg[%d] interp=%08X engine=%08X\n", i, a->reg[i], b->reg[i]);
-      ok = 0;
-    }
-  }
-  if (a->eip != b->eip) {
-    printf("    FAIL EIP interp=%08X engine=%08X\n", a->eip, b->eip);
-    ok = 0;
-  }
-  if (memcmp(&a->flags, &b->flags, sizeof a->flags) != 0) {
-    printf("    FAIL flags differ\n");
-    ok = 0;
-  }
-  return ok;
+  return x86p_cpu_diff(a, b, report_cpu_diff, NULL) == 0u;
 }
 
 /*
@@ -182,18 +173,6 @@ static void test_engine_matches_interpreter_on_a_looping_program(void) {
  * not a change of behaviour. Without this the flush path only ever runs in
  * production, on someone else's machine.
  */
-/*
- * A long straight line, so the arena genuinely fills.
- *
- * The count is set against a PAGE, not against the requested region size:
- * jc_code_region_create rounds up to whole pages, so asking for the minimum
- * block size still yields 4 KB of arena. Sizing this program to the request
- * rather than to what is actually allocated is how a flush test ends up never
- * flushing while reporting a pass.
- */
-#define LONG_MOVS 700u
-#define LONG_SPIN_OFF (LONG_MOVS * 5u)
-
 static void put_imm32(uint8_t *p, uint32_t v) {
   p[0] = (uint8_t)(v & 0xFFu);
   p[1] = (uint8_t)((v >> 8) & 0xFFu);
@@ -201,15 +180,86 @@ static void put_imm32(uint8_t *p, uint32_t v) {
   p[3] = (uint8_t)((v >> 24) & 0xFFu);
 }
 
-static void write_long_program(void) {
+/*
+ * How many host bytes one translated "MOV EAX, imm32" costs, measured
+ * against the ACTUAL running backend rather than assumed. A fixed guest
+ * instruction count was tuned against a 4 KB page on a host that turned out
+ * to grant 16 KB pages, so the arena never filled and a flush test passed
+ * without ever flushing. Measuring the real density and the real page size
+ * here keeps the "long program" tests honest on any host/backend pairing.
+ */
+static size_t probe_bytes_per_insn(void) {
+  uint8_t probe_guest[8u + 32u * 5u];
+  uint8_t probe_code[8192];
+  X86pMem mem;
+  X86pJitBlock blk;
+  char reason[192];
+  unsigned i;
+  const unsigned n = 32u;
+
+  memset(probe_guest, 0x90, sizeof probe_guest);
+  for (i = 0; i < n; i++) {
+    probe_guest[i * 5u] = 0xB8u; /* MOV EAX, imm32 */
+    put_imm32(probe_guest + i * 5u + 1u, i + 1u);
+  }
+
+  mem.host = probe_guest;
+  mem.lo = GUEST_BASE;
+  mem.size = sizeof probe_guest;
+
+  if (x86p_jit_translate(&mem, GUEST_BASE, probe_code, sizeof probe_code, &blk, reason, sizeof reason) != kX86pJitOk ||
+      blk.insns == 0u) {
+    printf("FAIL: code-density probe did not translate: %s\n", reason);
+    exit(1);
+  }
+  return (blk.host_bytes + blk.insns - 1u) / blk.insns; /* round up */
+}
+
+/*
+ * A long straight line, so the arena genuinely fills.
+ *
+ * jc_code_region_create rounds the requested region up to a whole host VM
+ * page, so the real arena can be far bigger than X86P_JIT_MIN_BLOCK_BYTES.
+ * The instruction count here is sized against the REAL page size and the
+ * REAL measured code density, with a 4x margin so the arena fills several
+ * times over and the flush path runs more than once.
+ */
+static unsigned movs_needed_for_flush(void) {
+  JcCodeRegion probe = {0};
+  char reason[192] = {0};
+  size_t bytes_per_insn = probe_bytes_per_insn();
+  size_t arena;
+  size_t needed;
+  const unsigned max_movs = 40000u; /* keeps GUEST_SIZE bounded */
+
+  if (jc_code_region_create(X86P_JIT_MIN_BLOCK_BYTES, &probe, reason, sizeof reason) != kJcCodeOk) {
+    printf("FAIL: cannot measure the actual code arena: %s\n", reason);
+    exit(1);
+  }
+  arena = probe.size;
+  jc_code_region_destroy(&probe);
+  needed = (arena * 4u) / bytes_per_insn + 16u;
+  if (needed < 700u) {
+    needed = 700u;
+  }
+  if (needed > max_movs) {
+    needed = max_movs;
+  }
+  return (unsigned)needed;
+}
+
+static unsigned write_long_program(void) {
+  unsigned movs = movs_needed_for_flush();
+  unsigned spin_off = movs * 5u;
   unsigned i;
   memset(g_guest, 0x90, sizeof g_guest);
-  for (i = 0; i < LONG_MOVS; i++) {
+  for (i = 0; i < movs; i++) {
     g_guest[i * 5u] = 0xB8u; /* MOV EAX, imm32 */
     put_imm32(g_guest + i * 5u + 1u, i + 1u);
   }
-  g_guest[LONG_SPIN_OFF] = 0xEBu;
-  g_guest[LONG_SPIN_OFF + 1u] = 0xFEu;
+  g_guest[spin_off] = 0xEBu;
+  g_guest[spin_off + 1u] = 0xFEu;
+  return spin_off;
 }
 
 static int interp_to(X86pCpu *cpu, const X86pMem *mem, uint32_t target, unsigned budget) {
@@ -232,11 +282,14 @@ static void test_a_full_code_region_flushes_and_keeps_going(void) {
   X86pJitEngine *eng;
   X86pJitEngineStats st;
   char reason[256];
+  unsigned spin_off;
+  unsigned budget;
 
-  write_long_program();
+  spin_off = write_long_program();
+  budget = spin_off * 2u + 64u;
   memcpy(g_saved, g_guest, sizeof g_guest);
   seed(&ci);
-  CHECK(interp_to(&ci, &mem, GUEST_BASE + LONG_SPIN_OFF, 4096u));
+  CHECK(interp_to(&ci, &mem, GUEST_BASE + spin_off, budget));
   memcpy(g_guest, g_saved, sizeof g_guest);
 
   reason[0] = '\0';
@@ -248,7 +301,7 @@ static void test_a_full_code_region_flushes_and_keeps_going(void) {
   }
 
   seed(&ce);
-  CHECK(x86p_jit_engine_run(eng, &ce, 4096u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &ce, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(same_cpu(&ci, &ce));
 
   x86p_jit_engine_stats(eng, &st);
@@ -369,34 +422,35 @@ static void test_a_guest_memory_fault_stops_the_run_and_says_so(void) {
  * goes back. This one runs the long line TWICE, so the second pass re-enters
  * blocks whose addresses now hold something else entirely.
  */
-#define LOOP2_MOVS 700u
 #define LOOP2_BODY 5u
-#define LOOP2_SUB (LOOP2_BODY + LOOP2_MOVS * 5u)
-#define LOOP2_JNZ (LOOP2_SUB + 6u)
-#define LOOP2_SPIN (LOOP2_JNZ + 6u)
 
 /* Every immediate byte is written, none left as the 0x90 fill. An immediate
    that is three-quarters NOP fill decodes and runs; `MOV ECX, 2` silently
    became `MOV ECX, 0x90909002` and the loop ran two and a half billion times. */
-static void write_twice_around_program(void) {
+static unsigned write_twice_around_program(void) {
+  unsigned movs = movs_needed_for_flush();
+  unsigned loop2_sub = LOOP2_BODY + movs * 5u;
+  unsigned loop2_jnz = loop2_sub + 6u;
+  unsigned loop2_spin = loop2_jnz + 6u;
   unsigned i;
   int32_t rel;
   memset(g_guest, 0x90, sizeof g_guest);
   g_guest[0] = 0xB9u; /* MOV ECX, 2 */
   put_imm32(g_guest + 1, 2u);
-  for (i = 0; i < LOOP2_MOVS; i++) {
+  for (i = 0; i < movs; i++) {
     g_guest[LOOP2_BODY + i * 5u] = 0xB8u; /* MOV EAX, imm32 */
     put_imm32(g_guest + LOOP2_BODY + i * 5u + 1u, i + 1u);
   }
-  g_guest[LOOP2_SUB] = 0x81u; /* SUB ECX, 1 */
-  g_guest[LOOP2_SUB + 1u] = 0xE9u;
-  put_imm32(g_guest + LOOP2_SUB + 2u, 1u);
-  g_guest[LOOP2_JNZ] = 0x0Fu; /* JNZ rel32 -> the body */
-  g_guest[LOOP2_JNZ + 1u] = 0x85u;
-  rel = (int32_t)LOOP2_BODY - (int32_t)LOOP2_SPIN;
-  put_imm32(g_guest + LOOP2_JNZ + 2u, (uint32_t)rel);
-  g_guest[LOOP2_SPIN] = 0xEBu;
-  g_guest[LOOP2_SPIN + 1u] = 0xFEu;
+  g_guest[loop2_sub] = 0x81u; /* SUB ECX, 1 */
+  g_guest[loop2_sub + 1u] = 0xE9u;
+  put_imm32(g_guest + loop2_sub + 2u, 1u);
+  g_guest[loop2_jnz] = 0x0Fu; /* JNZ rel32 -> the body */
+  g_guest[loop2_jnz + 1u] = 0x85u;
+  rel = (int32_t)LOOP2_BODY - (int32_t)loop2_spin;
+  put_imm32(g_guest + loop2_jnz + 2u, (uint32_t)rel);
+  g_guest[loop2_spin] = 0xEBu;
+  g_guest[loop2_spin + 1u] = 0xFEu;
+  return loop2_spin;
 }
 
 static void test_a_rewound_arena_does_not_leave_stale_cache_entries(void) {
@@ -406,11 +460,14 @@ static void test_a_rewound_arena_does_not_leave_stale_cache_entries(void) {
   X86pJitEngine *eng;
   X86pJitEngineStats st;
   char reason[256];
+  unsigned spin_off;
+  unsigned budget;
 
-  write_twice_around_program();
+  spin_off = write_twice_around_program();
+  budget = spin_off * 3u + 64u; /* the program runs around twice */
   memcpy(g_saved, g_guest, sizeof g_guest);
   seed(&ci);
-  CHECK(interp_to(&ci, &mem, GUEST_BASE + LOOP2_SPIN, 8192u));
+  CHECK(interp_to(&ci, &mem, GUEST_BASE + spin_off, budget));
   memcpy(g_guest, g_saved, sizeof g_guest);
 
   reason[0] = '\0';
@@ -420,8 +477,8 @@ static void test_a_rewound_arena_does_not_leave_stale_cache_entries(void) {
     return;
   }
   seed(&ce);
-  CHECK(x86p_jit_engine_run(eng, &ce, 8192u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
-  CHECK(ce.eip == GUEST_BASE + LOOP2_SPIN);
+  CHECK(x86p_jit_engine_run(eng, &ce, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(ce.eip == GUEST_BASE + spin_off);
   CHECK(same_cpu(&ci, &ce));
 
   x86p_jit_engine_stats(eng, &st);
@@ -610,7 +667,12 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   char reason[256];
 
   memset(g_guest, 0x90, sizeof g_guest);
-  g_guest[0] = 0x9C; /* PUSHFD: shared oracle semantics exist; no x64 emitter */
+  /* ROL EAX, 1 (D1 /0): shared oracle semantics exist (x86p_alu implements
+     every rotate for the interpreter), but rotates are deliberately not
+     modelled by either JIT backend -- see can_emit's ALU case, which refuses
+     everything past SAR/SHR/SHL on purpose, not for lack of an opcode. */
+  g_guest[0] = 0xD1;
+  g_guest[1] = 0xC0;
 
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
@@ -621,8 +683,8 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   seed(&cpu);
   before = cpu;
   CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunUnsupported);
-  CHECK(memcmp(&cpu, &before, sizeof cpu) == 0);
-  CHECK(strstr(reason, "PUSHF") != NULL);
+  CHECK(x86p_cpu_diff(&cpu, &before, NULL, NULL) == 0u);
+  CHECK(strstr(reason, "ROL") != NULL);
   x86p_jit_engine_stats(eng, &stats);
   CHECK(stats.blocks_entered == 0u);
   CHECK(stats.translate_refusals == 1u);

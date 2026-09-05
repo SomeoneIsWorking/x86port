@@ -24,8 +24,9 @@ interception, profiling, and invalidation APIs. Unsupported translations return
 a named refusal. The permitted bounded product fallback and its telemetry are
 not implemented yet and remain distinct from `x86port_test_oracle`.
 Product-only execution and archive-symbol gates enforce the current boundary. x64
-instruction and consumer conformance coverage is still incomplete, and ARM64
-code emission is absent. Shipping diagnostics use the configurable
+instruction and consumer conformance coverage is still incomplete. ARM64
+code emission exists but host qualification and exact x87 state are incomplete.
+Shipping diagnostics use the configurable
 `X86pDiagnosticSink` boundary; only its default implementation writes to
 standard error. Guest faults and unsupported instructions remain typed runtime
 statuses rather than fatal log-and-continue paths.

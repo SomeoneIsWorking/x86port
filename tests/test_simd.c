@@ -24,22 +24,24 @@
  */
 #include "cpu.h"
 #include "decode.h"
+#include "oracle_code.h"
 #include "simd.h"
 #include "x87.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
-
-static unsigned long g_checks;
-static unsigned long g_failed;
-static unsigned long g_oracle_runs;
 
 #if defined(__x86_64__)
 #define HAVE_ORACLE 1
 #else
 #define HAVE_ORACLE 0
+#endif
+
+#if HAVE_ORACLE
+static unsigned long g_checks;
+static unsigned long g_failed;
+static unsigned long g_oracle_runs;
 #endif
 
 /* How the instruction under test names its operands. */
@@ -144,7 +146,7 @@ INSN(k_movhlps, 0x0Fu, 0x12u, 0xC1u)
 INSN(k_movlhps, 0x0Fu, 0x16u, 0xC1u)
 INSN(k_movaps, 0x0Fu, 0x28u, 0xC1u)
 
-#define C(n, o, f, b) {n, o, f, b, (unsigned)(sizeof b)}
+#define C(n, o, f, b) {(n), (o), (f), (b), (unsigned)(sizeof(b))}
 
 static const Case kCases[] = {
     C("PAND", kX86pSimdPand, kFormMmx, k_pand),
@@ -257,7 +259,7 @@ static const uint8_t kInputs[][32] = {
 };
 
 #if HAVE_ORACLE
-static uint8_t *g_code;
+static JcCodeRegion g_code_region;
 
 /* in[0..15] destination, in[16..31] source; out receives the destination. */
 static void oracle(const Case *c, uint8_t imm, const uint8_t *in, uint8_t *out) {
@@ -266,14 +268,7 @@ static void oracle(const Case *c, uint8_t imm, const uint8_t *in, uint8_t *out) 
   int has_imm = (c->form == kFormMmxImm || c->form == kFormXmmImm);
   void (*fn)(const uint8_t *, uint8_t *);
 
-  if (!g_code) {
-    g_code = (uint8_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (g_code == MAP_FAILED) {
-      g_code = NULL;
-      g_failed++;
-      return;
-    }
-  }
+  uint8_t *g_code = oracle_code_write(&g_code_region);
   if (mmx) {
     /* movq mm0,[rdi] ; movq mm1,[rdi+16].
        Sixteen, not eight: the input table is one 16-byte destination followed
@@ -318,7 +313,7 @@ static void oracle(const Case *c, uint8_t imm, const uint8_t *in, uint8_t *out) 
   }
   g_code[n++] = 0xC3u;
 
-  memcpy(&fn, &g_code, sizeof fn);
+  fn = (void (*)(const uint8_t *, uint8_t *))oracle_code_publish(&g_code_region, n);
   memset(out, 0, 16);
   fn(in, out);
   g_oracle_runs++;
@@ -438,6 +433,7 @@ int main(void) {
   }
   printf(
       "%lu check(s), %lu failure(s); %lu instruction(s) executed on the host CPU\n", g_checks, g_failed, g_oracle_runs);
+  jc_code_region_destroy(&g_code_region);
   return g_failed ? 1 : 0;
 #else
   printf("REFUSED: this host is not x86-64, so no instruction was executed and\n"

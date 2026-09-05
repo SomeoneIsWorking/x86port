@@ -23,6 +23,20 @@
 #include <string.h>
 #include <sys/mman.h>
 
+#define BASE 0x00040000u
+#define MEMSZ 512u
+#define MEM_OPERAND_OFF 0x100u
+
+/* The bytes the host's scratch held before it ran, and the model's copy of
+   them. Both are needed: the host mutates its scratch in place. */
+#define SHARED_WINDOW 128u
+
+/* The architectural bits this model claims. DF is excluded: it lives in
+   X86pCpu, not in the flags word, and none of these instructions touch it. */
+#define COMPARED_FLAGS (X86P_CF | X86P_PF | X86P_AF | X86P_ZF | X86P_SF | X86P_OF)
+
+#if defined(__x86_64__)
+
 static unsigned long g_checks;
 static unsigned long g_failed;
 static unsigned long g_oracle_runs;
@@ -30,22 +44,9 @@ static unsigned long g_reported;
 static unsigned long g_undefined_flag_cases;
 static unsigned long g_undefined_flag_differences;
 
-#define BASE 0x00040000u
-#define MEMSZ 512u
-#define MEM_OPERAND_OFF 0x100u
-
 static uint8_t g_mem[MEMSZ];
-/* The bytes the host's scratch held before it ran, and the model's copy of
-   them. Both are needed: the host mutates its scratch in place. */
-#define SHARED_WINDOW 128u
 static uint8_t g_seed[SHARED_WINDOW];
 static uint8_t g_shadow[SHARED_WINDOW];
-
-/* The architectural bits this model claims. DF is excluded: it lives in
-   X86pCpu, not in the flags word, and none of these instructions touch it. */
-#define COMPARED_FLAGS (X86P_CF | X86P_PF | X86P_AF | X86P_ZF | X86P_SF | X86P_OF)
-
-#if defined(__x86_64__)
 
 /* The guest register file, in the order the stub loads and stores it. */
 typedef struct Regs {

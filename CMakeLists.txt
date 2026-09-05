@@ -55,6 +55,24 @@ if(NOT X86P_JITCOMMON)
 endif()
 add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXCLUDE_FROM_ALL)
 
+# The x64 and ARM64 backend modules implement the
+# same externally-visible x86p_jit_* contract declared once in jit_x64.h. At
+# most one backend can ever be linked into x86port_runtime, or their identically
+# named symbols collide -- so the backend is chosen once, here, by host
+# architecture. emit_x64.c/emit_arm64.c have no such clash (differently
+# prefixed symbols) and stay unconditionally built for their own dedicated
+# encoder tests.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+  set(X86P_JIT_BACKEND_SOURCES
+    src/x86port/jit_arm64.c
+    src/x86port/jit_arm64_integer.c
+    src/x86port/jit_arm64_x87.c)
+else()
+  set(X86P_JIT_BACKEND_SOURCES
+    src/x86port/jit_x64.c
+    src/x86port/jit_x64_x87.c)
+endif()
+
 add_library(x86port_runtime STATIC
   src/x86port/diagnostic.c
   src/x86port/string_ops.c
@@ -74,9 +92,10 @@ add_library(x86port_runtime STATIC
   src/x86port/cond.c
   src/x86port/x87.c
   src/x86port/x87_transcendental.c
+  src/x86port/jit_x87_predicates.c
   src/x86port/emit_x64.c
-  src/x86port/jit_x64.c
-  src/x86port/jit_x64_x87.c
+  src/x86port/emit_arm64.c
+  ${X86P_JIT_BACKEND_SOURCES}
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
 add_library(x86port ALIAS x86port_runtime)
@@ -241,6 +260,15 @@ add_executable(test_emit_x64 tests/test_emit_x64.c)
 target_link_libraries(test_emit_x64 PRIVATE x86port Zydis)
 x86p_strict_target(test_emit_x64)
 add_test(NAME test_emit_x64 COMMAND test_emit_x64)
+
+# No Zydis-grade decode oracle exists for AArch64 here, so this test decodes
+# with its own independently-written bitfield extractor instead (see the file
+# header). It needs only the encoder, so it links x86port_runtime directly
+# rather than the alias that pulls in Zydis.
+add_executable(test_emit_arm64 tests/test_emit_arm64.c)
+target_link_libraries(test_emit_arm64 PRIVATE x86port_runtime)
+target_compile_options(test_emit_arm64 PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_emit_arm64 COMMAND test_emit_arm64)
 
 # The differential: translated code against the interpreter, whole machine.
 add_executable(test_jit_x64 tests/test_jit_x64.c)

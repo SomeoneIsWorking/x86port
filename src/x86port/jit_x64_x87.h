@@ -20,16 +20,7 @@
 #include "decode.h"
 #include "jit_x64_internal.h"
 
-/* Can this X87 instruction be emitted natively? Exactly one predicate is true
-   for an emittable instruction; the dispatch order in jit_x64.c mirrors this. */
-int x87_load_is_emittable(const X86pInsn *insn);
-int x87_arith_is_emittable(const X86pInsn *insn);
-int x87_compare_mem_is_emittable(const X86pInsn *insn);
-int x87_store_reg_is_emittable(const X86pInsn *insn);
-int x87_store_mem_is_emittable(const X86pInsn *insn);
-int x87_constant_is_emittable(const X86pInsn *insn);
-int x87_status_ax_is_emittable(const X86pInsn *insn);
-int x87_clear_exceptions_is_emittable(const X86pInsn *insn);
+#include "jit_x87_predicates.h"
 
 /* Emit one X87 instruction. The caller has already checked the matching
    predicate. None of these write EFLAGS. */

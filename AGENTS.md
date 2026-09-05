@@ -34,8 +34,9 @@ options.
   files, precompiled guest bodies, seed tables, or generated dispatch maps.
 - A runtime-populated code cache is disposable user data. It is never a
   fresh-install prerequisite or a checked-in product input.
-- The x64 backend is the current implementation. ARM64 product translation is
-  required and currently absent; lack of a host backend is a refusal, never a
+- x64 and ARM64 lowering backends exist, but instruction and host conformance
+  remain partial. Shared x87 admission refuses value-bearing translation on
+  hosts without exact extended state; lack of a qualified backend is never a
   reason to interpret the whole product.
 
 The product/test link boundary now satisfies this contract at framework level:

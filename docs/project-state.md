@@ -28,7 +28,7 @@ product target and verify its actual gameplay link and selector.
 | S004 | The x64 backend translates and executes runtime basic blocks | partial | S001, S002 | G001, G002, G003 |
 | S005 | Dynarec is the product default; bounded fallback is controlled and explicit interpreter mode is diagnostic-only | partial | S002, S004 | G001, G002 |
 | S006 | Static Substrate and offline guest-code generation are absent from x86port interfaces and workflows | verified | — | G001, G004 |
-| S007 | An ARM64 product JIT backend is available | missing | S002 | G001, G002 |
+| S007 | An ARM64 product JIT backend is available | partial | S002 | G001, G002 |
 | S008 | Runtime dispatch supports image-aware native overrides and scoped original calls through the JIT | partial | S004, S005 | G001, G002, G003 |
 | S009 | Executable-code publication, caching, and invalidation preserve runtime correctness | partial | S004 | G001, G003, G004 |
 | S010 | Runtime configuration is typed, explicit, and instance-owned | missing | S005 | G004 |
@@ -46,7 +46,9 @@ JIT execution:
 
 The 2026-09-05 combined Linux gate used `uv run --frozen python tools/verify.py`
 with Clang 22.1.8 for C and C++, exact `jit-common`
-`4512a2054b0ecf737b6dd0b03f23713d23550b3c`, and passed all 26 CTests. The
+`4512a2054b0ecf737b6dd0b03f23713d23550b3c`, and passed all 27 CTests after
+integrating the ARM64 encoder and backend source. This Linux result executes
+the x64 backend and does not qualify ARM64 runtime behavior. The
 Win64 ABI executable positive/negative probe ran locally through `ms_abi`;
 this proves the emitted calling convention on the local host, while actual
 Windows OS evidence still requires its hosted job. Pointer-valued x87 helper
@@ -58,7 +60,8 @@ MSVC's narrower register representation.
 | Linux x86-64 | configured; hosted re-run pending | `.github/workflows/ci.yml` uses Clang and runs the complete CTest graph. Run 33887133221 exposed that hardware-oracle tests treated ISA-undefined flags as a cross-CPU contract; the corrected local Clang discriminators pass and retain undefined-bit variation counts, but hosted confirmation requires the next pushed run. |
 | Windows x86-64 | partial; hosted run pending | The workflow builds and runs the product/oracle fixtures with clang-cl, an initialized MSVC x64 environment, and LLVM COFF symbol inspection. `jit_x64_abi.h` owns entry/helper registers, nonvolatile saves, stack alignment, shadow space, and fifth arguments. The executable ABI positive/negative probe runs through shared code memory on Windows too. The MSVC ABI represents `long double` as binary64, so value-bearing x87 translation explicitly refuses instead of rounding extended values. Completing Windows x87 requires host-independent f80 register storage and arithmetic/conversion/rounding semantics; the x87 conformance tests remain in CI and this host is not release-qualified. |
 | macOS x86-64 | configured; hosted re-run pending | `.github/workflows/ci.yml` uses Intel Apple Clang and runs the product and portable oracle graph against the x64 emitter. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the portable product/oracle archive boundary recognizes Mach-O's leading C-symbol underscore. Hosted confirmation requires the next pushed run. |
-| macOS arm64 / Android arm64-v8a | unsupported | `src/x86port` only emits x86-64 host code. The missing ARM64 backend is S007; bounded fallback cannot qualify a host backend, so no configure-only or interpreter-only job is published. |
+| macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. Shared precision admission now refuses those value-bearing forms. ARM64 runtime CI and renewed conformance evidence are still required. |
+| Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
 
 ## Evidence and exact gaps
 
@@ -139,10 +142,24 @@ legacy option. Consumer removal is tracked by their own state and S014/S015.
 
 ### S007 — ARM64 backend
 
-Missing capability: implement and qualify runtime ARM64 code emission,
-executable-memory publication, instruction-cache coherence, ABI transitions,
-invalidation, and product conformance. A bounded instruction fallback cannot
-substitute for a missing ARM64 backend.
+Evidence: `emit_arm64.{h,c}`, `jit_arm64.c`, `jit_arm64_integer.c`, and `jit_arm64_x87.c`
+implement an ARM64 encoder and runtime backend selected by CMake on
+`arm64`/`aarch64`. Commit `b15cc24` records an Apple Silicon synthetic run
+of 21,130 checks across 1,258 programs. This is historical mechanism evidence,
+not verification of the merged tree or complete guest semantics: macOS uses
+binary64 `long double`, and the prior interpreter/JIT comparison shared that
+inexact x87 representation. Both host backends now use `jit_x87_predicates.c`
+to refuse value-bearing x87 translation unless the semantic owner has exact
+extended state; status-only operations remain available. A portable f80 owner
+is required for Windows and ARM64 floating-point conformance.
+
+The differential uses the shipping `jit-common` region publication API for
+W^X transitions and instruction-cache coherence. ARM64 caller-saved helper
+register lifetimes, macOS execution, Android runtime/package behavior, and
+representative consumer gameplay remain unverified in the merged tree. The
+new backend still duplicates some decode-level policy and semantic helper
+adapters; S012 remains partial. No ARM64 release support
+is claimed from encoder tests or historical host-double differential output.
 
 ### S008 — native and original dispatch
 
@@ -184,10 +201,14 @@ classes plus a platform-debug-output call.
 ### S012 — structure and quality gate
 
 The tree has cohesive modules and a tracked `.clang-format`; x87 JIT emission
-has begun moving out of the x64 backend. Gap: `src/x86port/jit_x64.c` remains
-above the 1,200-line source limit, `src/x86port/exec.c` is near it, and the
-normal verifier does not yet enforce clang-format, clang-tidy, structure, and
-portability as one gate.
+has begun moving out of the x64 backend. ARM64 integer arithmetic lowering
+owns a separate module, keeping its block orchestrator below 1,200 lines.
+The source-policy gate checks every declared product backend, including inactive
+architecture branches, and enforces a 1,200-line ceiling with the existing x64
+lowering frozen at 1,925 lines. Gap: that x64 debt still needs extraction,
+`src/x86port/exec.c` is near the limit, and the normal verifier does not yet
+enforce clang-format, clang-tidy, all first-party structure, and portability
+as one gate.
 
 ### S013 — verification instruments
 
