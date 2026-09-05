@@ -242,12 +242,10 @@ uint32_t x86p_alu_unary(X86pAluUnOp op, uint32_t a, int w, X86pFlags *f) {
 /*
  * A multiply writes CF and OF and NOTHING ELSE.
  *
- * ZF, SF, PF and AF are architecturally undefined here, and "undefined" was
- * measured rather than assumed: across all 65,536 operand pairs for both MUL
- * and IMUL, with each flag presented set and clear, this CPU PRESERVES all four
- * -- 65,536 of 65,536 in both directions. Deriving them from the low half (the
- * obvious guess, and what this did first) disagreed with hardware on 49,280 of
- * 65,536 cases.
+ * ZF, SF, PF and AF are architecturally undefined here. The deterministic
+ * policy preserves them, matching the original reference host. Hardware-oracle
+ * tests report variation in those bits across CPUs without promoting it to an
+ * architectural correctness failure.
  *
  * Which makes a multiply the same SHAPE as a rotate: two flags written, four
  * untouched. It reuses that helper rather than growing a second way to say so.

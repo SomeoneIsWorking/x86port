@@ -5,8 +5,10 @@
  * answer, and reasoning about the manual is not that: every flag bug in a
  * translator is a case someone reasoned through and got wrong. So where the
  * host is x86 this test EXECUTES the instruction -- with a controlled incoming
- * EFLAGS -- captures the real EFLAGS, and compares. That is the only oracle
- * that cannot share a mistake with the implementation.
+ * EFLAGS -- captures the real EFLAGS, and compares every architecturally
+ * defined bit. Undefined bits are still measured and reported, but cannot be
+ * a portable pass/fail contract because x86 implementations may leave
+ * different values there.
  *
  * It is exhaustive at byte width: all 256x256 operand pairs, both carry-in
  * values, for every operation modelled. 8 bits is small enough to enumerate and
@@ -208,7 +210,7 @@ static void test_none_and_null(void) {
 /* The hardware oracle.                                                        */
 /* ------------------------------------------------------------------------- */
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(_WIN32)
 #define HAVE_HW_ORACLE 1
 
 /* Only the arithmetic flags are settable going in; the rest of the word is
@@ -306,15 +308,15 @@ typedef struct Tally {
 } Tally;
 
 static const struct {
-  uint32_t bit;
   const char *name;
+  uint32_t bit;
   int idx;
-} kFlagBits[] = {{X86P_CF, "CF", 0},
-                 {X86P_PF, "PF", 2},
-                 {X86P_AF, "AF", 4},
-                 {X86P_ZF, "ZF", 6},
-                 {X86P_SF, "SF", 7},
-                 {X86P_OF, "OF", 11}};
+} kFlagBits[] = {{"CF", X86P_CF, 0},
+                 {"PF", X86P_PF, 2},
+                 {"AF", X86P_AF, 4},
+                 {"ZF", X86P_ZF, 6},
+                 {"SF", X86P_SF, 7},
+                 {"OF", X86P_OF, 11}};
 enum { kFlagBitCount = (int)(sizeof kFlagBits / sizeof kFlagBits[0]) };
 
 static void tally(Tally *t, uint32_t a, uint32_t b, uint32_t fin, uint32_t hw, uint32_t us, uint32_t defined_mask) {
@@ -404,19 +406,24 @@ static void report(const Tally *t) {
 }
 
 /*
- * EVERY flag is compared, including the ones the ISA leaves undefined.
- *
- * "Undefined" describes the specification, not the silicon: a real CPU puts a
- * definite value there and guest code that saves and restores EFLAGS can see
- * it. Each was measured -- AF is cleared by the logic ops and set by the shifts
- * on this CPU, across every case -- so the model states those values and this
- * sweep holds it to them. Exempting a flag from comparison because a manual
- * calls it undefined is how a model drifts from the machine it is modelling in
- * the one place nobody is looking.
+ * Undefined flags are not discarded: tally() records their differences with a
+ * denominator and report() names each varying bit. They are observational
+ * evidence about the current host, not a portable correctness requirement.
  */
 #define ALL_DEFINED X86P_ARITH_FLAGS
-#define LOGIC_DEFINED X86P_ARITH_FLAGS
-#define SHIFT_DEFINED X86P_ARITH_FLAGS
+#define LOGIC_DEFINED (X86P_ARITH_FLAGS & ~X86P_AF)
+
+static uint32_t shift_defined(X86pFlagKind kind, unsigned count, unsigned bits) {
+  uint32_t defined = X86P_PF | X86P_ZF | X86P_SF;
+  /* SAR's sign bit remains the last bit shifted out for counts >= width. */
+  if (kind == kX86pFlagsSar || count < bits) {
+    defined |= X86P_CF;
+  }
+  if (count == 1u) {
+    defined |= X86P_OF;
+  }
+  return defined;
+}
 
 static void test_hw_binops(void) {
   /* CF *and* AF. The first version of this sweep varied only CF and reported
@@ -541,37 +548,38 @@ static void test_hw_shifts(void) {
   Tally t_shl = {"SHL", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0}},
         t_shr = {"SHR", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0}};
   Tally t_sar = {"SAR", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0}};
+  CHECK((shift_defined(kX86pFlagsSar, 8u, 8u) & X86P_CF) != 0u);
+  CHECK((shift_defined(kX86pFlagsSar, 31u, 8u) & X86P_CF) != 0u);
+  CHECK((shift_defined(kX86pFlagsShl, 8u, 8u) & X86P_CF) == 0u);
+  CHECK((shift_defined(kX86pFlagsShr, 31u, 8u) & X86P_CF) == 0u);
 
   for (ci = 0; ci < (int)(sizeof carries / sizeof carries[0]); ci++) {
     uint32_t fin = carries[ci];
     for (ai = 0; ai < 256; ai++) {
-      /* 0 through 8: zero is the do-nothing case the naive formula breaks on,
-         and 8 is a full-width shift. The hardware masks the count to 5 bits,
-         so this stays inside one wrap deliberately -- counts past the width are
-         architecturally undefined and are not what the engine will emit. */
-      for (ni = 1; ni <= 8; ni++) {
+      /* Cover every nonzero masked count, including SAR at and beyond the
+         operand width. Zero preserves flags and is exercised separately. */
+      for (ni = 1; ni <= 31; ni++) {
         uint8_t a = (uint8_t)ai, n = (uint8_t)ni, r;
         uint32_t hw;
         X86pFlags f;
-        uint32_t defined = SHIFT_DEFINED;
 
         hw = hw_shl8(a, n, fin, &r);
         memset(&f, 0, sizeof f);
         x86p_flags_set_explicit(&f, fin);
         set(&f, kX86pFlagsShl, a, n, (uint32_t)r, 1);
-        tally(&t_shl, a, n, fin, hw, x86p_eflags(&f), defined);
+        tally(&t_shl, a, n, fin, hw, x86p_eflags(&f), shift_defined(kX86pFlagsShl, ni, 8u));
 
         hw = hw_shr8(a, n, fin, &r);
         memset(&f, 0, sizeof f);
         x86p_flags_set_explicit(&f, fin);
         set(&f, kX86pFlagsShr, a, n, (uint32_t)r, 1);
-        tally(&t_shr, a, n, fin, hw, x86p_eflags(&f), defined);
+        tally(&t_shr, a, n, fin, hw, x86p_eflags(&f), shift_defined(kX86pFlagsShr, ni, 8u));
 
         hw = hw_sar8(a, n, fin, &r);
         memset(&f, 0, sizeof f);
         x86p_flags_set_explicit(&f, fin);
         set(&f, kX86pFlagsSar, a, n, (uint32_t)r, 1);
-        tally(&t_sar, a, n, fin, hw, x86p_eflags(&f), defined);
+        tally(&t_sar, a, n, fin, hw, x86p_eflags(&f), shift_defined(kX86pFlagsSar, ni, 8u));
       }
     }
   }
@@ -592,10 +600,13 @@ static void test_hw_shifts(void) {
  * neighbours, all-ones), crossed with each other so the interesting pairs are
  * hit on purpose rather than hoped for.
  */
-#define HW_BINOP(fname, insn, ty, sfx, con)                                                                            \
-  static uint32_t fname(ty a, ty b, uint32_t fin, ty *out) {                                                           \
+#define X86P_CTYPE_U16 uint16_t
+#define X86P_CTYPE_U32 uint32_t
+
+#define HW_BINOP(fname, insn, kind, sfx, con)                                                                          \
+  static uint32_t fname(X86P_CTYPE_##kind a, X86P_CTYPE_##kind b, uint32_t fin, X86P_CTYPE_##kind *out) {              \
     uint64_t fout;                                                                                                     \
-    ty r = a;                                                                                                          \
+    X86P_CTYPE_##kind r = a;                                                                                           \
     __asm__ volatile("push %[fi]\n\t"                                                                                  \
                      "popf\n\t" insn sfx " %[bb], %[rr]\n\t"                                                           \
                      "pushf\n\t"                                                                                       \
@@ -607,16 +618,16 @@ static void test_hw_shifts(void) {
     return (uint32_t)fout;                                                                                             \
   }
 
-HW_BINOP(hw_add16, "add", uint16_t, "w", "r")
-HW_BINOP(hw_sub16, "sub", uint16_t, "w", "r")
-HW_BINOP(hw_and16, "and", uint16_t, "w", "r")
-HW_BINOP(hw_adc16, "adc", uint16_t, "w", "r")
-HW_BINOP(hw_sbb16, "sbb", uint16_t, "w", "r")
-HW_BINOP(hw_add32, "add", uint32_t, "l", "r")
-HW_BINOP(hw_sub32, "sub", uint32_t, "l", "r")
-HW_BINOP(hw_and32, "and", uint32_t, "l", "r")
-HW_BINOP(hw_adc32, "adc", uint32_t, "l", "r")
-HW_BINOP(hw_sbb32, "sbb", uint32_t, "l", "r")
+HW_BINOP(hw_add16, "add", U16, "w", "r")
+HW_BINOP(hw_sub16, "sub", U16, "w", "r")
+HW_BINOP(hw_and16, "and", U16, "w", "r")
+HW_BINOP(hw_adc16, "adc", U16, "w", "r")
+HW_BINOP(hw_sbb16, "sbb", U16, "w", "r")
+HW_BINOP(hw_add32, "add", U32, "l", "r")
+HW_BINOP(hw_sub32, "sub", U32, "l", "r")
+HW_BINOP(hw_and32, "and", U32, "l", "r")
+HW_BINOP(hw_adc32, "adc", U32, "l", "r")
+HW_BINOP(hw_sbb32, "sbb", U32, "l", "r")
 
 /* A small deterministic PRNG, written out rather than taken from rand(), so the
    case list does not change with the C library. */
@@ -787,8 +798,8 @@ int main(void) {
 #if HAVE_HW_ORACLE
   /* The denominator, stated once: "0 mismatches" is a measurement only with
      the number of comparisons beside it. */
-  printf("hardware oracle: %lu comparison(s) against a real CPU, %lu mismatch(es), "
-         "all six flags compared including the ISA-undefined ones\n",
+  printf("hardware oracle: %lu comparison(s) against a real CPU, %lu mismatch(es) on architecturally defined flags; "
+         "undefined-flag differences were measured separately\n",
          g_hw_cases,
          g_hw_mismatch);
   if (g_hw_cases == 0) {

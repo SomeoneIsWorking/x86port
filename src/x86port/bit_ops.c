@@ -95,16 +95,14 @@ int x86p_double_shift(
     parity ^= (unsigned)((r >> i) & 1u);
   }
   set_bit(&f, X86P_PF, parity == 0u);
-  /* AF is undefined for the double shifts, and this CPU SETS it -- the same
-     behaviour flags.c measured for the ordinary shifts, and the same reason
-     for modelling it: a guest that pushes EFLAGS can see the bit. */
+  /* AF is undefined for double shifts. The deterministic policy follows the
+     original reference host and sets it. */
   set_bit(&f, X86P_AF, 1);
   /*
-   * OF, which the SDM defines only for a count of one and the hardware writes
-   * for every count. The rule is the LAST SINGLE-BIT STEP: these are microcoded
-   * as a sequence of one-bit shifts, and OF says the sign changed on the final
-   * one. For a count of one that reduces to "sign(result) differs from
-   * sign(destination)", which is exactly what the manual documents.
+   * OF is defined only for a count of one. The deterministic policy for larger
+   * counts follows the original reference host's last-single-bit-step result.
+   * For a count of one that reduces to "sign(result) differs from
+   * sign(destination)", the architectural rule.
    *
    * The manual's rule extended naively to every count -- comparing the result
    * against the ORIGINAL destination -- agrees on a great many inputs and is

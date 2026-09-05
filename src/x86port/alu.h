@@ -99,9 +99,9 @@ uint32_t x86p_alu_unary(X86pAluUnOp op, uint32_t a, int w, X86pFlags *f);
  * after a multiply that "didn't need" it.
  *
  * CF and OF say the same thing for both: the result did not fit in the lower
- * half alone. ZF, SF, PF and AF are architecturally undefined; the values this
- * writes are the ones a real CPU produces -- see tests/test_alu.c, which
- * compares them.
+ * half alone. ZF, SF, PF and AF are architecturally undefined; this model uses
+ * a deterministic preservation policy, while tests record host variation in
+ * those bits separately from architectural pass/fail results.
  */
 void x86p_alu_mul(uint32_t a, uint32_t b, int w, uint32_t *lo, uint32_t *hi, X86pFlags *f);
 void x86p_alu_imul(uint32_t a, uint32_t b, int w, uint32_t *lo, uint32_t *hi, X86pFlags *f);

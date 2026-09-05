@@ -71,7 +71,7 @@ typedef enum X86pFlagKind {
   kX86pFlagsNone = 0, /* nothing has written flags; every flag reads 0 */
   kX86pFlagsAdd,      /* ADD, and the address arithmetic that reuses it */
   kX86pFlagsSub,      /* SUB and CMP */
-  kX86pFlagsLogic,    /* AND/OR/XOR/TEST: CF and OF cleared; AF cleared (measured) */
+  kX86pFlagsLogic,    /* AND/OR/XOR/TEST: CF/OF clear; deterministic AF policy */
   kX86pFlagsInc,      /* like Add but CF is PRESERVED, so it is a distinct kind */
   kX86pFlagsDec,      /* like Sub but CF is PRESERVED */
   /*
@@ -98,8 +98,9 @@ typedef enum X86pFlagKind {
  * `carry_in` holds the CF that must survive INC and DEC, which do not write it.
  * Clearing it is wrong inside a carry-carrying loop: `inc` between an `add` and
  * an `adc` does not clear the carry on
- * hardware. Nothing analogous is needed for AF, because every kind here states
- * a value for it -- measured, not assumed; see flags.c.
+ * hardware. Every kind also states a deterministic value for AF; hardware
+ * oracles treat architecturally undefined AF outcomes as observations rather
+ * than a portable CPU contract.
  */
 typedef struct X86pFlags {
   uint32_t a; /* first operand, or the EFLAGS word when kind is Explicit */

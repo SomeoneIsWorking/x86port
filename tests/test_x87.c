@@ -274,7 +274,7 @@ static void test_f80_round_trip(void) {
 
 /* ---- against the host FPU ----------------------------------------------- */
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
 #define HAVE_HW_ORACLE 1
 
 /*
@@ -663,8 +663,6 @@ int main(void) {
   /* Stated up front, because every arithmetic number below is only a parity
      claim when this holds. */
   printf("host long double is x87 extended (64-bit mantissa): %s\n", x86p_x87_precision_is_exact() ? "yes" : "NO");
-  build_vals();
-
   RUN(test_st_is_a_position_not_a_register);
   RUN(test_top_appears_in_the_status_word);
   RUN(test_clear_exceptions_preserves_unrelated_state);
@@ -674,6 +672,7 @@ int main(void) {
   RUN(test_fist_rounds_by_the_control_word);
   RUN(test_f80_round_trip);
 #if HAVE_HW_ORACLE
+  build_vals();
   if (!x86p_x87_precision_is_exact()) {
     /* An x86 host whose long double is not extended would make every
        comparison below meaningless. Fail rather than skip: on this

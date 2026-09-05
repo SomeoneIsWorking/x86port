@@ -25,12 +25,11 @@ static void set_bit(uint32_t *w, uint32_t bit, int on) {
 }
 
 /*
- * OF, which the SDM leaves undefined for all six and which this CPU computes:
- * it is the signed overflow of the LAST adjustment the instruction actually
- * performed, exactly as if that +6 or +0x60 had been an ordinary ADD -- and
- * nothing at all when no adjustment happened.
+ * OF is undefined for all six forms. The deterministic policy derived from the
+ * original reference host models it as signed overflow of the last adjustment
+ * actually performed, or clear when no adjustment happened.
  *
- * DERIVED FROM THE SILICON, not from a document. The obvious reading, "OF says
+ * The obvious reading, "OF says
  * the sign changed", fits every case in the first sweep except DAA on 0x9A,
  * where the value wraps from 0x9A to 0x00 across two adjustments and the sign
  * plainly changes while the hardware reports no overflow. See
@@ -153,9 +152,8 @@ int x86p_bcd_apply(X86pBcdOp op, uint16_t *ax, uint32_t *eflags, uint8_t imm) {
       set_bit(&f, X86P_AF, 0);
       set_bit(&f, X86P_CF, 0);
     }
-    /* SF, ZF and PF are undefined and are written -- from AL as the adjustment
-       left it, BEFORE the low-nibble mask. Masking first would make AAA on
-       AL = 0x0A report zero, and the hardware does not. */
+    /* SF, ZF and PF are undefined. The deterministic policy derives them from
+       AL before the low-nibble mask, matching the original reference host. */
     set_result_flags(&f, al);
     /* ... except SF, which is bit 15 of the WHOLE AX, not the sign of AL.
        AAS on AX = 0x0009 with AF set leaves AX = 0xFF03: AL is positive and
@@ -173,22 +171,18 @@ int x86p_bcd_apply(X86pBcdOp op, uint16_t *ax, uint32_t *eflags, uint8_t imm) {
     ah = (uint8_t)(al / imm);
     al = (uint8_t)(al % imm);
     set_result_flags(&f, al);
-    /* CF, AF and OF are undefined for AAM and AAD, and this CPU CLEARS all
-       three rather than preserving them. Measured; preserving was the first
-       guess and it was wrong on every input that arrived with one set. */
+    /* CF, AF and OF are undefined. The deterministic reference-host policy
+       clears all three for AAM. */
     f &= ~(uint32_t)(X86P_CF | X86P_AF | X86P_OF);
     break;
   case kX86pBcdAad: {
-    /* CF and AF are undefined for AAD and are NOT cleared: they are the carry
-       and half-carry of the addition the instruction performs, exactly as if
-       it were an ordinary ADD. Measured -- clearing them was right for AAM,
-       whose operation is a division, and wrong here. */
+    /* CF and AF are undefined for AAD. The deterministic policy derives them
+       from the internal addition. */
     const unsigned addend = (unsigned)((uint8_t)(ah * imm));
     const unsigned sum = (unsigned)al + addend;
     set_bit(&f, X86P_CF, sum > 0xFFu);
     set_bit(&f, X86P_AF, ((al & 0x0Fu) + (addend & 0x0Fu)) > 0x0Fu);
-    /* OF too: the signed overflow of that same addition. Every flag AAD leaves
-       undefined turns out to be the flag an ADD would have left. */
+    /* OF follows signed overflow of that same addition. */
     set_bit(&f, X86P_OF, ((al ^ (uint8_t)sum) & (addend ^ (uint8_t)sum) & 0x80u) != 0u);
     al = (uint8_t)sum;
     ah = 0u;

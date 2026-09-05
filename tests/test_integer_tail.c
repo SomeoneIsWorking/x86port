@@ -2,13 +2,10 @@
  * test_integer_tail.c -- the decimal adjusts, the bit tests, the double
  * shifts, SAHF/LAHF and the rest, against the host CPU.
  *
- * These are the instructions the SDM describes with the most "undefined"s, and
- * "undefined" describes the specification rather than the silicon: this CPU
- * does something definite with OF after DAA, and a guest that pushes EFLAGS
- * can see it. So the comparison here is the WHOLE flags word, every bit the
- * model claims to carry, not the subset the manual promises -- which is the
- * discipline that found four defects in flags.c and is the only way to learn
- * what the undefined bits actually are.
+ * These are the instructions the SDM describes with the most "undefined"s.
+ * Every architectural result and defined flag is a pass/fail contract.
+ * Undefined flag values are measured with a denominator, but differences are
+ * observations about the current CPU rather than portable failures.
  *
  * The oracle assembles each instruction into an executable page and runs it on
  * real registers with a controlled incoming EFLAGS. If it never runs -- a
@@ -30,6 +27,8 @@ static unsigned long g_checks;
 static unsigned long g_failed;
 static unsigned long g_oracle_runs;
 static unsigned long g_reported;
+static unsigned long g_undefined_flag_cases;
+static unsigned long g_undefined_flag_differences;
 
 #define BASE 0x00040000u
 #define MEMSZ 512u
@@ -73,7 +72,9 @@ typedef struct Regs {
 typedef enum HostMode { kModeLong = 0, kModeCompat32 } HostMode;
 
 typedef struct LowPage {
-  uint8_t code[2048];
+  /* One complete page keeps generated code separate from writable oracle
+     state, so each run can enforce W^X with mprotect. */
+  uint8_t code[4096];
   uint8_t scratch[256];
   Regs slot;
   uint64_t saved_rsp;
@@ -97,12 +98,7 @@ static int page_ready(void) {
     return 0;
   }
   if (!g_low) {
-    void *p = mmap(NULL,
-                   sizeof(LowPage) + 4096u,
-                   PROT_READ | PROT_WRITE | PROT_EXEC,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
-                   -1,
-                   0);
+    void *p = mmap(NULL, sizeof(LowPage), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
     if (p == MAP_FAILED || (uintptr_t)p >= 0x80000000u) {
       /* Without a low mapping the compat path cannot run at all, and running
          only the long-mode half while reporting a pass would be the silent
@@ -136,6 +132,23 @@ static void emit(Asm *a, const void *bytes, unsigned n) {
 
 static void emit_u32(Asm *a, uint32_t v) {
   emit(a, &v, 4u);
+}
+
+static int make_code_writable(void) {
+  return mprotect(g_low->code, sizeof g_low->code, PROT_READ | PROT_WRITE) == 0;
+}
+
+static int execute_code(void) {
+  union {
+    void *object;
+    void (*function)(void);
+  } target = {.object = g_low->code};
+  __builtin___clear_cache((char *)g_low->code, (char *)g_low->code + sizeof g_low->code);
+  if (mprotect(g_low->code, sizeof g_low->code, PROT_READ | PROT_EXEC) != 0) {
+    return 0;
+  }
+  target.function();
+  return 1;
 }
 
 /* MOV r/m16, Sreg (8C /r) and MOV Sreg, r/m16 (8E /r), against an absolute
@@ -208,10 +221,9 @@ static void emit_body(Asm *a, uint32_t slot, const uint8_t *code, unsigned len) 
  */
 static int run_host(const uint8_t *code, unsigned len, Regs *r, HostMode mode) {
   Asm a;
-  void (*fn)(void);
   uint32_t slot;
 
-  if (!page_ready()) {
+  if (!page_ready() || !make_code_writable()) {
     return 0;
   }
   slot = (uint32_t)(uintptr_t)&g_low->slot;
@@ -273,16 +285,18 @@ static int run_host(const uint8_t *code, unsigned len, Regs *r, HostMode mode) {
     emit_body(&a, slot, code, len);
     E(&a, 0xCBu); /* lret, back to the 64-bit caller above */
 
-    memcpy(&fn, &g_low, sizeof fn);
-    fn();
+    if (!execute_code()) {
+      return 0;
+    }
     *r = g_low->slot;
     g_oracle_runs++;
     return 1;
   }
 
   E(&a, 0x5Du, 0x5Bu, 0xC3u); /* pop rbp, rbx; ret */
-  memcpy(&fn, &g_low, sizeof fn);
-  fn();
+  if (!execute_code()) {
+    return 0;
+  }
   *r = g_low->slot;
   g_oracle_runs++;
   return 1;
@@ -328,6 +342,7 @@ static void compare(const char *what,
                     unsigned len,
                     const Regs *start,
                     HostMode mode,
+                    uint32_t defined_flags,
                     int expect_refusal,
                     unsigned memlen) {
   Regs host = *start;
@@ -449,14 +464,20 @@ static void compare(const char *what,
 
   hf = host.eflags & COMPARED_FLAGS;
   mf = x86p_eflags(&cpu.flags) & COMPARED_FLAGS;
+  if ((COMPARED_FLAGS & ~defined_flags) != 0u) {
+    g_undefined_flag_cases++;
+    if ((hf & ~defined_flags) != (mf & ~defined_flags)) {
+      g_undefined_flag_differences++;
+    }
+  }
   g_checks++;
-  if (hf != mf) {
-    report(what, start, "EFLAGS", hf, mf);
+  if ((hf & defined_flags) != (mf & defined_flags)) {
+    report(what, start, "defined EFLAGS", hf & defined_flags, mf & defined_flags);
   }
 }
 
 /* An instruction whose only operand is a fixed encoding. */
-static void sweep_simple(const char *what, const uint8_t *code, unsigned len, HostMode mode) {
+static void sweep_simple(const char *what, const uint8_t *code, unsigned len, HostMode mode, uint32_t defined_flags) {
   static const uint32_t kEax[] = {0x00000000u,
                                   0x00000009u,
                                   0x0000000Au,
@@ -493,7 +514,7 @@ static void sweep_simple(const char *what, const uint8_t *code, unsigned len, Ho
       r.ebx = BASE + MEM_OPERAND_OFF;
       r.edx = 0xDEADBEEFu;
       r.eflags = kFlags[f];
-      compare(what, code, len, &r, mode, 0, 0u);
+      compare(what, code, len, &r, mode, defined_flags, 0, 0u);
     }
   }
 }
@@ -537,7 +558,7 @@ static void sweep_addr16(const char *what, const uint8_t *code, unsigned len) {
       r.edi = kVals[(i + 3u) % (sizeof kVals / sizeof kVals[0])];
       r.eax = 0xCCCCCCCCu;
       r.eflags = 0x00000002u;
-      compare(what, code, len, &r, kModeCompat32, 0, 0u);
+      compare(what, code, len, &r, kModeCompat32, COMPARED_FLAGS, 0, 0u);
     }
   }
 }
@@ -547,7 +568,30 @@ static void sweep_addr16(const char *what, const uint8_t *code, unsigned len) {
 /* Two-operand sweeps for the shifts and bit tests, over values chosen to cross
    every boundary these instructions have: a sign bit, a zero result, a count
    at each end of its range. */
-static void sweep_two(const char *what, const uint8_t *code, unsigned len, unsigned undefined_from) {
+typedef enum FlagRule { kFlagsDoubleShift, kFlagsBitTest } FlagRule;
+
+static uint32_t two_defined_flags(FlagRule rule, uint32_t count, unsigned bits) {
+  if (rule == kFlagsBitTest) {
+    return X86P_CF;
+  }
+  count &= 0x1Fu;
+  if (count == 0u) {
+    return COMPARED_FLAGS;
+  }
+  {
+    uint32_t flags = X86P_PF | X86P_ZF | X86P_SF;
+    if (count < bits) {
+      flags |= X86P_CF;
+    }
+    if (count == 1u) {
+      flags |= X86P_OF;
+    }
+    return flags;
+  }
+}
+
+static void
+sweep_two(const char *what, const uint8_t *code, unsigned len, unsigned undefined_from, FlagRule flag_rule) {
   static const uint32_t kVals[] = {0x00000000u, 0x00000001u, 0x80000000u, 0xFFFFFFFFu, 0x12345678u, 0xA5A5A5A5u};
   static const uint32_t kCounts[] = {0u, 1u, 7u, 15u, 16u, 31u, 32u, 33u};
   unsigned d, s, k;
@@ -561,7 +605,15 @@ static void sweep_two(const char *what, const uint8_t *code, unsigned len, unsig
         r.ecx = kCounts[k];
         r.ebx = BASE + MEM_OPERAND_OFF;
         r.eflags = 0x00000002u;
-        compare(what, code, len, &r, kModeLong, undefined_from != 0u && (kCounts[k] & 31u) >= undefined_from, 0u);
+        const unsigned bits = undefined_from != 0u ? undefined_from : 32u;
+        compare(what,
+                code,
+                len,
+                &r,
+                kModeLong,
+                two_defined_flags(flag_rule, kCounts[k], bits),
+                undefined_from != 0u && (kCounts[k] & 31u) >= undefined_from,
+                0u);
       }
     }
   }
@@ -595,7 +647,7 @@ static void sweep_bit_string(const char *what, const uint8_t *code, unsigned len
     r.ebx = (uint32_t)(uintptr_t)(g_low->scratch + SHARED_WINDOW / 2u);
     r.eax = (uint32_t)kOffs[i];
     r.eflags = 0x00000002u;
-    compare(what, code, len, &r, kModeLong, 0, SHARED_WINDOW);
+    compare(what, code, len, &r, kModeLong, X86P_CF, 0, SHARED_WINDOW);
   }
 }
 
@@ -647,47 +699,54 @@ int main(void) {
 
   printf("test the integer tail against the host CPU\n");
 
-#define SIMPLE(x) sweep_simple(#x, k_##x, (unsigned)sizeof k_##x, kModeLong)
+#if defined(__APPLE__)
+  printf("SKIP: this oracle requires Linux x86-64 compatibility mode for 32-bit-only decimal-adjust instructions\n");
+  return 77;
+#endif
+
+#define SIMPLE(x, flags) sweep_simple(#x, k_##x, (unsigned)sizeof k_##x, kModeLong, (flags))
 /* The seven long mode dropped. Same sweep, entered through a 32-bit code
    segment; if that path cannot be set up the run refuses rather than quietly
    testing only the other half. */
-#define COMPAT(x) sweep_simple(#x, k_##x, (unsigned)sizeof k_##x, kModeCompat32)
-  COMPAT(daa);
-  COMPAT(das);
-  COMPAT(aaa);
-  COMPAT(aas);
-  COMPAT(aam);
-  COMPAT(aam7);
-  COMPAT(aad);
-  COMPAT(aad7);
-  COMPAT(salc);
+#define COMPAT(x, flags) sweep_simple(#x, k_##x, (unsigned)sizeof k_##x, kModeCompat32, (flags))
+  COMPAT(daa, COMPARED_FLAGS & ~X86P_OF);
+  COMPAT(das, COMPARED_FLAGS & ~X86P_OF);
+  COMPAT(aaa, X86P_CF | X86P_AF);
+  COMPAT(aas, X86P_CF | X86P_AF);
+  COMPAT(aam, X86P_PF | X86P_ZF | X86P_SF);
+  COMPAT(aam7, X86P_PF | X86P_ZF | X86P_SF);
+  COMPAT(aad, X86P_PF | X86P_ZF | X86P_SF);
+  COMPAT(aad7, X86P_PF | X86P_ZF | X86P_SF);
+  COMPAT(salc, COMPARED_FLAGS);
 #undef COMPAT
-  SIMPLE(sahf);
-  SIMPLE(lahf);
-  SIMPLE(stc);
-  SIMPLE(clc);
-  SIMPLE(cmc);
+  SIMPLE(sahf, COMPARED_FLAGS);
+  SIMPLE(lahf, COMPARED_FLAGS);
+  SIMPLE(stc, COMPARED_FLAGS);
+  SIMPLE(clc, COMPARED_FLAGS);
+  SIMPLE(cmc, COMPARED_FLAGS);
 #undef SIMPLE
 /* The 16-bit double shifts have a count of sixteen or more outside their
    defined domain; every other form here is defined for every masked count. */
-#define TWO(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 0u)
-#define TWO16(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 16u)
-  TWO(shld_cl);
-  TWO(shrd_cl);
-  TWO(shld_i);
-  TWO(shrd_i);
-  TWO16(shld16);
-  TWO16(shrd16);
-  TWO(bt);
-  TWO(bts);
-  TWO(btr);
-  TWO(btc);
-  TWO(bt_i);
-  TWO(bts_i);
-  TWO(btr_i);
-  TWO(btc_i);
-#undef TWO
-#undef TWO16
+#define SHIFT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 0u, kFlagsDoubleShift)
+#define SHIFT16(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 16u, kFlagsDoubleShift)
+#define BIT(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, 0u, kFlagsBitTest)
+  SHIFT(shld_cl);
+  SHIFT(shrd_cl);
+  SHIFT(shld_i);
+  SHIFT(shrd_i);
+  SHIFT16(shld16);
+  SHIFT16(shrd16);
+  BIT(bt);
+  BIT(bts);
+  BIT(btr);
+  BIT(btc);
+  BIT(bt_i);
+  BIT(bts_i);
+  BIT(btr_i);
+  BIT(btc_i);
+#undef BIT
+#undef SHIFT16
+#undef SHIFT
 #define STRING(x) sweep_bit_string(#x, k_##x, (unsigned)sizeof k_##x)
   STRING(bt_m);
   STRING(bts_m);
@@ -716,6 +775,9 @@ int main(void) {
          g_checks,
          g_failed,
          g_failed > 20u ? " (first 20 shown)" : "");
+  printf("undefined flags differed in %lu/%lu comparison(s); these observations are not architectural failures\n",
+         g_undefined_flag_differences,
+         g_undefined_flag_cases);
   return g_failed ? 1 : 0;
 }
 

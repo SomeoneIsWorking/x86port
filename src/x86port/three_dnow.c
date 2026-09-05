@@ -1,8 +1,8 @@
 /* three_dnow.c -- see three_dnow.h for why this is the first thing x86port owns. */
 #include "three_dnow.h"
 
+#include <stdint.h>
 #include <string.h>
-#include <strings.h> /* strcasecmp -- x86p_3dnow_parse */
 
 /* One table, in enum order, so the name lookup and the parser cannot disagree
    about a spelling and a new opcode cannot acquire a route without a name. */
@@ -37,19 +37,39 @@ static const struct {
     {"PFCPIT1", kX86pPfRcpIt1}, /* zydis 4.1's spelling of PFRCPIT1 */
 };
 
+/* Mnemonics are ASCII by definition. Keeping this comparison local avoids
+   POSIX strcasecmp, the locale-dependent behavior of tolower, and a separate
+   Windows spelling of the same parser rule. */
+static int mnemonic_equal(const char *a, const char *b) {
+  while (*a != '\0' && *b != '\0') {
+    uint8_t ac = (uint8_t)*a++;
+    uint8_t bc = (uint8_t)*b++;
+    if (ac >= (uint8_t)'a' && ac <= (uint8_t)'z') {
+      ac = (uint8_t)(ac - (uint8_t)'a' + (uint8_t)'A');
+    }
+    if (bc >= (uint8_t)'a' && bc <= (uint8_t)'z') {
+      bc = (uint8_t)(bc - (uint8_t)'a' + (uint8_t)'A');
+    }
+    if (ac != bc) {
+      return 0;
+    }
+  }
+  return *a == *b;
+}
+
 int x86p_3dnow_parse(const char *mnemonic, X86pPfOp *out) {
   int i;
   if (!mnemonic || !*mnemonic || !out) {
     return 0;
   }
   for (i = 0; i < (int)kX86pPfCount; i++) {
-    if (strcasecmp(mnemonic, kNames[i]) == 0) {
+    if (mnemonic_equal(mnemonic, kNames[i])) {
       *out = (X86pPfOp)i;
       return 1;
     }
   }
   for (i = 0; i < (int)(sizeof kAliases / sizeof kAliases[0]); i++) {
-    if (strcasecmp(mnemonic, kAliases[i].alias) == 0) {
+    if (mnemonic_equal(mnemonic, kAliases[i].alias)) {
       *out = kAliases[i].op;
       return 1;
     }

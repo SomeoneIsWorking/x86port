@@ -1,5 +1,6 @@
 #include "x87_transcendental.h"
 
+#include <float.h>
 #include <string.h>
 
 static const char *kNames[] = {"FSQRT",
@@ -27,7 +28,7 @@ const char *x86p_x87_fn_name(X86pX87Fn fn) {
   return kNames[fn];
 }
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
 #define HAVE_X87 1
 #else
 #define HAVE_X87 0

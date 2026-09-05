@@ -10,7 +10,9 @@
  * independently. Integer-source forms (FILD/FIST/FICOM...), FLD m80,
  * register/implicit compares, FLDCW and memory-form FNSTSW are refused until
  * they have native emitters. FNSTSW AX and FNCLEX are emitted through their
- * canonical status owners.
+ * canonical status owners. Value-dependent forms are also refused when the
+ * host compiler does not provide x87-format long double; status-only forms and
+ * pointer/integer helper boundaries remain available on Win64.
  */
 #ifndef X86PORT_JIT_X64_X87_H
 #define X86PORT_JIT_X64_X87_H

@@ -4,8 +4,10 @@
  * test_flags proved the flag derivation given a result. It could not prove the
  * results themselves, because it fed hardware's own result back into the model
  * -- correct for a flags module, and a gap the moment there is an ALU. This
- * closes it: the model computes the result AND the flags from the inputs alone,
- * and both are compared against what the instruction actually did.
+ * closes it: the model computes the result and flags from the inputs alone.
+ * Results and architecturally defined flags are compared for correctness;
+ * undefined flag variation is counted separately rather than treated as a
+ * portable CPU contract.
  *
  * Byte width is exhaustive; 32-bit is deterministic boundary-crossed sampling.
  * Shift and rotate counts run past the operand width on purpose, because the
@@ -21,8 +23,6 @@
 static int g_checks;
 static int g_failed;
 static int g_test_failed;
-static unsigned long g_hw_cases;
-static unsigned long g_hw_mismatch;
 
 #define CHECK(cond)                                                                                                    \
   do {                                                                                                                 \
@@ -65,7 +65,11 @@ static void test_every_op_is_named(void) {
   int i, named = 0;
   for (i = 0; i < (int)kX86pAluOpCount; i++) {
     const char *n = x86p_alu_name((X86pAluOp)i);
-    CHECK(n != NULL && n[0] != '\0');
+    if (n == NULL) {
+      CHECK(n != NULL);
+      continue;
+    }
+    CHECK(n[0] != '\0');
     CHECK(strcmp(n, "unknown") != 0);
     named++;
   }
@@ -163,8 +167,11 @@ static void test_divide_error_is_reported(void) {
 /* Hardware oracle.                                                            */
 /* ------------------------------------------------------------------------- */
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(_WIN32)
 #define HAVE_HW_ORACLE 1
+
+static unsigned long g_hw_cases;
+static unsigned long g_hw_mismatch;
 
 static uint64_t hw_in(uint32_t f) {
   return (uint64_t)((f & X86P_ARITH_FLAGS) | X86P_EFLAGS_FIXED);
@@ -175,20 +182,38 @@ typedef struct Tally {
   unsigned long cases, bad_result, bad_flags;
   uint32_t fa, fb, ffin, fhw_r, fus_r, fhw_f, fus_f;
   int have_first;
+  unsigned long undefined_flag_cases;
+  unsigned long undefined_flag_differences;
 } Tally;
 
-static void
-note(Tally *t, uint32_t a, uint32_t b, uint32_t fin, uint32_t hw_r, uint32_t us_r, uint32_t hw_f, uint32_t us_f) {
+#define TALLY(name) {.op = (name)}
+
+static void note(Tally *t,
+                 uint32_t a,
+                 uint32_t b,
+                 uint32_t fin,
+                 uint32_t hw_r,
+                 uint32_t us_r,
+                 uint32_t hw_f,
+                 uint32_t us_f,
+                 uint32_t defined_flags) {
   int bad = 0;
+  const uint32_t undefined_flags = X86P_ARITH_FLAGS & ~defined_flags;
   t->cases++;
   g_hw_cases++;
   if (hw_r != us_r) {
     t->bad_result++;
     bad = 1;
   }
-  if ((hw_f & X86P_ARITH_FLAGS) != (us_f & X86P_ARITH_FLAGS)) {
+  if ((hw_f & defined_flags) != (us_f & defined_flags)) {
     t->bad_flags++;
     bad = 1;
+  }
+  if (undefined_flags != 0u) {
+    t->undefined_flag_cases++;
+    if ((hw_f & undefined_flags) != (us_f & undefined_flags)) {
+      t->undefined_flag_differences++;
+    }
   }
   if (bad) {
     g_hw_mismatch++;
@@ -206,11 +231,15 @@ note(Tally *t, uint32_t a, uint32_t b, uint32_t fin, uint32_t hw_r, uint32_t us_
 }
 
 static void report(const Tally *t) {
-  printf("    %-5s %9lu case(s), %lu wrong result(s), %lu wrong flag word(s)\n",
+  printf("    %-5s %9lu case(s), %lu wrong result(s), %lu wrong defined-flag word(s)",
          t->op,
          t->cases,
          t->bad_result,
          t->bad_flags);
+  if (t->undefined_flag_cases != 0u) {
+    printf(", %lu/%lu differ only in undefined flags", t->undefined_flag_differences, t->undefined_flag_cases);
+  }
+  printf("\n");
   if (t->have_first) {
     printf("      first: a=%08x b=%08x fin=%03x | result hw=%08x us=%08x | flags hw=%03x us=%03x\n",
            t->fa,
@@ -233,10 +262,13 @@ static void report(const Tally *t) {
   }
 }
 
-#define HW_BIN(fname, insn, ty, sfx)                                                                                   \
-  static uint32_t fname(ty a, ty b, uint32_t fin, ty *out) {                                                           \
+#define X86P_CTYPE_U8 uint8_t
+#define X86P_CTYPE_U32 uint32_t
+
+#define HW_BIN(fname, insn, kind, sfx)                                                                                 \
+  static uint32_t fname(X86P_CTYPE_##kind a, X86P_CTYPE_##kind b, uint32_t fin, X86P_CTYPE_##kind *out) {              \
     uint64_t fo;                                                                                                       \
-    ty r = a;                                                                                                          \
+    X86P_CTYPE_##kind r = a;                                                                                           \
     __asm__ volatile("push %[fi]\n\tpopf\n\t" insn sfx " %[b], %[r]\n\tpushf\n\tpop %[fo]"                             \
                      : [r] "+r"(r), [fo] "=r"(fo)                                                                      \
                      : [b] "r"(b), [fi] "r"(hw_in(fin))                                                                \
@@ -245,10 +277,10 @@ static void report(const Tally *t) {
     return (uint32_t)fo;                                                                                               \
   }
 
-#define HW_UN(fname, insn, ty, sfx)                                                                                    \
-  static uint32_t fname(ty a, uint32_t fin, ty *out) {                                                                 \
+#define HW_UN(fname, insn, kind, sfx)                                                                                  \
+  static uint32_t fname(X86P_CTYPE_##kind a, uint32_t fin, X86P_CTYPE_##kind *out) {                                   \
     uint64_t fo;                                                                                                       \
-    ty r = a;                                                                                                          \
+    X86P_CTYPE_##kind r = a;                                                                                           \
     __asm__ volatile("push %[fi]\n\tpopf\n\t" insn sfx " %[r]\n\tpushf\n\tpop %[fo]"                                   \
                      : [r] "+r"(r), [fo] "=r"(fo)                                                                      \
                      : [fi] "r"(hw_in(fin))                                                                            \
@@ -257,10 +289,10 @@ static void report(const Tally *t) {
     return (uint32_t)fo;                                                                                               \
   }
 
-#define HW_SHIFT(fname, insn, ty, sfx)                                                                                 \
-  static uint32_t fname(ty a, uint8_t n, uint32_t fin, ty *out) {                                                      \
+#define HW_SHIFT(fname, insn, kind, sfx)                                                                               \
+  static uint32_t fname(X86P_CTYPE_##kind a, uint8_t n, uint32_t fin, X86P_CTYPE_##kind *out) {                        \
     uint64_t fo;                                                                                                       \
-    ty r = a;                                                                                                          \
+    X86P_CTYPE_##kind r = a;                                                                                           \
     __asm__ volatile("push %[fi]\n\tpopf\n\t" insn sfx " %%cl, %[r]\n\tpushf\n\tpop %[fo]"                             \
                      : [r] "+r"(r), [fo] "=r"(fo)                                                                      \
                      : [fi] "r"(hw_in(fin)), "c"(n)                                                                    \
@@ -269,37 +301,37 @@ static void report(const Tally *t) {
     return (uint32_t)fo;                                                                                               \
   }
 
-HW_BIN(hw_add8, "add", uint8_t, "b")
-HW_BIN(hw_or8, "or", uint8_t, "b")
-HW_BIN(hw_adc8, "adc", uint8_t, "b")
-HW_BIN(hw_sbb8, "sbb", uint8_t, "b")
-HW_BIN(hw_and8, "and", uint8_t, "b")
-HW_BIN(hw_sub8, "sub", uint8_t, "b")
-HW_BIN(hw_xor8, "xor", uint8_t, "b")
-HW_UN(hw_not8, "not", uint8_t, "b")
-HW_UN(hw_neg8, "neg", uint8_t, "b")
-HW_UN(hw_inc8, "inc", uint8_t, "b")
-HW_UN(hw_dec8, "dec", uint8_t, "b")
-HW_SHIFT(hw_shl8, "shl", uint8_t, "b")
-HW_SHIFT(hw_shr8, "shr", uint8_t, "b")
-HW_SHIFT(hw_sar8, "sar", uint8_t, "b")
-HW_SHIFT(hw_rol8, "rol", uint8_t, "b")
-HW_SHIFT(hw_ror8, "ror", uint8_t, "b")
-HW_SHIFT(hw_rcl8, "rcl", uint8_t, "b")
-HW_SHIFT(hw_rcr8, "rcr", uint8_t, "b")
+HW_BIN(hw_add8, "add", U8, "b")
+HW_BIN(hw_or8, "or", U8, "b")
+HW_BIN(hw_adc8, "adc", U8, "b")
+HW_BIN(hw_sbb8, "sbb", U8, "b")
+HW_BIN(hw_and8, "and", U8, "b")
+HW_BIN(hw_sub8, "sub", U8, "b")
+HW_BIN(hw_xor8, "xor", U8, "b")
+HW_UN(hw_not8, "not", U8, "b")
+HW_UN(hw_neg8, "neg", U8, "b")
+HW_UN(hw_inc8, "inc", U8, "b")
+HW_UN(hw_dec8, "dec", U8, "b")
+HW_SHIFT(hw_shl8, "shl", U8, "b")
+HW_SHIFT(hw_shr8, "shr", U8, "b")
+HW_SHIFT(hw_sar8, "sar", U8, "b")
+HW_SHIFT(hw_rol8, "rol", U8, "b")
+HW_SHIFT(hw_ror8, "ror", U8, "b")
+HW_SHIFT(hw_rcl8, "rcl", U8, "b")
+HW_SHIFT(hw_rcr8, "rcr", U8, "b")
 
-HW_BIN(hw_add32, "add", uint32_t, "l")
-HW_BIN(hw_adc32, "adc", uint32_t, "l")
-HW_BIN(hw_sbb32, "sbb", uint32_t, "l")
-HW_BIN(hw_sub32, "sub", uint32_t, "l")
-HW_BIN(hw_xor32, "xor", uint32_t, "l")
-HW_UN(hw_neg32, "neg", uint32_t, "l")
-HW_UN(hw_inc32, "inc", uint32_t, "l")
-HW_SHIFT(hw_shl32, "shl", uint32_t, "l")
-HW_SHIFT(hw_shr32, "shr", uint32_t, "l")
-HW_SHIFT(hw_sar32, "sar", uint32_t, "l")
-HW_SHIFT(hw_rol32, "rol", uint32_t, "l")
-HW_SHIFT(hw_rcr32, "rcr", uint32_t, "l")
+HW_BIN(hw_add32, "add", U32, "l")
+HW_BIN(hw_adc32, "adc", U32, "l")
+HW_BIN(hw_sbb32, "sbb", U32, "l")
+HW_BIN(hw_sub32, "sub", U32, "l")
+HW_BIN(hw_xor32, "xor", U32, "l")
+HW_UN(hw_neg32, "neg", U32, "l")
+HW_UN(hw_inc32, "inc", U32, "l")
+HW_SHIFT(hw_shl32, "shl", U32, "l")
+HW_SHIFT(hw_shr32, "shr", U32, "l")
+HW_SHIFT(hw_sar32, "sar", U32, "l")
+HW_SHIFT(hw_rol32, "rol", U32, "l")
+HW_SHIFT(hw_rcr32, "rcr", U32, "l")
 
 static void model(X86pAluOp op, uint32_t a, uint32_t b, int w, uint32_t fin, uint32_t *r, uint32_t *fl) {
   X86pFlags f;
@@ -320,6 +352,46 @@ static void model_un(X86pAluUnOp op, uint32_t a, int w, uint32_t fin, uint32_t *
 static const uint32_t kCarries[] = {0, X86P_CF, X86P_AF, X86P_CF | X86P_AF};
 #define NCARRY ((int)(sizeof kCarries / sizeof kCarries[0]))
 
+static uint32_t defined_flags(X86pAluOp op, uint32_t raw_count, int w) {
+  const uint32_t count = raw_count & 0x1Fu;
+  const uint32_t bits = (uint32_t)w * 8u;
+  switch (op) {
+  case kX86pAluOr:
+  case kX86pAluAnd:
+  case kX86pAluXor:
+  case kX86pAluTest:
+    return X86P_ARITH_FLAGS & ~X86P_AF;
+  case kX86pAluShl:
+  case kX86pAluShr:
+  case kX86pAluSar: {
+    uint32_t mask;
+    if (count == 0u) {
+      return X86P_ARITH_FLAGS;
+    }
+    mask = X86P_PF | X86P_ZF | X86P_SF;
+    /* SAR continues shifting out the sign bit after reaching the width.
+       Only SHL/SHR leave CF undefined at and beyond that boundary. */
+    if (op == kX86pAluSar || count < bits) {
+      mask |= X86P_CF;
+    }
+    if (count == 1u) {
+      mask |= X86P_OF;
+    }
+    return mask;
+  }
+  case kX86pAluRol:
+  case kX86pAluRor:
+  case kX86pAluRcl:
+  case kX86pAluRcr:
+    if (count == 0u) {
+      return X86P_ARITH_FLAGS;
+    }
+    return X86P_PF | X86P_AF | X86P_ZF | X86P_SF | X86P_CF | (count == 1u ? X86P_OF : 0u);
+  default:
+    return X86P_ARITH_FLAGS;
+  }
+}
+
 static void test_hw_binary_8bit_exhaustive(void) {
   struct {
     const char *name;
@@ -338,7 +410,7 @@ static void test_hw_binary_8bit_exhaustive(void) {
   int k, ci;
   unsigned ai, bi;
   for (k = 0; k < nops; k++) {
-    Tally t = {ops[k].name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally t = TALLY(ops[k].name);
     for (ci = 0; ci < NCARRY; ci++) {
       for (ai = 0; ai < 256; ai++) {
         for (bi = 0; bi < 256; bi++) {
@@ -346,7 +418,7 @@ static void test_hw_binary_8bit_exhaustive(void) {
           uint32_t hf = ops[k].hw((uint8_t)ai, (uint8_t)bi, kCarries[ci], &hr);
           uint32_t ur, uf;
           model(ops[k].op, ai, bi, 1, kCarries[ci], &ur, &uf);
-          note(&t, ai, bi, kCarries[ci], hr, ur, hf, uf);
+          note(&t, ai, bi, kCarries[ci], hr, ur, hf, uf, defined_flags(ops[k].op, bi, 1));
         }
       }
     }
@@ -369,14 +441,14 @@ static void test_hw_unary_8bit_exhaustive(void) {
   int k, ci;
   unsigned ai;
   for (k = 0; k < nops; k++) {
-    Tally t = {ops[k].name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally t = TALLY(ops[k].name);
     for (ci = 0; ci < NCARRY; ci++) {
       for (ai = 0; ai < 256; ai++) {
         uint8_t hr;
         uint32_t hf = ops[k].hw((uint8_t)ai, kCarries[ci], &hr);
         uint32_t ur, uf;
         model_un(ops[k].op, ai, 1, kCarries[ci], &ur, &uf);
-        note(&t, ai, 0, kCarries[ci], hr, ur, hf, uf);
+        note(&t, ai, 0, kCarries[ci], hr, ur, hf, uf, X86P_ARITH_FLAGS);
       }
     }
     report(&t);
@@ -406,8 +478,12 @@ static void test_hw_shifts_and_rotates_8bit(void) {
   const int nops = (int)(sizeof ops / sizeof ops[0]);
   int k, ci;
   unsigned ai, n;
+  CHECK((defined_flags(kX86pAluSar, 8u, 1) & X86P_CF) != 0u);
+  CHECK((defined_flags(kX86pAluSar, 31u, 1) & X86P_CF) != 0u);
+  CHECK((defined_flags(kX86pAluShl, 8u, 1) & X86P_CF) == 0u);
+  CHECK((defined_flags(kX86pAluShr, 31u, 1) & X86P_CF) == 0u);
   for (k = 0; k < nops; k++) {
-    Tally t = {ops[k].name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally t = TALLY(ops[k].name);
     for (ci = 0; ci < NCARRY; ci++) {
       for (ai = 0; ai < 256; ai++) {
         for (n = 0; n <= 33; n++) {
@@ -415,7 +491,7 @@ static void test_hw_shifts_and_rotates_8bit(void) {
           uint32_t hf = ops[k].hw((uint8_t)ai, (uint8_t)n, kCarries[ci], &hr);
           uint32_t ur, uf;
           model(ops[k].op, ai, n, 1, kCarries[ci], &ur, &uf);
-          note(&t, ai, n, kCarries[ci], hr, ur, hf, uf);
+          note(&t, ai, n, kCarries[ci], hr, ur, hf, uf, defined_flags(ops[k].op, n, 1));
         }
       }
     }
@@ -483,44 +559,44 @@ static void test_hw_32bit(void) {
   values32(vb, &nb);
 
   for (k = 0; k < (int)(sizeof bin / sizeof bin[0]); k++) {
-    Tally t = {bin[k].name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally t = TALLY(bin[k].name);
     for (ci = 0; ci < NCARRY; ci++) {
       for (i = 0; i < na; i++) {
         for (j = 0; j < nb; j++) {
           uint32_t hr, ur, uf;
           uint32_t hf = bin[k].hw(va[i], vb[j], kCarries[ci], &hr);
           model(bin[k].op, va[i], vb[j], 4, kCarries[ci], &ur, &uf);
-          note(&t, va[i], vb[j], kCarries[ci], hr, ur, hf, uf);
+          note(&t, va[i], vb[j], kCarries[ci], hr, ur, hf, uf, defined_flags(bin[k].op, vb[j], 4));
         }
       }
     }
     report(&t);
   }
   for (k = 0; k < (int)(sizeof sh / sizeof sh[0]); k++) {
-    Tally t = {sh[k].name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally t = TALLY(sh[k].name);
     for (ci = 0; ci < NCARRY; ci++) {
       for (i = 0; i < na; i++) {
         for (n = 0; n <= 33; n++) {
           uint32_t hr, ur, uf;
           uint32_t hf = sh[k].hw(va[i], (uint8_t)n, kCarries[ci], &hr);
           model(sh[k].op, va[i], n, 4, kCarries[ci], &ur, &uf);
-          note(&t, va[i], n, kCarries[ci], hr, ur, hf, uf);
+          note(&t, va[i], n, kCarries[ci], hr, ur, hf, uf, defined_flags(sh[k].op, n, 4));
         }
       }
     }
     report(&t);
   }
   {
-    Tally tn = {"NEG", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, ti = {"INC", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Tally tn = TALLY("NEG"), ti = TALLY("INC");
     for (ci = 0; ci < NCARRY; ci++) {
       for (i = 0; i < na; i++) {
         uint32_t hr, ur, uf, hf;
         hf = hw_neg32(va[i], kCarries[ci], &hr);
         model_un(kX86pAluNeg, va[i], 4, kCarries[ci], &ur, &uf);
-        note(&tn, va[i], 0, kCarries[ci], hr, ur, hf, uf);
+        note(&tn, va[i], 0, kCarries[ci], hr, ur, hf, uf, X86P_ARITH_FLAGS);
         hf = hw_inc32(va[i], kCarries[ci], &hr);
         model_un(kX86pAluInc, va[i], 4, kCarries[ci], &ur, &uf);
-        note(&ti, va[i], 0, kCarries[ci], hr, ur, hf, uf);
+        note(&ti, va[i], 0, kCarries[ci], hr, ur, hf, uf, X86P_ARITH_FLAGS);
       }
     }
     report(&tn);
@@ -540,8 +616,8 @@ static void test_hw_32bit(void) {
  */
 static void test_hw_muldiv_8bit(void) {
   unsigned ai, bi;
-  Tally tm = {"MUL", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, ti = {"IMUL", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  Tally td = {"DIV", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, tid = {"IDIV", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  Tally tm = TALLY("MUL"), ti = TALLY("IMUL");
+  Tally td = TALLY("DIV"), tid = TALLY("IDIV");
   unsigned long div_ok = 0, div_faulted = 0;
 
   for (ai = 0; ai < 256; ai++) {
@@ -559,7 +635,7 @@ static void test_hw_muldiv_8bit(void) {
       memset(&f, 0, sizeof f);
       x86p_alu_mul(ai, bi, 1, &lo, &hi, &f);
       uf = x86p_eflags(&f);
-      note(&tm, ai, bi, 0, hax, (uint32_t)((hi << 8) | lo), (uint32_t)hfo, uf);
+      note(&tm, ai, bi, 0, hax, (uint32_t)((hi << 8) | lo), (uint32_t)hfo, uf, X86P_CF | X86P_OF);
 
       /* IMUL r/m8: AX = AL * r/m8, signed */
       __asm__ volatile("push %[fi]\n\tpopf\n\timulb %[b]\n\tpushf\n\tpop %[fo]"
@@ -569,7 +645,7 @@ static void test_hw_muldiv_8bit(void) {
       memset(&f, 0, sizeof f);
       x86p_alu_imul(ai, bi, 1, &lo, &hi, &f);
       uf = x86p_eflags(&f);
-      note(&ti, ai, bi, 0, hax, (uint32_t)((hi << 8) | lo), (uint32_t)hfo, uf);
+      note(&ti, ai, bi, 0, hax, (uint32_t)((hi << 8) | lo), (uint32_t)hfo, uf, X86P_CF | X86P_OF);
 
       /* DIV r/m8: AL = AX / r/m8, AH = remainder. `ai` is the 16-bit dividend's
          high byte paired with a fixed low byte, so quotient overflow is
@@ -584,9 +660,9 @@ static void test_hw_muldiv_8bit(void) {
                            : "=a"(hax), [fo] "=r"(hfo)
                            : "a"(dividend), [b] "q"((uint8_t)bi), [fi] "r"(hw_in(0))
                            : "cc");
-          /* Flags are architecturally undefined after a divide and the model
-             deliberately leaves them alone, so only the RESULT is compared. */
-          note(&td, ai, bi, 0, (uint32_t)hax, (r << 8) | q, 0, 0);
+          /* Flags are architecturally undefined after a divide. Record their
+             variation, but only the result participates in pass/fail. */
+          note(&td, ai, bi, 0, (uint32_t)hax, (r << 8) | q, (uint32_t)hfo, x86p_eflags(&f), 0u);
         } else {
           div_faulted++;
         }
@@ -597,7 +673,7 @@ static void test_hw_muldiv_8bit(void) {
                            : "=a"(hax), [fo] "=r"(hfo)
                            : "a"(dividend), [b] "q"((uint8_t)bi), [fi] "r"(hw_in(0))
                            : "cc");
-          note(&tid, ai, bi, 0, (uint32_t)hax, (r << 8) | q, 0, 0);
+          note(&tid, ai, bi, 0, (uint32_t)hax, (r << 8) | q, (uint32_t)hfo, x86p_eflags(&f), 0u);
         }
       }
     }
@@ -650,7 +726,9 @@ int main(void) {
   RUN(test_hw_32bit);
   RUN(test_hw_muldiv_8bit);
   RUN(test_the_oracle_can_fail);
-  printf("hardware oracle: %lu comparison(s) against a real CPU, %lu mismatch(es)\n", g_hw_cases, g_hw_mismatch);
+  printf("hardware oracle: %lu comparison(s) against a real CPU, %lu mismatch(es) in results or defined flags\n",
+         g_hw_cases,
+         g_hw_mismatch);
   if (g_hw_cases == 0) {
     printf("    FAIL: the oracle compared NOTHING\n");
     g_failed++;

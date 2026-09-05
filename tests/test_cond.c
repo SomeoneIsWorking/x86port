@@ -97,7 +97,7 @@ static void test_complement_pairs(void) {
   CHECK_EQ_U(compared, 8 * 64);
 }
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(_WIN32)
 #define HAVE_HW_ORACLE 1
 
 /*
@@ -180,7 +180,8 @@ static void test_the_oracle_can_fail(void) {
 #endif
 
 static void test_x86p_cond_matches_eflags(void) {
-  static const uint32_t test_values[] = {0, 1, 2, 0x7F, 0x80, 0xFF, 0x7FFF, 0x8000, 0xFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
+  static const uint32_t test_values[] = {
+      0, 1, 2, 0x7F, 0x80, 0xFF, 0x7FFF, 0x8000, 0xFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
   const int nvals = (int)(sizeof test_values / sizeof test_values[0]);
   int cc, k, w_idx, i, j;
   static const int widths[] = {1, 2, 4};

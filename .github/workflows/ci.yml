@@ -23,28 +23,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: 5a04445b593ba18ca768b88a4b47447dc05f3bcc
+          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
-          python-version: "3.13"
+          version: 0.10.12
+          python-version: 3.12.13
+          enable-cache: false
       - name: Install native verification tools
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends clang clang-format clang-tidy cmake ninja-build
-      - name: Configure and build the x64 product and oracle fixtures
+      - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
-        env:
-          CC: clang
-          CXX: clang++
-        run: |
-          cmake -S . -B build/ci/linux-x86-64 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DX86PORT_JITCOMMON_DIR=../jit-common
-          cmake --build build/ci/linux-x86-64 --parallel
-      - name: Run runtime, boundary, differential, and policy tests
-        working-directory: x86port
-        run: ctest --test-dir build/ci/linux-x86-64 --output-on-failure
+        run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64 --cc clang --cxx clang++
 
   macos-x86-64:
     name: macOS x86-64 / Apple Clang
@@ -60,25 +54,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: 5a04445b593ba18ca768b88a4b47447dc05f3bcc
+          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
-          python-version: "3.13"
+          version: 0.10.12
+          python-version: 3.12.13
+          enable-cache: false
       - name: Install native verification tools
         run: |
           brew install llvm ninja
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-      - name: Configure and build the x64 product and oracle fixtures
+      - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
-        env:
-          CC: clang
-          CXX: clang++
+        run: uv run --frozen python tools/verify.py --build-dir build/ci/macos-x86-64 --cc /usr/bin/clang --cxx /usr/bin/clang++
+
+  windows-x86-64:
+    name: Windows x86-64 / clang-cl
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: x86port
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SomeoneIsWorking/jit-common
+          ref: 4512a2054b0ecf737b6dd0b03f23713d23550b3c
+          path: jit-common
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: 0.10.12
+          python-version: 3.12.13
+          enable-cache: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: amd64
+      - name: Verify the MSVC-compatible LLVM toolchain
+        shell: pwsh
         run: |
-          cmake -S . -B build/ci/macos-x86-64 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DX86PORT_JITCOMMON_DIR=../jit-common
-          cmake --build build/ci/macos-x86-64 --parallel
-      - name: Run runtime, boundary, differential, and policy tests
+          where.exe clang-cl
+          where.exe llvm-nm
+          clang-cl --version
+      - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
-        run: ctest --test-dir build/ci/macos-x86-64 --output-on-failure
+        shell: pwsh
+        run: uv run --frozen python tools/verify.py --build-dir build/ci/windows-x86-64 --cc clang-cl --cxx clang-cl

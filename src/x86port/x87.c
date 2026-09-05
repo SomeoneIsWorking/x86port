@@ -4,7 +4,14 @@
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
+
+#if LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
+#define X86P_EXACT_LONG_DOUBLE 1
+#else
+#define X86P_EXACT_LONG_DOUBLE 0
+#endif
 
 static const char *kOpNames[] = {"add", "sub", "mul", "div"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pX87OpCount, "every X86pX87Op needs a name");
@@ -34,7 +41,7 @@ int x86p_x87_precision_is_exact(void) {
   /* 64 mantissa bits and a 15-bit exponent is x87's extended format exactly.
      Anything else -- quad, or a 53-bit double -- computes different low bits
      for values that are not exactly representable. */
-  return LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384;
+  return X86P_EXACT_LONG_DOUBLE;
 }
 
 /*
@@ -47,19 +54,27 @@ int x86p_x87_precision_is_exact(void) {
 #define X87_SIGN_EXP_OFFSET 8u
 
 int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out) {
+#if X86P_EXACT_LONG_DOUBLE
   uint64_t v = 0u;
-  if (!f || !out || n < 0 || n >= X86P_X87_REGS || !x86p_x87_precision_is_exact()) {
+  if (!f || !out || n < 0 || n >= X86P_X87_REGS) {
     return 0;
   }
   memcpy(&v, &f->reg[n], X87_MANTISSA_BYTES);
   *out = v;
   return 1;
+#else
+  (void)f;
+  (void)n;
+  (void)out;
+  return 0;
+#endif
 }
 
 int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v) {
+#if X86P_EXACT_LONG_DOUBLE
   uint16_t sign_exp = 0xFFFFu;
   int i;
-  if (!f || n < 0 || n >= X86P_X87_REGS || !x86p_x87_precision_is_exact()) {
+  if (!f || n < 0 || n >= X86P_X87_REGS) {
     return 0;
   }
   memcpy(&f->reg[n], &v, X87_MANTISSA_BYTES);
@@ -71,6 +86,12 @@ int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v) {
     f->tag[i] = (uint8_t)kX86pX87TagValid;
   }
   return 1;
+#else
+  (void)f;
+  (void)n;
+  (void)v;
+  return 0;
+#endif
 }
 
 void x86p_x87_emms(X86pX87 *f) {
@@ -328,7 +349,7 @@ long double x86p_x87_round(const X86pX87 *f, long double v) {
  * is a library inside someone else's process and must not leave the FPU
  * configured for the guest.
  */
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && X86P_EXACT_LONG_DOUBLE
 #define X86P_X87_HOST_FPU 1
 
 #define HOST_OP(name, insn)                                                                                            \
@@ -558,11 +579,13 @@ long double x86p_x87_from_f80(const uint8_t bytes[10]) {
   if (!bytes) {
     return 0.0L;
   }
-  if (x86p_x87_precision_is_exact() && sizeof(long double) >= 10) {
+#if X86P_EXACT_LONG_DOUBLE
+  {
     long double v = 0.0L;
     memcpy(&v, bytes, 10);
     return v;
   }
+#else
   {
     /* Decoded arithmetically: sign, exponent, and an explicit mantissa whose
        leading bit is part of the stored value rather than implied. */
@@ -582,16 +605,19 @@ long double x86p_x87_from_f80(const uint8_t bytes[10]) {
     v = ldexpl((long double)mant, exp - 16383 - 63);
     return sign < 0 ? -v : v;
   }
+#endif
 }
 
 void x86p_x87_to_f80(long double v, uint8_t bytes[10]) {
   if (!bytes) {
     return;
   }
-  if (x86p_x87_precision_is_exact() && sizeof(long double) >= 10) {
+#if X86P_EXACT_LONG_DOUBLE
+  {
     memcpy(bytes, &v, 10);
     return;
   }
+#else
   {
     int exp2 = 0;
     long double m = frexpl(v < 0 ? -v : v, &exp2);
@@ -611,6 +637,7 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]) {
     bytes[8] = (uint8_t)(e & 0xFF);
     bytes[9] = (uint8_t)(((e >> 8) & 0x7F) | (v < 0 ? 0x80 : 0));
   }
+#endif
 }
 
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out) {
@@ -654,8 +681,8 @@ int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *o
     hi = 2147483647LL;
     break;
   case 8:
-    lo = (-9223372036854775807LL - 1);
-    hi = 9223372036854775807LL;
+    lo = INT64_MIN;
+    hi = INT64_MAX;
     break;
   default:
     return 0;
