@@ -50,15 +50,20 @@ with Clang 22.1.8 for C and C++, exact `jit-common`
 integrating the ARM64 encoder and backend source. This Linux result executes
 the x64 backend and does not qualify ARM64 runtime behavior. The
 Win64 ABI executable positive/negative probe ran locally through `ms_abi`;
-this proves the emitted calling convention on the local host, while actual
-Windows OS evidence still requires its hosted job. Pointer-valued x87 helper
+this proves the emitted calling convention on the local host. The native Windows
+synthetic gate also passes in the hosted run below. Pointer-valued x87 helper
 adapters remove host by-value argument-layout assumptions; they do not solve
 MSVC's narrower register representation.
 
+Evidence: [hosted run 33960632375](https://github.com/SomeoneIsWorking/x86port/actions/runs/33960632375)
+at main commit `8d3840dcaf3b2ce7c717a93c086475b655868efd` passed the Linux x86-64,
+Windows x86-64, and Intel macOS asset-free synthetic gates. These results do not
+qualify complete x87 semantics, ARM64 hosts, or representative consumer gameplay.
+
 | Host | State | Evidence or exact gap |
 | --- | --- | --- |
-| Linux x86-64 | hosted re-verification pending | Run [33959623707](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959623707) exposed an immediate-count oracle defect in SHLD/SHRD after the prior run passed on another host. S002 records the corrected count-source/mask contract and local hardware evidence; a new hosted run is required. |
-| Windows x86-64 | partial; hosted re-verification pending | Run [33959623707](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959623707) compiled successfully and reached every synthetic test; only the x87 control fixture failed because it expected value-bearing translation on binary64 `long double`. That fixture now checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds exercise both branches, not Windows OS conformance. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; hosted re-verification is pending and this host is not release-qualified. |
+| Linux x86-64 | hosted synthetic gate passed | The completed run above verifies S002's corrected SHLD/SHRD count-source/mask contract in the hosted synthetic gate. Complete instruction coverage and representative gameplay remain unqualified. |
+| Windows x86-64 | partial; hosted synthetic gate passed | The completed native Windows run above passes the x87 control fixture, which checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds separately exercise both branches. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; this host is not release-qualified. |
 | macOS x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the Intel Apple Clang product and portable-oracle graph. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the archive boundary recognizes Mach-O's leading C-symbol underscore. This does not qualify Apple Silicon. |
 | macOS arm64 | partial; not release-qualified | The ARM64 emitter/translator was integrated from `b15cc24`. Its recorded local synthetic differential used host binary64 x87 values, so that agreement cannot establish extended-precision fidelity. Shared precision admission now refuses those value-bearing forms. ARM64 runtime CI and renewed conformance evidence are still required. |
 | Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
@@ -94,8 +99,8 @@ OF is undefined above count one and AF is undefined for every nonzero count;
 neither invalidates the other outputs at the width boundary.
 Gap: complete title-required instruction, exception,
 interrupt, and timing coverage has not been demonstrated under the new product
-boundary, and the corrected multi-host oracle policy still needs a hosted
-confirmation run.
+boundary. The corrected multi-host oracle policy passed the hosted run recorded
+under Host CI support; this does not establish complete guest semantics.
 
 ### S003 — test-only interpreter oracle
 
@@ -162,7 +167,7 @@ extended state; status-only operations remain available. A portable f80 owner
 is required for Windows and ARM64 floating-point conformance.
 
 The differential uses the shipping `jit-common` region publication API for
-W^X transitions and instruction-cache coherence. ARM64 caller-saved helper
+W^X transitions and instruction-cache coherence. Gap: ARM64 caller-saved helper
 register lifetimes, macOS execution, Android runtime/package behavior, and
 representative consumer gameplay remain unverified in the merged tree. The
 new backend still duplicates some decode-level policy and semantic helper
