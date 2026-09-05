@@ -71,7 +71,7 @@ static void say(char *buf, unsigned len, const char *fmt, ...) {
    at its EIP. Both translation-time refusal and a mid-block unsupported exit
    use this owner so one path cannot regress to an address-only diagnostic. */
 static void say_unsupported(const X86pMem *mem, uint32_t eip, char *reason, unsigned reason_len) {
-  uint8_t encoded[X86P_MAX_INSN_LEN];
+  uint8_t encoded[X86P_MAX_INSN_LEN] = {0};
   char bytes[X86P_MAX_INSN_LEN * 3u];
   X86pInsn insn;
   uint32_t available = 0u;
@@ -87,7 +87,7 @@ static void say_unsupported(const X86pMem *mem, uint32_t eip, char *reason, unsi
     encoded[available++] = (uint8_t)value;
   }
   length = x86p_decode(encoded, available, &insn);
-  if (length == 0u) {
+  if (length == 0u || length > available) {
     say(reason, reason_len, "unsupported instruction at %08X: bytes could not be decoded", eip);
     return;
   }
@@ -308,11 +308,11 @@ static void *translate_at(
   if (*st != kX86pJitOk) {
     /* Published anyway: the region must not be left writable, whether or not
        anything was written into it. */
-    (void)jc_code_publish(&e->code, e->used);
+    (void)jc_code_publish_range(&e->code, e->used, 0);
     return NULL;
   }
 
-  if (jc_code_publish(&e->code, e->used + blk.host_bytes) != kJcCodeOk) {
+  if (jc_code_publish_range(&e->code, e->used, blk.host_bytes) != kJcCodeOk) {
     *st = kX86pJitOutOfSpace;
     say(reason, reason_len, "code memory (%s) refused to publish %zu bytes", jc_code_mechanism(), blk.host_bytes);
     return NULL;

@@ -11,6 +11,7 @@
 #include "cpu.h"
 #include "decode.h"
 #include "emit_arm64.h"
+#include "jit_x64.h"
 
 #include <stdint.h>
 
@@ -89,5 +90,24 @@ typedef struct BlockCtx {
  * must be refused.
  */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w);
+
+void emit_epilogue(X86pA64Emit *e, uint32_t next_eip, X86pJitExit exit);
+void emit_epilogue_from(X86pA64Emit *e, X86pA64Reg eip_reg, X86pJitExit exit);
+void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
+
+void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+
+void emit_cpu_transfer(BlockCtx *c, uint8_t op);
+
+int simd_bits_is_emittable(const X86pInsn *insn);
+void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+
+int x87_register_is_emittable(const X86pInsn *insn);
+void emit_x87_register(BlockCtx *c, const X86pInsn *insn);
+
+void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+
+int double_shift_is_emittable(const X86pInsn *insn);
+void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 
 #endif /* X86PORT_JIT_ARM64_INTERNAL_H */

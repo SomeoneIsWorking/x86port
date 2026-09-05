@@ -160,7 +160,8 @@ static int operand_writable(const X86pOperand *o) {
  * and jump somewhere fixed and wrong.
  */
 static int is_relative_branch(const X86pInsn *insn) {
-  if (insn->op != (uint8_t)kX86pInsnJmp && insn->op != (uint8_t)kX86pInsnJcc) {
+  if (insn->op != (uint8_t)kX86pInsnJmp && insn->op != (uint8_t)kX86pInsnJcc && insn->op != kX86pInsnLoop &&
+      insn->op != kX86pInsnLoope && insn->op != kX86pInsnLoopne) {
     return 0;
   }
   return insn->operands >= 1 && insn->operand[0].kind == kX86pOperandImm && insn->operand[0].relative;
@@ -276,6 +277,11 @@ static int can_emit(const X86pInsn *insn) {
   switch (insn->op) {
   case kX86pInsnNop:
     return 1;
+  case kX86pInsnShld:
+  case kX86pInsnShrd:
+    return double_shift_is_emittable(insn);
+  case kX86pInsnSimd:
+    return simd_bits_is_emittable(insn);
   case kX86pInsnMov:
     return mov_is_emittable(insn);
   case kX86pInsnMovzx:
@@ -289,34 +295,32 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnSetcc:
     return insn->cond < (uint8_t)kX86pCondCount && insn->operands == 1 && mov_operand_ok(&insn->operand[0], 1, 1);
   case kX86pInsnAlu:
-    if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluSar) {
+    if (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluRcr) {
       /*
-       * SHL, SHR and SAR go through x86p_alu rather than being emitted inline,
+       * Shifts and rotates go through x86p_alu rather than being emitted inline,
        * for the same reason ADC and SBB do: their rules are not a host shift.
        * The count is masked to five bits, a count at or past the operand width
        * has three different answers depending on direction, and a count of ZERO
        * writes no flags AT ALL -- not preserved, not written -- which the lazy
        * model has no kind for and flags.c refuses to record. Reproducing that
-       * here would be a second authority on it. A memory destination stays out
-       * because the call clobbers the host pointer.
+       * here would be a second authority on it. A memory destination's host
+       * pointer survives the call in R12 (see emit_alu), so it is allowed here
+       * too.
        */
-      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
-             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
+      return insn->operands == 2 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
              (insn->operand[1].kind == kX86pOperandImm ||
               (insn->operand[1].kind == kX86pOperandReg && insn->operand[1].reg == kX86pEcx &&
                insn->operand[1].size == 1));
     }
-    /* Rotates are not modelled here at all: they write CF and OF and leave the
-       other four alone, which the lazy model expresses as a whole EFLAGS word. */
     if (insn->alu > (uint8_t)kX86pAluTest) {
       return 0;
     }
-    /* ADC and SBB still call x86p_alu, which takes VALUES -- a memory operand
-       would need the result written back through a pointer the call has
-       clobbered, so they stay register-only for now. */
+    /* ADC and SBB still call x86p_alu, which takes VALUES rather than a
+       pointer to the destination -- emit_alu stashes a memory destination's
+       host pointer in R12 across the call, exactly as the shifts above do. */
     if (insn->alu == (uint8_t)kX86pAluAdc || insn->alu == (uint8_t)kX86pAluSbb) {
-      return insn->operands == 2 && insn->operand[0].kind == kX86pOperandReg &&
-             mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) && insn->operand[1].kind != kX86pOperandMem &&
+      return insn->operands == 2 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) &&
+             (insn->operand[0].kind != kX86pOperandMem || insn->operand[1].kind != kX86pOperandMem) &&
              mov_operand_ok(&insn->operand[1], insn->operand[0].size, 0);
     }
     return mov_is_emittable(insn);
@@ -328,6 +332,12 @@ static int can_emit(const X86pInsn *insn) {
                                    operand_is_imm(&insn->operand[0]));
   case kX86pInsnPop:
     return insn->operands == 1 && operand_writable(&insn->operand[0]);
+  case kX86pInsnRdtsc:
+  case kX86pInsnCpuid:
+  case kX86pInsnCld:
+  case kX86pInsnStd:
+  case kX86pInsnSahf:
+  case kX86pInsnLahf:
   case kX86pInsnPushfd:
   case kX86pInsnPopfd:
     return insn->operands == 0;
@@ -345,8 +355,11 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnIdiv:
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
   case kX86pInsnMul:
-    return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
+    return insn->operands == 1 && mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
   case kX86pInsnImul:
+    if (insn->operands == 1) {
+      return mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
+    }
     return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
            operand_is_reg32(&insn->operand[0]) &&
            (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]));
@@ -364,9 +377,11 @@ static int can_emit(const X86pInsn *insn) {
        the operand really is a memory reference to compute. */
     return insn->operands == 2 && operand_is_reg32(&insn->operand[0]) && insn->operand[1].kind == kX86pOperandMem;
   case kX86pInsnX87:
-    return x87_load_is_emittable(insn) || x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) ||
-           x87_store_mem_is_emittable(insn) || x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) ||
-           x87_status_ax_is_emittable(insn) || x87_clear_exceptions_is_emittable(insn);
+    return x87_register_is_emittable(insn) || x87_fn_is_emittable(insn) || x87_control_is_emittable(insn) ||
+           (insn->x87 == kX86pX87InsnWait && insn->operands == 0) || x87_load_is_emittable(insn) ||
+           x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) || x87_store_mem_is_emittable(insn) ||
+           x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) || x87_status_ax_is_emittable(insn) ||
+           x87_clear_exceptions_is_emittable(insn);
   default:
     return 0;
   }
@@ -375,10 +390,6 @@ static int can_emit(const X86pInsn *insn) {
 /* CMP and TEST compute a result only to derive flags from it. Emitting the
    store anyway would clobber a register the guest still expects to hold its
    original value -- and every flag assertion would still pass. */
-static int alu_writes_dest(uint8_t op) {
-  return op != (uint8_t)kX86pAluCmp && op != (uint8_t)kX86pAluTest;
-}
-
 /* ---- guest memory -------------------------------------------------------- */
 
 /*
@@ -1026,29 +1037,6 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
 /* The shipping emitter calls the canonical widening-multiply semantics after
    capturing the explicit operand. Capturing first is essential for MUL EAX
    and MUL EDX: both implicit destination registers are overwritten. */
-static void jit_mul32(X86pCpu *cpu, uint32_t operand) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  x86p_alu_mul(cpu->reg[kX86pEax], operand, 4, &low, &high, &cpu->flags);
-  cpu->reg[kX86pEax] = low;
-  cpu->reg[kX86pEdx] = high;
-}
-
-static void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  const X86pOperand *operand = &insn->operand[0];
-
-  if (operand->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, operand, insn_eip, 4);
-    x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
-  } else {
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(operand->reg));
-  }
-  x86p_emit_mov_r64_r64(c->e, kX64Rdi, CPU_REG);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_mul32);
-  x86p_emit_call_r64(c->e, kX64Rax);
-}
-
 static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
   uint32_t low = 0u;
   uint32_t high = 0u;
@@ -1300,35 +1288,6 @@ static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kin
   return (int)kind;
 }
 
-static void emit_alu(X86pEmit *e, const X86pInsn *insn) {
-  const X86pOperand *dst = &insn->operand[0];
-  const X86pOperand *src = &insn->operand[1];
-
-  /* Register-only: can_emit keeps memory operands away from ADC and SBB. */
-  const int w = dst->size;
-  emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w); /* a */
-  if (src->kind == kX86pOperandImm) {
-    /* Masked by the DESTINATION width, which is what x86p_alu does to `b`.
-       Not by the immediate's own size: `83 /r` reports size 1 and carries an
-       already sign-extended dword, so masking it to a byte would turn
-       ADD EAX, -1 into ADD EAX, 255. */
-    x86p_emit_mov_r32_imm32(e, kX64Rdx, src->imm & width_mask(w)); /* b */
-  } else {
-    /* At the SOURCE's own width. For the binary operations that is the
-       destination's width, but a shift's count is CL -- one byte -- and
-       loading four would pass the whole of ECX as the count. */
-    emit_load_w(e, kX64Rdx, CPU_REG, reg_off_w(src->reg, src->size), src->size);
-  }
-  x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)insn->alu);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, (uint32_t)w);
-  x86p_emit_lea64(e, kX64R8, CPU_REG, flags_off());
-  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_alu);
-  x86p_emit_call_r64(e, kX64Rax);
-  if (alu_writes_dest(insn->alu)) {
-    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
-  }
-}
-
 static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *dst = &insn->operand[0];
   const X86pOperand *src = &insn->operand[1];
@@ -1428,30 +1387,6 @@ static void emit_prologue(X86pEmit *e) {
   x86p_emit_mov_r64_r64(e, CPU_REG, kX64Rdi);
 }
 
-static void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit) {
-  x86p_emit_store32_imm(e, CPU_REG, eip_off(), next_eip);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
-  x86p_emit_pop_r64(e, CPU_REG);
-  x86p_emit_ret(e);
-}
-
-/* The same exit, but with the guest EIP already computed into a register --
-   which is what a conditional branch produces. */
-static void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit) {
-  x86p_emit_store32(e, CPU_REG, eip_off(), eip_reg);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, (uint32_t)exit);
-  x86p_emit_pop_r64(e, CPU_REG);
-  x86p_emit_ret(e);
-}
-
-/*
- * A conditional branch, emitted WITHOUT a forward jump.
- *
- * x86p_cond(cc, &cpu->flags) is the canonical condition evaluator. Both candidate addresses are then
- * materialised and CMOVcc selects between them, so there is no branch to patch
- * and no fixup list to forget to apply. `mov` does not disturb flags, so the
- * ZF that TEST set is still live at the CMOV.
- */
 static void emit_condition_value(X86pEmit *e, uint8_t cond) {
   x86p_emit_mov_r32_imm32(e, kX64Rdi, (uint32_t)cond);
   x86p_emit_lea64(e, kX64Rsi, CPU_REG, flags_off());
@@ -1688,6 +1623,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       uint32_t target = next + insn.operand[0].imm;
       if (insn.op == (uint8_t)kX86pInsnJmp) {
         emit_epilogue(&e, target, kX86pJitExitBlockEnd);
+      } else if (insn.op != kX86pInsnJcc) {
+        emit_loop(&ctx, &insn, target, next);
       } else {
         emit_jcc(&e, insn.cond, target, next);
       }
@@ -1699,6 +1636,14 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 
     switch (insn.op) {
     case kX86pInsnNop:
+      break;
+    case kX86pInsnShld:
+    case kX86pInsnShrd:
+      emit_double_shift(&ctx, &insn, pc);
+      last_kind = -1;
+      break;
+    case kX86pInsnSimd:
+      emit_simd_bits(&ctx, &insn, pc);
       break;
     case kX86pInsnMov:
       emit_mov(&ctx, &insn, pc);
@@ -1747,7 +1692,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       last_kind = -1;
       break;
     case kX86pInsnImul:
-      emit_imul32(&ctx, &insn, pc);
+      if (insn.operands == 1) {
+        emit_mul32(&ctx, &insn, pc);
+      } else {
+        emit_imul32(&ctx, &insn, pc);
+      }
       /* The semantic owner materialises CF/OF into explicit flags. */
       last_kind = -1;
       break;
@@ -1761,7 +1710,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       /* FLD, FCOM/FCOMP against memory, the FADD/FSUB/FMUL/FDIV family, and
          FST/FSTP (to register or memory) reach here; none write EFLAGS, so
          last_kind -- the predecessor for the next carry-in -- is unchanged. */
-      if (x87_arith_is_emittable(&insn)) {
+      if (x87_register_is_emittable(&insn)) {
+        emit_x87_register(&ctx, &insn);
+      } else if (x87_fn_is_emittable(&insn)) {
+        emit_x87_fn(&ctx, &insn);
+      } else if (x87_control_is_emittable(&insn)) {
+        emit_x87_control(&ctx, &insn, pc);
+      } else if (x87_arith_is_emittable(&insn)) {
         emit_x87_arith(&ctx, &insn, pc);
       } else if (x87_compare_mem_is_emittable(&insn)) {
         emit_x87_compare_mem(&ctx, &insn, pc);
@@ -1784,6 +1739,17 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnPop:
       emit_pop(&ctx, &insn, pc);
+      break;
+    case kX86pInsnRdtsc:
+    case kX86pInsnCpuid:
+    case kX86pInsnCld:
+    case kX86pInsnStd:
+    case kX86pInsnSahf:
+    case kX86pInsnLahf:
+      emit_cpu_transfer(&ctx, insn.op);
+      if (insn.op == kX86pInsnSahf) {
+        last_kind = (int)kX86pFlagsExplicit;
+      }
       break;
     case kX86pInsnPushfd:
       emit_pushfd(&ctx, pc);
@@ -1808,8 +1774,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_kind = (int)kind;
         }
       } else {
-        emit_alu(&e, &insn);
-        if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluSar) {
+        emit_alu_helper(&ctx, &insn, pc);
+        if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluRcr) {
           /* A shift's recorded kind depends on its COUNT, which is not known
              until the block runs: a zero count writes no flags, leaving
              whatever was there. Genuinely unknown, so the next carry-in asks

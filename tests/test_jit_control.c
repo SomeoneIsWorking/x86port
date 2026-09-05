@@ -792,11 +792,11 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
 
   memset(fixture->guest, 0x90, sizeof fixture->guest);
   fixture->guest[0] = 0xD8u;
-  fixture->guest[1] = 0xD9u; /* FCOMP ST(1): deliberately outside this memory milestone. */
+  fixture->guest[1] = 0xD9u; /* FCOMP ST(1) now shares the register-stack owner. */
   append_stopper(fixture->guest + 2u);
   translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
-  CHECK(translation == kX86pJitUnsupportedAtEntry);
-  CHECK(strstr(reason, "FCOMP") != NULL);
+  CHECK(translation == kX86pJitOk);
+  compare_one_success(fixture, initial, 2u, 1);
 }
 
 static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixture) {

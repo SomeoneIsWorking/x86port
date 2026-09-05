@@ -34,7 +34,7 @@ dispatcher alone may enter a bounded fallback for a refused or unsafe block.
 | Test interpreter | Sequential decode/execute oracle, linked only into the separate framework-test target | `src/x86port/exec.{h,c}` | `x86p_step` | `migration.md` |
 | Product JIT dispatcher | Block lookup, translation, bounded run exits, interception, profiling, invalidation, and the only legal fallback entry/telemetry boundary | `src/x86port/jit_engine.{h,c}`, `src/x86port/jit_profile.{h,c}`; future cohesive fallback module | `x86p_jit_engine_run` | `migration.md` |
 | x64 backend | x86-32 basic-block lowering and x86-64 machine-code emission | `src/x86port/jit_x64.{h,c}`, `src/x86port/jit_x64_internal.h`, `src/x86port/jit_x64_x87.{h,c}`, `src/x86port/emit_x64.{h,c}` | `x86p_jit_translate` | `migration.md` |
-| ARM64 backend | ARM64 lowering and emission behind the same product dispatcher contract | Future cohesive modules under `src/x86port/` | Product-backend interface | `migration.md` |
+| ARM64 backend | ARM64 lowering and emission behind the same product dispatcher contract | `src/x86port/jit_arm64*.c`, `src/x86port/emit_arm64.{h,c}` | `x86p_jit_translate` | `migration.md` |
 | Runtime configuration | Explicit typed instance options; no product environment selector | Cohesive configuration module under `src/x86port/` | Product creation API | `migration.md` |
 | Library diagnostics | One configurable sink for fatal library-contract reports; recoverable guest/runtime outcomes remain typed statuses | `src/x86port/diagnostic.{h,c}` | `x86p_diagnostic_set_sink`, `x86p_diagnostic_report`, `x86p_diagnostic_fatalf` | `migration.md` |
 | Framework verification | Unit, hardware-oracle, differential, product-only runtime, link-boundary, and architecture tests | `tests/`, `tools/verify_product_boundary.py`, `tools/x86port_checks/` | CTest targets | `project-state.md` |
@@ -72,3 +72,15 @@ source ownership count.
   the consuming game.
 - An abstraction moves to `jit-common` only after a second platform framework
   proves the same contract; until then it remains in its concrete owner.
+
+The backend `jit_*_alu.c`, `jit_*_simd.c`, `jit_*_branch.c` and
+`jit_*_x87_register.c` files own their cohesive lowering families. They emit
+host operations or calls to narrow CPU semantic functions, never the test
+interpreter dispatcher. `cpu.c` owns status transfers and counted-loop state;
+`simd_packed.c` owns default-environment packed arithmetic shared with the
+oracle. `x87_integer.c`, `x87_register.c`, and `x87_fn_stack.c` own conversion,
+register and stack rules. `x87_softfloat.cpp` owns the binary80 software math
+bridge, and `x87_softfloat_atan.cpp` is the attributed approximation extension.
+`cmake/softfloat.cmake` pins and builds that math dependency without Bochs's CPU
+or instruction dispatcher; provenance and limitations live in
+`docs/prior-art.md` and `docs/project-state.md`.

@@ -34,7 +34,7 @@ const char *x86p_x87_fn_name(X86pX87Fn fn) {
 #endif
 
 int x86p_x87_fn_available(void) {
-  return HAVE_X87;
+  return 1;
 }
 
 #if HAVE_X87
@@ -165,13 +165,6 @@ int x86p_x87_fn(
   }
   return 1;
 #else
-  (void)fn;
-  (void)a;
-  (void)b;
-  (void)r0;
-  (void)r1;
-  (void)pushed;
-  (void)status;
-  return 0;
+  return x86p_x87_fn_software(fn, a, b, r0, r1, pushed, status);
 #endif
 }

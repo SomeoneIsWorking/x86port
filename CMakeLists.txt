@@ -50,12 +50,22 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_arm64.c
+    src/x86port/jit_arm64_alu.c
+    src/x86port/jit_arm64_branch.c
+    src/x86port/jit_arm64_simd.c
+    src/x86port/jit_arm64_x87_register.c
     src/x86port/jit_arm64_x87.c)
 else()
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_x64.c
+    src/x86port/jit_x64_alu.c
+    src/x86port/jit_x64_branch.c
+    src/x86port/jit_x64_simd.c
+    src/x86port/jit_x64_x87_register.c
     src/x86port/jit_x64_x87.c)
 endif()
+
+include(cmake/softfloat.cmake)
 
 add_library(x86port_runtime STATIC
   src/x86port/diagnostic.c
@@ -68,6 +78,7 @@ add_library(x86port_runtime STATIC
   src/x86port/simd.c
   src/x86port/simd_int.c
   src/x86port/simd_float.c
+  src/x86port/simd_packed.c
   src/x86port/three_dnow.c
   src/x86port/decode.c
   src/x86port/flags.c
@@ -76,11 +87,16 @@ add_library(x86port_runtime STATIC
   src/x86port/cond.c
   src/x86port/x87.c
   src/x86port/x87_transcendental.c
+  src/x86port/x87_softfloat.cpp
+  src/x86port/x87_fn_stack.c
+  src/x86port/x87_integer.c
+  src/x86port/x87_register.c
   src/x86port/emit_x64.c
   src/x86port/emit_arm64.c
   ${X86P_JIT_BACKEND_SOURCES}
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
+target_link_libraries(x86port_runtime PRIVATE x86p_softfloat)
 add_library(x86port ALIAS x86port_runtime)
 target_include_directories(x86port_runtime PUBLIC src/x86port)
 target_link_libraries(x86port_runtime PUBLIC jitcommon PRIVATE Zydis m)
@@ -238,6 +254,17 @@ target_link_libraries(test_jit_x64 PRIVATE x86port_runtime x86port_test_oracle)
 target_compile_options(test_jit_x64 PRIVATE -Wall -Wextra -Werror)
 add_test(NAME test_jit_x64 COMMAND test_jit_x64)
 set_tests_properties(test_jit_x64 PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(test_x87_software tests/test_x87_software.c)
+target_link_libraries(test_x87_software PRIVATE x86port_runtime)
+target_compile_options(test_x87_software PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_x87_software COMMAND test_x87_software)
+
+add_executable(test_jit_startup tests/test_jit_startup.c)
+target_link_libraries(test_jit_startup PRIVATE x86port_runtime x86port_test_oracle)
+target_compile_options(test_jit_startup PRIVATE -Wall -Wextra -Werror)
+add_test(NAME test_jit_startup COMMAND test_jit_startup)
+set_tests_properties(test_jit_startup PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(test_jit_control tests/test_jit_control.c)
 target_link_libraries(test_jit_control PRIVATE x86port_runtime x86port_test_oracle)

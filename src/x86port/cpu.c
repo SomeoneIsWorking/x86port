@@ -1,3 +1,4 @@
+#include "cpuid.h"
 /* cpu.c -- see cpu.h for the two traps this file exists to get right. */
 #include "cpu.h"
 #include "diagnostic.h"
@@ -34,6 +35,8 @@ void x86p_cpu_reset(X86pCpu *cpu) {
  * guest fail as a fault.
  */
 static uint8_t *x86p_mem_at(const X86pMem *m, uint32_t addr) {
+  /* A null host denotes an identity mapping, so pointer addition is invalid.
+   * NOLINTNEXTLINE(performance-no-int-to-ptr) */
   return (uint8_t *)((uintptr_t)m->host + (uintptr_t)(addr - m->lo));
 }
 
@@ -288,4 +291,41 @@ int x86p_pop32(X86pCpu *cpu, const X86pMem *m, uint32_t *out) {
   cpu->reg[kX86pEsp] += 4u;
   *out = v;
   return 1;
+}
+
+void x86p_cpu_sahf(X86pCpu *cpu) {
+  const uint32_t ah = x86p_reg_read(cpu, kX86pEax, 2) >> 8;
+  const uint32_t keep = x86p_eflags(&cpu->flags) & ~UINT32_C(0xFF);
+  x86p_flags_set_explicit(&cpu->flags, keep | (ah & 0xD5u) | 0x02u);
+}
+
+void x86p_cpu_lahf(X86pCpu *cpu) {
+  const uint32_t f = x86p_eflags(&cpu->flags);
+  const uint32_t ax = x86p_reg_read(cpu, kX86pEax, 2);
+  x86p_reg_write(cpu, kX86pEax, 2, (ax & 0xFFu) | (((f & 0xD5u) | 0x02u) << 8));
+}
+
+void x86p_cpu_cpuid(X86pCpu *cpu) {
+  X86pCpuidResult r;
+  x86p_cpuid(cpu->reg[kX86pEax], cpu->reg[kX86pEcx], &r);
+  cpu->reg[kX86pEax] = r.eax;
+  cpu->reg[kX86pEbx] = r.ebx;
+  cpu->reg[kX86pEcx] = r.ecx;
+  cpu->reg[kX86pEdx] = r.edx;
+}
+
+void x86p_cpu_rdtsc(X86pCpu *cpu) {
+  const uint64_t value = x86p_rdtsc_next(&cpu->tsc);
+  cpu->reg[kX86pEax] = (uint32_t)value;
+  cpu->reg[kX86pEdx] = (uint32_t)(value >> 32);
+}
+
+/* LOOP preserves flags and the upper half of ECX for address-size 16. */
+int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition) {
+  const uint32_t mask = width == 16 ? 0xFFFFu : UINT32_MAX;
+  const uint32_t old = cpu->reg[kX86pEcx];
+  const uint32_t count = (old - 1u) & mask;
+  cpu->reg[kX86pEcx] = (old & ~mask) | count;
+  return count != 0 &&
+         (zf_condition == 0 || (zf_condition > 0 ? x86p_flag_zf(&cpu->flags) : !x86p_flag_zf(&cpu->flags)));
 }
