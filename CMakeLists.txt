@@ -267,7 +267,7 @@ add_test(NAME test_emit_x64 COMMAND test_emit_x64)
 # rather than the alias that pulls in Zydis.
 add_executable(test_emit_arm64 tests/test_emit_arm64.c)
 target_link_libraries(test_emit_arm64 PRIVATE x86port_runtime)
-target_compile_options(test_emit_arm64 PRIVATE -Wall -Wextra -Werror)
+x86p_strict_target(test_emit_arm64)
 add_test(NAME test_emit_arm64 COMMAND test_emit_arm64)
 
 # The differential: translated code against the interpreter, whole machine.
