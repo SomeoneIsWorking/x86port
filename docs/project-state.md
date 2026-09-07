@@ -219,15 +219,87 @@ negative, and making a padded size slot's last byte carry a continuation bit
 makes every module fail validation with the engine's own "length overflow while
 decoding section length".
 
+Lowering evidence: `jit_wasm_lower.c` and its per-family units turn a guest
+basic block into a WebAssembly function body, with one dispatch-table row per
+instruction family so "can this be lowered" and "how" cannot drift apart.
+`test_jit_wasm` lowers 38 blocks, lays an X86pCpu and a 4 KiB guest arena into
+the engine's linear memory, runs each block in node, and compares the WHOLE
+machine against the separately linked interpreter oracle -- every register, the
+guest EIP, all six fields of the lazy flag state, the direction flag, the rest
+of X86pCpu byte for byte, and every byte of guest memory. 38 of 38 lowered
+blocks ran in the engine and matched, over 1,097 individual checks.
+
+The lowering is host-independent, and that is what makes the above possible: it
+takes the guest mapping as three plain integers rather than a host pointer, so
+it builds and runs on a developer machine with no Emscripten toolchain. Only
+`jit_wasm.c`, the adapter that presents the `x86p_jit_*` contract, assumes a
+host pointer is a linear-memory offset, and it is the only conditionally built
+part of the backend.
+
+The imported helpers a lowered block calls -- `x86p_alu`, `x86p_alu_unary`,
+`x86p_cond`, `x86p_flag_cf` -- are C functions node cannot reach, so the test
+calls the REAL function on the state the block starts from and hands the oracle
+its return value and the bytes it wrote. Nothing about guest semantics is
+reimplemented in JavaScript. Two rules keep that honest and are enforced by the
+driver rather than assumed of the case table: a case contains at most one
+helper-using instruction and it is the first, and the arguments the block
+actually passed are compared against what the C side expected.
+
+Confirmed to FIRE by mutation. Thirteen deliberate defects were introduced one
+at a time; twelve were caught: a bounds check using `>=` instead of `>` (caught
+by the last address a byte fits at), checking against `size` instead of
+`size - w` (an access that straddles the end), a signed instead of an unsigned
+compare (an address below the mapping), swapping the flag tuple's `a` and `b`,
+widening a narrow register store to 32 bits, storing `carry_in` before the
+bounds check rather than after (caught only by a faulting ALU whose carry byte
+disagrees with the derived CF), passing a helper's arguments in the wrong order,
+POP writing its destination before advancing ESP, MOVSX lowered as MOVZX, RET
+ignoring its release count, Jcc taking the wrong arm, and a memory access
+dropping the FS base.
+
+The thirteenth did NOT fire, and is recorded rather than papered over: making
+LEA add the segment base changes nothing observable, because this decoder leaves
+the operand's segment at DS for an LEA carrying an FS prefix, so no case can
+distinguish the two. That split states the architectural rule; it is not
+verified by a test, and `jit_wasm_move.c` says so at the site.
+
+Four of the twelve were caught only after cases were ADDED for them -- the first
+mutation round found the corpus had no access at either edge of the mapping and
+no faulting ALU at all, which is the honest reason those cases exist.
+
+Module lifetime: `jit_wasm_arena.{h,c}` bounds live instantiations, because the
+engine has no unload and a module per block would be a permanent engine object
+per block. It refuses by name at the cap instead of evicting -- the block cache
+holds entry addresses the arena handed out and does not consult it before
+entering one -- and counts cap refusals apart from engine rejections.
+`test_jit_wasm_arena` drives it through a stub engine, which can be made to fail
+instantiation as a real one cannot: 32 checks over publish/release accounting,
+the cap, release-all, a rejected module, an unreachable export, an arena with no
+engine, and a host that can create but not destroy.
+
 NOT established, and the reason this capability is partial rather than verified:
-there is no `jit_wasm.c`, so nothing lowers a guest block, nothing has been
-translated, and no guest instruction has executed on a WebAssembly host. The
-backend selection in `CMakeLists.txt` still treats every non-ARM64 host as
-x86-64, so an Emscripten configure links an emitter whose output that host
-cannot run. `docs/migration.md` Gate 8 owns the remaining work, including the
-module-lifetime requirement and the absence of any floating-point environment on
-this host. Without a WebAssembly engine the test SKIPs (77) and says so; it
-refuses to report a pass in which zero modules reached one.
+
+- **No Emscripten build exists.** `jit_wasm.c` has never been compiled or run --
+  no emsdk is present on the machine this landed from -- so the adapter, its
+  `sizeof(void *) == 4` assertion, and `x86p_jit_enter` calling through an
+  indirect-table index are unbuilt and untested. Everything verified above is
+  the lowering, which is a different claim from "a wasm product JIT works".
+- **No engine glue exists.** Nothing implements `X86pWasmHost`, so no module can
+  be instantiated in a browser and no block can be entered there.
+- **The dispatch loop has no wasm publication edge.** `jit_engine.c` publishes
+  code memory; it does not know about `x86p_jit_wasm_publish`, so nothing
+  releases a module when a block is discarded and nothing batches blocks into
+  one module yet.
+- **The instruction set is a first slice.** x87, SIMD, the string operations,
+  MUL/DIV, SHLD/SHRD, the BCD and bit families, PUSHFD/POPFD, PUSHAD/POPAD,
+  ENTER, LOOP, the interrupt and privileged instructions, 16-bit addressing and
+  the 16-bit stack forms are all refused by name. `docs/migration.md` Gate 8
+  lists them.
+- **x87 has no host floating point here at all**, so the software float path
+  must be the only one on this host and the cost of that is unmeasured.
+
+Without a WebAssembly engine both wasm tests SKIP (77) and say so; neither
+reports a pass in which zero modules reached one.
 
 ### S008 — native and original dispatch
 

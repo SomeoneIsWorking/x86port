@@ -55,7 +55,7 @@ if(NOT X86P_JITCOMMON)
 endif()
 add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXCLUDE_FROM_ALL)
 
-# The x64 and ARM64 backend modules implement the
+# The x64, ARM64 and WebAssembly backend modules implement the
 # same externally-visible x86p_jit_* contract declared once in jit_x64.h. At
 # most one backend can ever be linked into x86port_runtime, or their identically
 # named symbols collide -- so the backend is chosen once, here, by host
@@ -64,6 +64,14 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 # dedicated encoder tests -- which also means every host compiles all three, so
 # an encoder cannot rot on a platform nobody builds it for.
 #
+# The WebAssembly backend is split further, and for the same reason: only
+# jit_wasm.c assumes the host it runs on is the host it emits for, so it is the
+# only conditional part. The lowering (jit_wasm_lower.c and its per-family
+# units), the module builder and the module-lifetime arena are x86p_wasm_*
+# symbols with no clash, built everywhere, and tested everywhere -- a module
+# can be handed to any engine, so the differential against the interpreter runs
+# on a developer machine with no Emscripten toolchain at all.
+#
 # The selection NAMES an unsupported host rather than assuming one. It used to
 # be a two-way branch whose else-arm meant "x86-64", so any host that was not
 # ARM64 got the x86-64 emitter -- including Emscripten, which reports its
@@ -71,7 +79,12 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 # configure succeeded, that link succeeded, and the product would have died on
 # its first translated block with nothing in the build having said a word.
 set(X86P_JIT_BACKEND_SOURCES "")
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+if(EMSCRIPTEN)
+  # Asked BEFORE the processor is looked at, because Emscripten reports its
+  # processor as `x86` -- which is how it once got the x86-64 emitter.
+  set(X86P_JIT_BACKEND_SOURCES
+    src/x86port/jit_wasm.c)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_arm64.c
     src/x86port/jit_arm64_integer.c
@@ -96,17 +109,9 @@ endif()
 # so on the command line. It still gets told, every configure, that the
 # resulting library cannot execute a guest instruction.
 if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
-  if(EMSCRIPTEN)
-    string(CONCAT X86P_NO_BACKEND_REASON
-      "Emscripten reports its processor as '${CMAKE_SYSTEM_PROCESSOR}' and has no JIT backend here. "
-      "WebAssembly cannot transfer control to emitted bytes, so translated code must be a MODULE handed "
-      "to the engine. src/x86port/emit_wasm.c encodes that format; the jit_wasm lowering backend it needs "
-      "does not exist yet. See docs/migration.md Gate 8.")
-  else()
-    string(CONCAT X86P_NO_BACKEND_REASON
-      "no JIT backend exists for CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'. "
-      "The supported hosts are arm64/aarch64 and x86_64/amd64.")
-  endif()
+  string(CONCAT X86P_NO_BACKEND_REASON
+    "no JIT backend exists for CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'. "
+    "The supported hosts are arm64/aarch64, x86_64/amd64, and Emscripten (WebAssembly).")
   if(X86P_MEASURE_UNRUNNABLE_BACKEND)
     string(CONCAT X86P_NO_BACKEND_WARNING
       "x86port: ${X86P_NO_BACKEND_REASON} "
@@ -161,6 +166,15 @@ add_library(x86port_runtime STATIC
   src/x86port/emit_x64.c
   src/x86port/emit_arm64.c
   src/x86port/emit_wasm.c
+  src/x86port/jit_status.c
+  src/x86port/jit_wasm_module.c
+  src/x86port/jit_wasm_state.c
+  src/x86port/jit_wasm_lower.c
+  src/x86port/jit_wasm_alu.c
+  src/x86port/jit_wasm_move.c
+  src/x86port/jit_wasm_stack.c
+  src/x86port/jit_wasm_branch.c
+  src/x86port/jit_wasm_arena.c
   ${X86P_JIT_BACKEND_SOURCES}
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
@@ -377,6 +391,28 @@ set_tests_properties(test_emit_wasm PROPERTIES
   SKIP_RETURN_CODE 77
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
   ENVIRONMENT "X86P_WASM_ORACLE=${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_oracle.mjs")
+
+# The WebAssembly lowering, differentially against the interpreter oracle in a
+# real engine. It links the lowering (which builds on every host) rather than a
+# backend, so it runs on a developer machine with no Emscripten toolchain --
+# a module can be handed to any engine. Without node it SKIPs (77): a run that
+# instantiated nothing has established nothing about the lowering.
+add_executable(test_jit_wasm tests/test_jit_wasm.c)
+target_link_libraries(test_jit_wasm PRIVATE x86port_runtime x86port_test_oracle)
+x86p_strict_target(test_jit_wasm)
+add_test(NAME test_jit_wasm COMMAND test_jit_wasm)
+set_tests_properties(test_jit_wasm PROPERTIES
+  SKIP_RETURN_CODE 77
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  ENVIRONMENT "X86P_WASM_JIT_ORACLE=${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_jit_oracle.mjs")
+
+# Module lifetime: the accounting an engine with no unload makes necessary.
+# A stub host stands in for the engine, which is the point -- the bugs are in
+# the accounting, and the accounting has nothing to do with wasm.
+add_executable(test_jit_wasm_arena tests/test_jit_wasm_arena.c)
+target_link_libraries(test_jit_wasm_arena PRIVATE x86port_runtime)
+x86p_strict_target(test_jit_wasm_arena)
+add_test(NAME test_jit_wasm_arena COMMAND test_jit_wasm_arena)
 
 # The differential: translated code against the interpreter, whole machine.
 add_executable(test_jit_x64 tests/test_jit_x64.c)

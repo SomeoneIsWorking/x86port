@@ -145,15 +145,37 @@ Ordered work:
    specification and runs it; the encoder cannot be right merely by agreeing
    with the test's reading of the format. The test SKIPs without an engine
    rather than passing, and refuses a pass in which zero modules reached one.
-2. **`jit_wasm.c` — lowering.** The same `x86p_jit_*` contract the other two
-   backends implement, selected once at configure time by host architecture.
-   The selection is currently a two-way branch that treats every non-ARM64 host
-   as x86-64, so it must first be made to REFUSE an unknown host by name
-   instead of silently emitting code that host cannot run.
-3. **Module lifetime is a correctness requirement, not tuning.** An instantiated
-   module is permanent, so a per-block module across a long session leaks module
-   objects without bound. Block-cache eviction and batching several blocks into
-   one module belong in this gate, not after it.
+2. **Lowering — a first instruction set, engine-verified.** Partly done. The
+   backend selection now names an unknown host instead of treating every
+   non-ARM64 host as x86-64, and Emscripten selects `jit_wasm.c`. Lowering
+   lives apart from that adapter, in `jit_wasm_lower.c` and its per-family
+   units, and takes the guest mapping as three plain integers rather than a
+   host pointer -- so it builds on every host and is tested on every host.
+   `test_jit_wasm` lowers a block, runs it in a real engine with an X86pCpu and
+   a guest arena in linear memory, and compares the whole machine against the
+   separately linked interpreter oracle.
+
+   What is lowered: MOV at 8/16/32 bits, MOVZX/MOVSX, the inline ALU shapes
+   (ADD, OR, AND, SUB, XOR, CMP, TEST) with register, immediate and memory
+   operands, NOT inline, ADC/SBB and the shifts and rotates through `x86p_alu`,
+   INC/DEC/NEG through `x86p_alu_unary`, LEA, XCHG, SETcc, PUSH/POP, LEAVE,
+   CDQ/CWDE, CLD/STD, JMP and CALL both relative and indirect, Jcc, JECXZ, and
+   RET with and without a release count.
+
+   What is not: x87, SIMD and 3DNow!, the string operations, MUL/DIV/IMUL/IDIV,
+   SHLD/SHRD, the BCD and bit-scan families, PUSHFD/POPFD, PUSHAD/POPAD, ENTER,
+   LOOP, the interrupt and privileged instructions, 16-bit addressing, and the
+   16-bit stack forms. Each is refused by name at the instruction, so the
+   remaining set is a ranked work list rather than a count.
+3. **Module lifetime is a correctness requirement, not tuning.** Partly done.
+   `jit_wasm_arena.{h,c}` bounds the number of live instantiations, refuses by
+   name at the cap rather than growing, and counts refusals apart from
+   engine rejections; the module builder takes several block bodies so a caller
+   can batch. What is NOT done is the wiring: nothing releases a module when the
+   block cache discards a block, and nothing batches yet, because the dispatch
+   loop has no wasm publication edge. Eviction inside the arena is deliberately
+   absent -- the block cache holds entry addresses the arena handed out and does
+   not consult it before entering one.
 4. **x87 has no host floating point to delegate to.** WebAssembly has no
    floating-point environment: no rounding-mode control and no exception flags,
    which is why `x87.c`'s `#pragma FENV_ACCESS` is refused outright for wasm32.

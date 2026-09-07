@@ -144,6 +144,19 @@ void x86p_wasm_init(X86pWasmEmit *e, void *buf, size_t cap);
  */
 int x86p_wasm_ok(const X86pWasmEmit *e);
 
+/*
+ * Is the buffer still GOOD -- nothing has overflowed -- regardless of whether
+ * the module is finished?
+ *
+ * A different question from x86p_wasm_ok, and the two are easy to confuse in a
+ * way that is silent: `ok` also requires every region to be CLOSED, so it is
+ * false for a perfectly healthy module that is still being written. A caller
+ * that gated mid-construction work on `ok` would find itself refusing to add
+ * anything the moment it opened a section. Ask this while building and `ok`
+ * when finished.
+ */
+int x86p_wasm_intact(const X86pWasmEmit *e);
+
 /* Where the next byte will land, as an offset from the start of the buffer. */
 size_t x86p_wasm_here(const X86pWasmEmit *e);
 
