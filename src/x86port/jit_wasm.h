@@ -38,12 +38,8 @@ extern "C" {
  * into is the consumer's decision, and a backend holding one in a static would
  * make two guests in one process share it.
  */
-int x86p_jit_wasm_publish(X86pWasmArena *arena,
-                          X86pJitBlock *block,
-                          const void *module,
-                          size_t len,
-                          char *reason,
-                          unsigned reason_len);
+int x86p_jit_wasm_publish(
+    X86pWasmArena *arena, X86pJitBlock *block, const void *module, size_t len, char *reason, unsigned reason_len);
 
 #ifdef __cplusplus
 } /* extern "C" */

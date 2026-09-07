@@ -34,12 +34,12 @@ static void check(const char *what, long long got, long long want) {
 /* ---- the stub engine ----------------------------------------------------- */
 
 typedef struct Stub {
-  int next;            /* the next handle to hand out */
-  int live;            /* handles instantiated and not yet released */
-  int instantiations;  /* calls to instantiate(), successful or not */
-  int releases;        /* calls to release() */
-  int refuse;          /* when set, instantiate() fails */
-  int resolve_fails;   /* when set, resolve() returns 0 -- the null table slot */
+  int next;           /* the next handle to hand out */
+  int live;           /* handles instantiated and not yet released */
+  int instantiations; /* calls to instantiate(), successful or not */
+  int releases;       /* calls to release() */
+  int refuse;         /* when set, instantiate() fails */
+  int resolve_fails;  /* when set, resolve() returns 0 -- the null table slot */
   int last_released;
 } Stub;
 
@@ -150,8 +150,8 @@ static void test_cap_refuses_rather_than_evicting(void) {
 
   /* Releasing one makes room for exactly one. */
   x86p_wasm_arena_release(&arena, 0);
-  check("publishing succeeds again", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
-        0);
+  check(
+      "publishing succeeds again", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason), 0);
   check("still at the cap", x86p_wasm_arena_live(&arena), X86P_WASM_MAX_LIVE_MODULES);
 }
 
@@ -179,7 +179,8 @@ static void test_engine_failure_is_not_a_refusal(void) {
   stub.refuse = 1;
   reason[0] = '\0';
   check("the engine's rejection is reported",
-        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason), -1);
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
+        -1);
   /*
    * Counted apart from a cap refusal, because they are different facts: one
    * says the caller is holding too many modules, the other says the engine
@@ -214,7 +215,8 @@ static void test_no_engine_refuses(void) {
   x86p_wasm_arena_init(&arena, NULL);
   reason[0] = '\0';
   check("publishing without an engine is refused",
-        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason), -1);
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
+        -1);
   check("the refusal says something", reason[0] != '\0', 1);
   check("counted", x86p_wasm_arena_refusals(&arena), 1);
 }
@@ -232,8 +234,7 @@ static void test_partial_host_is_no_host(void) {
   host.resolve = stub_resolve;
   host.user = &stub;
   x86p_wasm_arena_init(&arena, &host);
-  check("a host that cannot release is refused",
-        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, NULL, 0), -1);
+  check("a host that cannot release is refused", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, NULL, 0), -1);
   check("the engine was never asked", stub.instantiations, 0);
 }
 

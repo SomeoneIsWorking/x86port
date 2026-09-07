@@ -41,6 +41,12 @@ jobs:
       # runner has no node, so the encoder is never silently untested.
       - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
+      # verify_format SKIPs without a clang-format, and every host here has one
+      # on purpose, so a skip here would be a green tick meaning nothing.
+      # --require-formatter makes its absence the failure.
+      - name: Verify the tracked format is actually enforced
+        working-directory: x86port
+        run: uv run --frozen python tools/verify_format.py --root . --require-formatter
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64 --cc clang --cxx clang++
@@ -85,6 +91,12 @@ jobs:
       # runner has no node, so the encoder is never silently untested.
       - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
+      # verify_format SKIPs without a clang-format, and every host here has one
+      # on purpose, so a skip here would be a green tick meaning nothing.
+      # --require-formatter makes its absence the failure.
+      - name: Verify the tracked format is actually enforced
+        working-directory: x86port
+        run: uv run --frozen python tools/verify_format.py --root . --require-formatter
       - name: Verify the native product and oracle fixtures
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/macos-${{ matrix.arch }} --cc /usr/bin/clang --cxx /usr/bin/clang++
@@ -126,6 +138,13 @@ jobs:
       # runner has no node, so the encoder is never silently untested.
       - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
+      # No --require-formatter step here, unlike Linux and macOS. This
+      # repository has no .gitattributes, so a Windows checkout's line endings
+      # depend on the runner's core.autocrlf, and a CRLF working tree would make
+      # every file look like format drift. The ctest verify_format still runs in
+      # the gate below; Linux and macOS are the hosts that make its absence a
+      # failure. Settling the line-ending question is what would let Windows
+      # enforce it too.
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
         shell: pwsh

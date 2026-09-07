@@ -208,7 +208,13 @@ Before calling the framework complete:
   confined to the default diagnostic sink or standalone test/tool boundaries;
 - make the normal verifier enforce clang-format, clang-tidy against real compile
   commands, structure limits, portability, unit/differential tests, and the
-  product link audit;
+  product link audit. **clang-format is now enforced**: `verify_format` compares
+  every first-party source against the tracked `.clang-format` and reports the
+  denominator, `verify_format_negative` proves the comparison fires, and both
+  SKIP rather than pass when no formatter is present. That gap was not
+  theoretical -- a ten-file backend landed with seven files off the tracked
+  style while the other 126 matched it exactly. clang-tidy against real compile
+  commands is still missing;
 - keep x86-only policy local and extract to `jit-common` only after two concrete
   platform frameworks prove identical semantics.
 

@@ -50,11 +50,11 @@ extern "C" {
  * surfaces thousands of instructions later as a branch taken the other way.
  */
 typedef enum X86pWasmImport {
-  kX86pWasmImportAlu = 0,   /* x86p_alu(op, a, b, w, flags) -> result */
-  kX86pWasmImportAluUnary,  /* x86p_alu_unary(op, a, w, flags) -> result */
-  kX86pWasmImportCond,      /* x86p_cond(cc, flags) -> 0 or 1 */
-  kX86pWasmImportFlagCf,    /* x86p_flag_cf(flags) -> 0 or 1 */
-  kX86pWasmImportCount      /* MUST stay last */
+  kX86pWasmImportAlu = 0,  /* x86p_alu(op, a, b, w, flags) -> result */
+  kX86pWasmImportAluUnary, /* x86p_alu_unary(op, a, w, flags) -> result */
+  kX86pWasmImportCond,     /* x86p_cond(cc, flags) -> 0 or 1 */
+  kX86pWasmImportFlagCf,   /* x86p_flag_cf(flags) -> 0 or 1 */
+  kX86pWasmImportCount     /* MUST stay last */
 } X86pWasmImport;
 
 /* The field name an import is looked up under, inside module "env". */
@@ -90,14 +90,14 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
  * because a stack machine has no register allocator to catch it.
  */
 typedef enum X86pWasmLocal {
-  kX86pWasmLocalCpu = 0,  /* parameter: the X86pCpu address */
-  kX86pWasmLocalAddr,     /* an effective address, then the host address for it */
-  kX86pWasmLocalA,        /* the flag tuple's first operand */
-  kX86pWasmLocalB,        /* the flag tuple's second operand */
-  kX86pWasmLocalR,        /* the flag tuple's result, and the value written back */
-  kX86pWasmLocalCarry,    /* the carry-in, live across a bounds check */
-  kX86pWasmLocalTarget,   /* a computed guest EIP */
-  kX86pWasmLocalCount     /* MUST stay last */
+  kX86pWasmLocalCpu = 0, /* parameter: the X86pCpu address */
+  kX86pWasmLocalAddr,    /* an effective address, then the host address for it */
+  kX86pWasmLocalA,       /* the flag tuple's first operand */
+  kX86pWasmLocalB,       /* the flag tuple's second operand */
+  kX86pWasmLocalR,       /* the flag tuple's result, and the value written back */
+  kX86pWasmLocalCarry,   /* the carry-in, live across a bounds check */
+  kX86pWasmLocalTarget,  /* a computed guest EIP */
+  kX86pWasmLocalCount    /* MUST stay last */
 } X86pWasmLocal;
 
 /*

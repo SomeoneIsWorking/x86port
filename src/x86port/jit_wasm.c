@@ -111,12 +111,8 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
   return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, out, reason, reason_len);
 }
 
-int x86p_jit_wasm_publish(X86pWasmArena *arena,
-                          X86pJitBlock *block,
-                          const void *module,
-                          size_t len,
-                          char *reason,
-                          unsigned reason_len) {
+int x86p_jit_wasm_publish(
+    X86pWasmArena *arena, X86pJitBlock *block, const void *module, size_t len, char *reason, unsigned reason_len) {
   const char *field = x86p_wasm_body_name(0);
   int token;
   void *entry;
