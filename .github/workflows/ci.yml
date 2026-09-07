@@ -36,6 +36,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends clang clang-format clang-tidy cmake ninja-build
+      # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
+      # nobody notices is a green tick meaning nothing. Fail here instead if the
+      # runner has no node, so the encoder is never silently untested.
+      - name: Verify a WebAssembly engine is present for the encoder oracle
+        run: node --version
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64 --cc clang --cxx clang++
@@ -75,6 +80,11 @@ jobs:
         run: |
           brew install llvm ninja
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+      # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
+      # nobody notices is a green tick meaning nothing. Fail here instead if the
+      # runner has no node, so the encoder is never silently untested.
+      - name: Verify a WebAssembly engine is present for the encoder oracle
+        run: node --version
       - name: Verify the native product and oracle fixtures
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/macos-${{ matrix.arch }} --cc /usr/bin/clang --cxx /usr/bin/clang++
@@ -111,6 +121,11 @@ jobs:
           where.exe clang-cl
           where.exe llvm-nm
           clang-cl --version
+      # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
+      # nobody notices is a green tick meaning nothing. Fail here instead if the
+      # runner has no node, so the encoder is never silently untested.
+      - name: Verify a WebAssembly engine is present for the encoder oracle
+        run: node --version
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
         shell: pwsh
