@@ -155,6 +155,12 @@ Ordered work:
    a guest arena in linear memory, and compares the whole machine against the
    separately linked interpreter oracle.
 
+   All ten backend files also COMPILE for the target: Emscripten 4.0.16 built
+   them under `-Wall -Wextra -Werror` with no warnings and no x86-64 emitter
+   object in the build, which is what makes the adapter's
+   `_Static_assert(sizeof(void *) == 4)` checked rather than assumed. No wasm32
+   binary has been executed, so that is a compile, not a run.
+
    What is lowered: MOV at 8/16/32 bits, MOVZX/MOVSX, the inline ALU shapes
    (ADD, OR, AND, SUB, XOR, CMP, TEST) with register, immediate and memory
    operands, NOT inline, ADC/SBB and the shifts and rotates through `x86p_alu`,
