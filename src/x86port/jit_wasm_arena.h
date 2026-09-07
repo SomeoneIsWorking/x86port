@@ -77,10 +77,10 @@ typedef struct X86pWasmArena {
   X86pWasmHost host;
   X86pWasmArenaSlot slot[X86P_WASM_MAX_LIVE_MODULES];
   unsigned live;
-  unsigned published;  /* modules successfully instantiated over the arena's life */
-  unsigned released;   /* modules handed back to the engine */
-  unsigned refusals;   /* publications refused because the cap was reached */
-  unsigned failures;   /* publications the engine itself rejected */
+  unsigned published; /* modules successfully instantiated over the arena's life */
+  unsigned released;  /* modules handed back to the engine */
+  unsigned refusals;  /* publications refused because the cap was reached */
+  unsigned failures;  /* publications the engine itself rejected */
 } X86pWasmArena;
 
 /* Bind an arena to an engine. A NULL or incomplete host leaves the arena

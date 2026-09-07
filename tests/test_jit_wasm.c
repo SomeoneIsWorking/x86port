@@ -186,8 +186,7 @@ static const Case kCases[] = {
     /* LEA ECX,[EBX+EAX+8] -- address arithmetic with no access at all. */
     {"lea", {0x8D, 0x4C, 0x03, 0x08}, 4, 1, .eax = 0x10, .ebx = 0x20, .expect_exit = kX86pJitExitBlockEnd},
     /* MOVZX EAX,BL ; MOVSX ECX,BL -- the same byte, widened both ways. */
-    {"movzx_movsx", {0x0F, 0xB6, 0xC3, 0x0F, 0xBE, 0xCB}, 6, 1, .ebx = 0x000000F0,
-     .expect_exit = kX86pJitExitBlockEnd},
+    {"movzx_movsx", {0x0F, 0xB6, 0xC3, 0x0F, 0xBE, 0xCB}, 6, 1, .ebx = 0x000000F0, .expect_exit = kX86pJitExitBlockEnd},
     {"xchg", {0x87, 0xC3}, 2, 1, .eax = 0x11111111, .ebx = 0x22222222, .expect_exit = kX86pJitExitBlockEnd},
     {"cdq", {0x99}, 1, 1, .eax = 0x80000000, .expect_exit = kX86pJitExitBlockEnd},
     {"leave", {0xC9}, 1, 1, .esp = STACK, .ebp = GUEST_LO + 0x700u, .expect_exit = kX86pJitExitBlockEnd},
@@ -240,12 +239,7 @@ static const Case kCases[] = {
      *     single unsigned compare cover both ends -- two signed comparisons
      *     are the classic way to let a negative offset through.
      */
-    {"memory_last_dword",
-     {0x8B, 0x03},
-     2,
-     1,
-     .ebx = GUEST_LO + ARENA_SIZE - 4u,
-     .expect_exit = kX86pJitExitBlockEnd},
+    {"memory_last_dword", {0x8B, 0x03}, 2, 1, .ebx = GUEST_LO + ARENA_SIZE - 4u, .expect_exit = kX86pJitExitBlockEnd},
     {"memory_straddles_end",
      {0x8B, 0x03},
      2,

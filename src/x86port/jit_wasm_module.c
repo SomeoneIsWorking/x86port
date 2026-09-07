@@ -17,10 +17,10 @@
  * what the format expects and what the engine's own canonicalisation does.
  */
 enum {
-  kTypeBlock = 0,     /* (i32) -> i32 : a block, and x86p_flag_cf */
-  kTypeCond = 1,      /* (i32, i32) -> i32 */
-  kTypeAluUnary = 2,  /* (i32, i32, i32, i32) -> i32 */
-  kTypeAlu = 3,       /* (i32, i32, i32, i32, i32) -> i32 */
+  kTypeBlock = 0,    /* (i32) -> i32 : a block, and x86p_flag_cf */
+  kTypeCond = 1,     /* (i32, i32) -> i32 */
+  kTypeAluUnary = 2, /* (i32, i32, i32, i32) -> i32 */
+  kTypeAlu = 3,      /* (i32, i32, i32, i32, i32) -> i32 */
   kTypeCount = 4
 };
 
@@ -33,13 +33,10 @@ enum {
  * way two copies of a formatting rule can.
  */
 static const char *const kBodyNames[X86P_WASM_MAX_BODIES] = {
-    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9",
-    "b10", "b11", "b12", "b13", "b14", "b15", "b16", "b17", "b18", "b19",
-    "b20", "b21", "b22", "b23", "b24", "b25", "b26", "b27", "b28", "b29",
-    "b30", "b31", "b32", "b33", "b34", "b35", "b36", "b37", "b38", "b39",
-    "b40", "b41", "b42", "b43", "b44", "b45", "b46", "b47", "b48", "b49",
-    "b50", "b51", "b52", "b53", "b54", "b55", "b56", "b57", "b58", "b59",
-    "b60", "b61", "b62", "b63",
+    "b0",  "b1",  "b2",  "b3",  "b4",  "b5",  "b6",  "b7",  "b8",  "b9",  "b10", "b11", "b12", "b13", "b14", "b15",
+    "b16", "b17", "b18", "b19", "b20", "b21", "b22", "b23", "b24", "b25", "b26", "b27", "b28", "b29", "b30", "b31",
+    "b32", "b33", "b34", "b35", "b36", "b37", "b38", "b39", "b40", "b41", "b42", "b43", "b44", "b45", "b46", "b47",
+    "b48", "b49", "b50", "b51", "b52", "b53", "b54", "b55", "b56", "b57", "b58", "b59", "b60", "b61", "b62", "b63",
 };
 
 const char *x86p_wasm_body_name(unsigned index) {

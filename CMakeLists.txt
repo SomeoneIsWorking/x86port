@@ -476,10 +476,29 @@ add_test(
   COMMAND
     "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_source_policy.py"
     --selftest)
+# CLAUDE.md requires the normal verifier to include a format check and it had
+# none, so drift was invisible: a ten-file backend landed with seven files off
+# the tracked style while the other 126 matched it exactly. This SKIPs (77)
+# rather than passing when no clang-format is present, and its negative control
+# proves the comparison fires.
+add_test(
+  NAME verify_format
+  COMMAND
+    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_format.py"
+    --root "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(verify_format PROPERTIES SKIP_RETURN_CODE 77)
+add_test(
+  NAME verify_format_negative
+  COMMAND
+    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_format.py"
+    --selftest "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(verify_format_negative PROPERTIES SKIP_RETURN_CODE 77)
 set_tests_properties(
   verify_product_boundary
   verify_product_boundary_rejects_oracle
   test_product_boundary_symbols
   verify_source_policy
   verify_source_policy_negative
+  verify_format
+  verify_format_negative
   PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
