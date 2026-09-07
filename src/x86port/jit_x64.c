@@ -28,46 +28,6 @@
 #define WORST_CASE_INSN_BYTES X86P_JIT_WORST_CASE_INSN_BYTES
 #define EPILOGUE_BYTES X86P_JIT_EPILOGUE_BYTES /* normal exit plus the fault stub */
 
-const char *x86p_jit_exit_name(X86pJitExit e) {
-  switch (e) {
-  case kX86pJitExitBlockEnd:
-    return "block end";
-  case kX86pJitExitUnsupported:
-    return "unsupported instruction";
-  case kX86pJitExitMemoryFault:
-    return "guest memory fault";
-  case kX86pJitExitDivideError:
-    return "divide error";
-  case kX86pJitExitInterrupt:
-    return "software interrupt";
-  case kX86pJitExitProtectionFault:
-    return "general-protection fault";
-  case kX86pJitExitBoundRange:
-    return "bound range exceeded";
-  case kX86pJitExitCount:
-  default:
-    return "?";
-  }
-}
-
-const char *x86p_jit_status_name(X86pJitStatus s) {
-  switch (s) {
-  case kX86pJitOk:
-    return "ok";
-  case kX86pJitFetchFault:
-    return "fetch fault";
-  case kX86pJitDecodeFailed:
-    return "decode failed";
-  case kX86pJitUnsupportedAtEntry:
-    return "unsupported at entry";
-  case kX86pJitOutOfSpace:
-    return "out of space";
-  case kX86pJitStatusCount:
-  default:
-    return "?";
-  }
-}
-
 int x86p_jit_available(void) {
 #if defined(__x86_64__) || defined(_M_X64)
   return 1;

@@ -39,7 +39,7 @@ jobs:
       # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
       # nobody notices is a green tick meaning nothing. Fail here instead if the
       # runner has no node, so the encoder is never silently untested.
-      - name: Verify a WebAssembly engine is present for the encoder oracle
+      - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
@@ -83,7 +83,7 @@ jobs:
       # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
       # nobody notices is a green tick meaning nothing. Fail here instead if the
       # runner has no node, so the encoder is never silently untested.
-      - name: Verify a WebAssembly engine is present for the encoder oracle
+      - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
       - name: Verify the native product and oracle fixtures
         working-directory: x86port
@@ -124,7 +124,7 @@ jobs:
       # test_emit_wasm SKIPs without a WebAssembly engine, and a skip that
       # nobody notices is a green tick meaning nothing. Fail here instead if the
       # runner has no node, so the encoder is never silently untested.
-      - name: Verify a WebAssembly engine is present for the encoder oracle
+      - name: Verify a WebAssembly engine is present for the encoder and lowering oracles
         run: node --version
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port

@@ -1,0 +1,91 @@
+/*
+ * jit_wasm_lower.h -- guest basic block to a WebAssembly function body.
+ *
+ * The WebAssembly counterpart of jit_x64.c's translation half, with one
+ * deliberate difference: THIS IS NOT THE x86p_jit_* BACKEND. It produces a
+ * function body inside a module and takes the guest mapping as three plain
+ * integers, so it neither knows nor needs to know that the host it runs on is
+ * the host that will execute the result.
+ *
+ * That separation is what makes the lowering testable. A machine-code backend
+ * can only be exercised on the architecture it emits for; a module can be
+ * built anywhere and handed to any engine, so the differential against the
+ * interpreter oracle runs on a developer machine with no Emscripten toolchain
+ * at all. jit_wasm.c is the thin adapter that presents this as the
+ * x86p_jit_translate contract on a wasm host, and it is the only part of the
+ * backend that cannot be built and run everywhere.
+ *
+ * WHAT IS INLINED AND WHAT IS CALLED. The same split the other backends make,
+ * for the same reason: data movement, address arithmetic and the ALU shapes
+ * whose flag rules are a plain tuple are emitted inline; ADC, SBB, the shifts
+ * and the rotates call the one semantic authority (x86p_alu) rather than
+ * becoming a second implementation of the eager flag derivation. The imports
+ * that make those calls possible are listed in jit_wasm_module.h.
+ */
+#ifndef X86PORT_JIT_WASM_LOWER_H
+#define X86PORT_JIT_WASM_LOWER_H
+
+#include "cpu.h"
+#include "decode.h"
+#include "jit_wasm_module.h"
+#include "jit_wasm_state.h"
+#include "jit_x64.h"
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Guest instructions per lowered block. */
+#define X86P_WASM_MAX_INSNS 64
+
+/*
+ * The smallest byte budget in which any single block body can be lowered.
+ *
+ * Exported for the same reason the machine-code backends export theirs: a
+ * caller has to decide when its buffer is too full to lower into, and a number
+ * it chose itself would be a second opinion about this file's worst case.
+ */
+#define X86P_WASM_WORST_CASE_INSN_BYTES 320u
+#define X86P_WASM_MODULE_OVERHEAD_BYTES 512u
+#define X86P_WASM_MIN_MODULE_BYTES (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES)
+
+/*
+ * Lower the basic block at `eip` into the module's next function body.
+ *
+ * `fetch` is where the guest BYTES are read from at lowering time -- an
+ * ordinary host mapping, with a host pointer. `plan` describes where that same
+ * guest memory will live in the ENGINE's linear memory when the block runs.
+ * On a wasm host they describe the same mapping and jit_wasm.c derives one
+ * from the other; keeping them apart is what lets a test lower against an
+ * image it merely holds the bytes of.
+ *
+ * `out->entry` is NOT set: a module is not an address, and it becomes callable
+ * only once the engine has instantiated it. jit_wasm_arena.h owns that step.
+ * Every other field of `out` is filled in as the other backends fill it.
+ */
+X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
+                                    const X86pMem *fetch,
+                                    const X86pWasmPlan *plan,
+                                    uint32_t eip,
+                                    X86pJitBoundaryFn boundary,
+                                    void *boundary_user,
+                                    X86pJitBlock *out,
+                                    char *reason,
+                                    unsigned reason_len);
+
+/*
+ * Would this instruction be lowered, if a block reached it?
+ *
+ * The honest denominator for a corpus count: the ranked list of block ENDERS
+ * undercounts, because everything after the first refusal in a function is
+ * never looked at.
+ */
+int x86p_wasm_can_lower(const X86pInsn *insn);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* X86PORT_JIT_WASM_LOWER_H */

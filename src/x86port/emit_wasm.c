@@ -42,6 +42,10 @@ int x86p_wasm_ok(const X86pWasmEmit *e) {
          e->bodies_opened == e->bodies_closed;
 }
 
+int x86p_wasm_intact(const X86pWasmEmit *e) {
+  return !e->overflow;
+}
+
 size_t x86p_wasm_here(const X86pWasmEmit *e) {
   return e->len;
 }
