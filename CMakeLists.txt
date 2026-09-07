@@ -59,10 +59,19 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 # same externally-visible x86p_jit_* contract declared once in jit_x64.h. At
 # most one backend can ever be linked into x86port_runtime, or their identically
 # named symbols collide -- so the backend is chosen once, here, by host
-# architecture. emit_x64.c/emit_arm64.c have no such clash (differently
-# prefixed symbols) and stay unconditionally built for their own dedicated
-# encoder tests.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+# architecture. emit_x64.c/emit_arm64.c/emit_wasm.c have no such clash
+# (differently prefixed symbols) and stay unconditionally built for their own
+# dedicated encoder tests -- which also means every host compiles all three, so
+# an encoder cannot rot on a platform nobody builds it for.
+#
+# The selection NAMES an unsupported host rather than assuming one. It used to
+# be a two-way branch whose else-arm meant "x86-64", so any host that was not
+# ARM64 got the x86-64 emitter -- including Emscripten, which reports its
+# processor as `x86` and cannot execute emitted machine code at all. That
+# configure succeeded, that link succeeded, and the product would have died on
+# its first translated block with nothing in the build having said a word.
+set(X86P_JIT_BACKEND_SOURCES "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_arm64.c
     src/x86port/jit_arm64_integer.c
@@ -71,7 +80,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
     src/x86port/jit_arm64_simd.c
     src/x86port/jit_arm64_x87_register.c
     src/x86port/jit_arm64_x87.c)
-else()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_x64.c
     src/x86port/jit_x64_alu.c
@@ -79,6 +88,47 @@ else()
     src/x86port/jit_x64_simd.c
     src/x86port/jit_x64_x87_register.c
     src/x86port/jit_x64_x87.c)
+endif()
+
+# A host with no backend is a refusal, not a default. The one exception is
+# explicit and named: a portability MEASUREMENT wants to compile everything
+# that can be compiled for a host whose backend does not exist yet, and it says
+# so on the command line. It still gets told, every configure, that the
+# resulting library cannot execute a guest instruction.
+if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
+  if(EMSCRIPTEN)
+    string(CONCAT X86P_NO_BACKEND_REASON
+      "Emscripten reports its processor as '${CMAKE_SYSTEM_PROCESSOR}' and has no JIT backend here. "
+      "WebAssembly cannot transfer control to emitted bytes, so translated code must be a MODULE handed "
+      "to the engine. src/x86port/emit_wasm.c encodes that format; the jit_wasm lowering backend it needs "
+      "does not exist yet. See docs/migration.md Gate 8.")
+  else()
+    string(CONCAT X86P_NO_BACKEND_REASON
+      "no JIT backend exists for CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'. "
+      "The supported hosts are arm64/aarch64 and x86_64/amd64.")
+  endif()
+  if(X86P_MEASURE_UNRUNNABLE_BACKEND)
+    string(CONCAT X86P_NO_BACKEND_WARNING
+      "x86port: ${X86P_NO_BACKEND_REASON} "
+      "X86P_MEASURE_UNRUNNABLE_BACKEND is set, so the x86-64 emitter is linked to let a portability "
+      "measurement compile the rest. THE RESULTING LIBRARY CANNOT EXECUTE A GUEST INSTRUCTION ON THIS "
+      "HOST. Never set this for anything a person runs.")
+    message(WARNING "${X86P_NO_BACKEND_WARNING}")
+    set(X86P_JIT_BACKEND_SOURCES
+      src/x86port/jit_x64.c
+      src/x86port/jit_x64_alu.c
+      src/x86port/jit_x64_branch.c
+      src/x86port/jit_x64_simd.c
+      src/x86port/jit_x64_x87_register.c
+      src/x86port/jit_x64_x87.c)
+  else()
+    string(CONCAT X86P_NO_BACKEND_REFUSAL
+      "x86port: ${X86P_NO_BACKEND_REASON} "
+      "Configuring anyway would link an emitter this host cannot run and fail at the first translated "
+      "block, so this refuses instead. A portability measurement may pass "
+      "-DX86P_MEASURE_UNRUNNABLE_BACKEND=ON, which produces a library that cannot execute guest code.")
+    message(FATAL_ERROR "${X86P_NO_BACKEND_REFUSAL}")
+  endif()
 endif()
 
 include(cmake/softfloat.cmake)
@@ -110,6 +160,7 @@ add_library(x86port_runtime STATIC
   src/x86port/x87_register.c
   src/x86port/emit_x64.c
   src/x86port/emit_arm64.c
+  src/x86port/emit_wasm.c
   ${X86P_JIT_BACKEND_SOURCES}
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
@@ -313,6 +364,19 @@ add_executable(test_emit_arm64 tests/test_emit_arm64.c)
 target_link_libraries(test_emit_arm64 PRIVATE x86port_runtime)
 x86p_strict_target(test_emit_arm64)
 add_test(NAME test_emit_arm64 COMMAND test_emit_arm64)
+
+# The wasm encoder's oracle is a real WebAssembly engine rather than a
+# disassembler: it validates each emitted module against the specification and
+# runs it. Without node the test SKIPs (77) instead of passing, because a run
+# that instantiated nothing has established nothing about the encoding.
+add_executable(test_emit_wasm tests/test_emit_wasm.c)
+target_link_libraries(test_emit_wasm PRIVATE x86port_runtime)
+x86p_strict_target(test_emit_wasm)
+add_test(NAME test_emit_wasm COMMAND test_emit_wasm)
+set_tests_properties(test_emit_wasm PROPERTIES
+  SKIP_RETURN_CODE 77
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  ENVIRONMENT "X86P_WASM_ORACLE=${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_oracle.mjs")
 
 # The differential: translated code against the interpreter, whole machine.
 add_executable(test_jit_x64 tests/test_jit_x64.c)
