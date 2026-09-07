@@ -123,6 +123,50 @@ W^X publication, instruction-cache maintenance, cache invalidation, and each
 consumer's representative gameplay and performance budget on its declared
 Apple or Android host class.
 
+## Gate 8 — implement and qualify WebAssembly
+
+A browser host cannot execute either existing backend, and the compiler says so
+rather than the code merely being wrong: `jit-common`'s code region fails to
+build for wasm32 with "llvm.clear_cache is not supported on wasm". There is no
+operation in WebAssembly that transfers control to a buffer of bytes. So a wasm
+host is not a third target of the same shape -- translated code there is a
+MODULE handed to the engine, compiled by it, and called through a function
+reference.
+
+Bounded fallback is not a substitute here either, and neither is the
+interpreter: the product execution contract forbids an interpreter-backed
+gameplay build, and an x86 interpreter inside a browser would not be playable
+regardless.
+
+Ordered work:
+
+1. **`emit_wasm.{h,c}` — the binary format only.** Done. Its oracle is a real
+   WebAssembly engine, which validates each emitted module against the
+   specification and runs it; the encoder cannot be right merely by agreeing
+   with the test's reading of the format. The test SKIPs without an engine
+   rather than passing, and refuses a pass in which zero modules reached one.
+2. **`jit_wasm.c` — lowering.** The same `x86p_jit_*` contract the other two
+   backends implement, selected once at configure time by host architecture.
+   The selection is currently a two-way branch that treats every non-ARM64 host
+   as x86-64, so it must first be made to REFUSE an unknown host by name
+   instead of silently emitting code that host cannot run.
+3. **Module lifetime is a correctness requirement, not tuning.** An instantiated
+   module is permanent, so a per-block module across a long session leaks module
+   objects without bound. Block-cache eviction and batching several blocks into
+   one module belong in this gate, not after it.
+4. **x87 has no host floating point to delegate to.** WebAssembly has no
+   floating-point environment: no rounding-mode control and no exception flags,
+   which is why `x87.c`'s `#pragma FENV_ACCESS` is refused outright for wasm32.
+   The software float path must be the only one on this host, and the cost of
+   that on top of a wasm JIT is unmeasured.
+5. **Compilation happens off the main thread.** Synchronous module compilation
+   is unrestricted only off the browser's main thread, which is where a
+   blocking guest has to run anyway.
+
+Acceptance evidence mirrors x64 and ARM64: nonzero translated block execution
+with denominators, cache and invalidation behaviour, every refusal counted, and
+a consumer's representative gameplay rather than a boot checkpoint.
+
 ## Gate 7 — land the self-contained quality boundary
 
 Before calling the framework complete:

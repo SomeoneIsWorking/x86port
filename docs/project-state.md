@@ -37,6 +37,7 @@ product target and verify its actual gameplay link and selector.
 | S013 | Differential and corpus instruments prove both positive and negative outcomes with denominators | partial | S001, S002, S003, S004 | G001, G003 |
 | S014 | X-Men 2 consumes the canonical JIT-only product boundary and passes representative gameplay conformance | partial | S005, S008, S009 | G001, G002, G004 |
 | S015 | Little Fighter 2 consumes the canonical JIT-only product boundary and passes representative gameplay conformance | missing | S005, S008, S009 | G001, G002, G004 |
+| S016 | A WebAssembly product JIT backend is available | partial | S002 | G001, G002 |
 
 ## Host CI support
 
@@ -192,6 +193,41 @@ representative consumer gameplay remain unverified in the merged tree. The
 new backend still duplicates some decode-level policy and semantic helper
 adapters; S012 remains partial. No ARM64 release support
 is claimed from encoder tests or historical host-double differential output.
+
+### S016 — WebAssembly backend
+
+Evidence: `emit_wasm.{h,c}` encodes the WebAssembly binary format -- module
+sections with five-byte padded size slots patched in place, canonical unsigned
+and sign-terminated signed LEB128, imports of the host memory/table/helpers, and
+the instruction encodings a lowering backend needs. `test_emit_wasm` builds
+twelve modules with it and hands each to a real WebAssembly engine, which
+validates it against the specification and runs it: 12 of 12 validated and ran,
+covering arithmetic, five-byte constants, sign- and zero-extending memory access
+with an offset immediate, structured `if`/`else`, a `block`/`loop` with both
+branch directions, a direct call to an imported helper, an indirect call through
+the imported table into a second module built by the same encoder, 64-bit
+widening for a multiply's high word, `select`/`drop`, and a trap. The engine's
+independence is what the test rests on: the C side never reads its own bytes
+back and agrees with itself.
+
+The encoder's own refusals are checked without an engine, because those must be
+caught here rather than by an engine far from the cause: sticky overflow, an
+unbalanced control region, and an unclosed size slot each make
+`x86p_wasm_ok()` false. Both halves were confirmed to FIRE by mutation --
+dropping the signed-LEB128 sign guard makes 64, 8192 and 1048576 read back
+negative, and making a padded size slot's last byte carry a continuation bit
+makes every module fail validation with the engine's own "length overflow while
+decoding section length".
+
+NOT established, and the reason this capability is partial rather than verified:
+there is no `jit_wasm.c`, so nothing lowers a guest block, nothing has been
+translated, and no guest instruction has executed on a WebAssembly host. The
+backend selection in `CMakeLists.txt` still treats every non-ARM64 host as
+x86-64, so an Emscripten configure links an emitter whose output that host
+cannot run. `docs/migration.md` Gate 8 owns the remaining work, including the
+module-lifetime requirement and the absence of any floating-point environment on
+this host. Without a WebAssembly engine the test SKIPs (77) and says so; it
+refuses to report a pass in which zero modules reached one.
 
 ### S008 — native and original dispatch
 
