@@ -279,11 +279,16 @@ engine, and a host that can create but not destroy.
 
 NOT established, and the reason this capability is partial rather than verified:
 
-- **No Emscripten build exists.** `jit_wasm.c` has never been compiled or run --
-  no emsdk is present on the machine this landed from -- so the adapter, its
-  `sizeof(void *) == 4` assertion, and `x86p_jit_enter` calling through an
-  indirect-table index are unbuilt and untested. Everything verified above is
-  the lowering, which is a different claim from "a wasm product JIT works".
+- **The library COMPILES for wasm32; nothing has RUN there.** Emscripten 4.0.16
+  configured this project and built all ten WebAssembly backend files -- the
+  encoder, module builder, guest-state access, lowering, module lifetime and
+  `jit_wasm.c` itself -- under `-Wall -Wextra -Werror` with no warnings, and no
+  x86-64 emitter object in the build, which also makes the adapter's
+  `_Static_assert(sizeof(void *) == 4)` a checked fact rather than an
+  assumption. What that does NOT establish: no wasm32 binary has been executed,
+  so `x86p_jit_enter` calling through an indirect-table index is compiled and
+  untested. Everything verified above is the lowering, which is a different
+  claim from "a wasm product JIT works".
 - **No engine glue exists.** Nothing implements `X86pWasmHost`, so no module can
   be instantiated in a browser and no block can be entered there.
 - **The dispatch loop has no wasm publication edge.** `jit_engine.c` publishes
