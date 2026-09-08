@@ -352,7 +352,7 @@ static void compare(const char *what,
                     unsigned memlen) {
   Regs host = *start;
   X86pCpu cpu;
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pStepReport rep;
   uint32_t mf, hf;
   unsigned i;

@@ -1,8 +1,8 @@
 #include "jit_engine.h"
 
 #include "block_cache.h"
-#include "code_memory.h"
 #include "decode.h"
+#include "jit_storage.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -11,8 +11,7 @@
 
 struct X86pJitEngine {
   const X86pMem *mem;
-  JcCodeRegion code;
-  size_t used;
+  X86pJitStorage *storage;
   JcBlockCache *cache;
   X86pJitEngineStats stats;
   X86pJitInterceptFn intercept;
@@ -103,7 +102,7 @@ static void say_unsupported(const X86pMem *mem, uint32_t eip, char *reason, unsi
 }
 
 const char *x86p_jit_engine_mechanism(void) {
-  return jc_code_mechanism();
+  return x86p_jit_storage_mechanism();
 }
 
 X86pJitEngine *
@@ -115,7 +114,13 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
     say(reason, reason_len, "no guest memory");
     return NULL;
   }
-  if (code_bytes < X86P_JIT_MIN_BLOCK_BYTES) {
+#if !defined(__EMSCRIPTEN__)
+  if (mem->sparse) {
+    say(reason, reason_len, "sparse guest memory requires the WebAssembly backend");
+    return NULL;
+  }
+#endif
+  if (code_bytes < x86p_jit_storage_min_capacity()) {
     /* Refused rather than raised: a region too small for one block would fail
        on its first translation, and reporting that as "out of code" at run time
        blames the program for the caller's sizing. */
@@ -123,7 +128,7 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
         reason_len,
         "code region of %zu bytes is below the %u a single block may need",
         code_bytes,
-        (unsigned)X86P_JIT_MIN_BLOCK_BYTES);
+        (unsigned)x86p_jit_storage_min_capacity());
     return NULL;
   }
 
@@ -135,8 +140,9 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
   e->mem = mem;
 
   why[0] = '\0';
-  if (jc_code_region_create(code_bytes, &e->code, why, (unsigned)sizeof why) != kJcCodeOk) {
-    say(reason, reason_len, "code memory (%s): %s", jc_code_mechanism(), why);
+  e->storage = x86p_jit_storage_create(code_bytes, why, (unsigned)sizeof why);
+  if (!e->storage) {
+    say(reason, reason_len, "code memory (%s): %s", x86p_jit_storage_mechanism(), why);
     free(e);
     return NULL;
   }
@@ -144,7 +150,7 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
   e->cache = jc_block_cache_create(cache_blocks);
   if (!e->cache) {
     say(reason, reason_len, "block cache of %zu entries could not be created", cache_blocks);
-    jc_code_region_destroy(&e->code);
+    x86p_jit_storage_destroy(e->storage);
     free(e);
     return NULL;
   }
@@ -156,7 +162,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
     return;
   }
   jc_block_cache_destroy(e->cache);
-  jc_code_region_destroy(&e->code);
+  x86p_jit_storage_destroy(e->storage);
   x86p_jit_profile_destroy(e->profile);
   free(e);
 }
@@ -164,6 +170,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
   if (e) {
     (void)jc_block_invalidate_range(e->cache, lo, hi);
+    x86p_jit_storage_invalidate(e->storage, lo, hi);
   }
 }
 
@@ -176,7 +183,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
     return;
   }
   *out = e->stats;
-  out->code_bytes_used = e->used;
+  out->code_bytes_used = x86p_jit_storage_used(e->storage);
 }
 
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user) {
@@ -257,7 +264,7 @@ static int reset_code(X86pJitEngine *e, char *reason, unsigned reason_len) {
         jc_block_count(e->cache));
     return 0;
   }
-  e->used = 0u;
+  x86p_jit_storage_reset(e->storage);
   e->stats.cache_flushes++;
   return 1;
 }
@@ -270,59 +277,17 @@ static void *translate_at(
   X86pJitBlock blk;
   void *exec;
 
-  /*
-   * Translate into whatever remains rather than reserving a worst case per
-   * block. Reserving one meant a region below the worst case held exactly ONE
-   * block and flushed after every translation -- correct output, and a cache
-   * that never got a chance to work. The translator shortens a block to fit and
-   * refuses only below X86P_JIT_MIN_BLOCK_BYTES, so that refusal is the signal
-   * to flush.
-   */
-  if (e->code.size - e->used < X86P_JIT_MIN_BLOCK_BYTES) {
+  if (!x86p_jit_storage_has_room(e->storage)) {
     if (!reset_code(e, reason, reason_len)) {
       *st = kX86pJitOutOfSpace;
       return NULL;
     }
-    if (e->code.size - e->used < X86P_JIT_MIN_BLOCK_BYTES) {
-      *st = kX86pJitOutOfSpace;
-      say(reason, reason_len, "code region of %zu bytes cannot hold one block", e->code.size);
-      return NULL;
-    }
   }
-
-  if (jc_code_begin_write(&e->code) != kJcCodeOk) {
-    *st = kX86pJitOutOfSpace;
-    say(reason, reason_len, "code memory (%s) refused a write window", jc_code_mechanism());
-    return NULL;
-  }
-
-  *st = x86p_jit_translate_bounded(e->mem,
-                                   eip,
-                                   e->code.write + e->used,
-                                   e->code.size - e->used,
-                                   e->boundary,
-                                   e->boundary_user,
-                                   &blk,
-                                   reason,
-                                   reason_len);
+  *st = x86p_jit_storage_translate(e->storage, e->mem, eip, e->boundary, e->boundary_user, &blk, reason, reason_len);
   if (*st != kX86pJitOk) {
-    /* Published anyway: the region must not be left writable, whether or not
-       anything was written into it. */
-    (void)jc_code_publish_range(&e->code, e->used, 0);
     return NULL;
   }
-
-  if (jc_code_publish_range(&e->code, e->used, blk.host_bytes) != kJcCodeOk) {
-    *st = kX86pJitOutOfSpace;
-    say(reason, reason_len, "code memory (%s) refused to publish %zu bytes", jc_code_mechanism(), blk.host_bytes);
-    return NULL;
-  }
-
-  /* The EXEC address, never the write address: under dual mapping they differ,
-     and a cache full of write addresses runs correctly on Linux and crashes on
-     Android. */
-  exec = e->code.exec + e->used;
-  e->used += blk.host_bytes;
+  exec = blk.entry;
 
   if (!jc_block_insert(e->cache, eip, exec, blk.guest_len)) {
     /* The table is full. Flushing invalidates the block just written, so the

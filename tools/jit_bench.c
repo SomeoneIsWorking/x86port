@@ -214,7 +214,7 @@ static X86pCpu g_cpu; /* alignment now comes from the type itself */
 #define REPS 5
 
 int main(int argc, char **argv) {
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pCpu *cpup = &g_cpu;
   X86pJitBlock blk;
   char reason[256];

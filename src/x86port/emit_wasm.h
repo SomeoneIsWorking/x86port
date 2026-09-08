@@ -217,6 +217,10 @@ void x86p_wasm_import_memory(X86pWasmEmit *e,
                              int has_maximum,
                              uint32_t maximum_pages);
 
+/* Shared linear memory requires an explicit maximum in the binary format. */
+void x86p_wasm_import_shared_memory(
+    X86pWasmEmit *e, const char *module, const char *field, uint32_t minimum_pages, uint32_t maximum_pages);
+
 /* One imported table of function references, for indirect calls. */
 void x86p_wasm_import_table(
     X86pWasmEmit *e, const char *module, const char *field, uint32_t minimum, int has_maximum, uint32_t maximum);

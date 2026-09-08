@@ -207,6 +207,16 @@ void x86p_wasm_import_memory(X86pWasmEmit *e,
   emit_limits(e, minimum_pages, has_maximum, maximum_pages);
 }
 
+void x86p_wasm_import_shared_memory(
+    X86pWasmEmit *e, const char *module, const char *field, uint32_t minimum_pages, uint32_t maximum_pages) {
+  x86p_wasm_name(e, module);
+  x86p_wasm_name(e, field);
+  x86p_wasm_byte(e, (uint8_t)kWasmExternalMemory);
+  x86p_wasm_byte(e, 0x03u); /* shared memory, with required maximum */
+  x86p_wasm_u32(e, minimum_pages);
+  x86p_wasm_u32(e, maximum_pages);
+}
+
 void x86p_wasm_import_table(
     X86pWasmEmit *e, const char *module, const char *field, uint32_t minimum, int has_maximum, uint32_t maximum) {
   x86p_wasm_name(e, module);

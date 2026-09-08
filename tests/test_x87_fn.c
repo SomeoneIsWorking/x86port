@@ -201,7 +201,7 @@ static void run_case(const Case *c, long double a, long double b) {
 #if HAVE_ORACLE
   HostOut host;
   X86pCpu cpu;
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pStepReport rep;
   long double m0 = 0.0L;
   long double m1 = 0.0L;

@@ -147,6 +147,18 @@ void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o) {
 }
 
 void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w) {
+  if (s->plan.memory_context) {
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
+    x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(s->e, w);
+    x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemOk);
+    x86p_wasm_i32_op(s->e, kWasmI32Eqz);
+    x86p_wasm_if(s->e, kWasmVoid);
+    x86p_wasm_state_exit_imm(s, insn_eip, kX86pJitExitMemoryFault);
+    x86p_wasm_end(s->e);
+    return;
+  }
+
   /*
    * A mapping narrower than the access has NO in-bounds address, so the
    * refusal is unconditional rather than arithmetic. Subtracting w from a
@@ -185,11 +197,28 @@ void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn
 }
 
 void x86p_wasm_state_load_mem(X86pWasmState *s, int w) {
+  if (s->plan.memory_context) {
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
+    x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(s->e, w);
+    x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemLoad);
+    return;
+  }
+
   x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
   load_w(s, 0u, w);
 }
 
 void x86p_wasm_state_store_mem(X86pWasmState *s, int w, X86pWasmLocal value) {
+  if (s->plan.memory_context) {
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
+    x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(s->e, w);
+    x86p_wasm_local_get(s->e, (uint32_t)value);
+    x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemStore);
+    return;
+  }
+
   x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_local_get(s->e, (uint32_t)value);
   store_w(s, 0u, w);

@@ -70,7 +70,7 @@ static int g_test_failed;
 static uint8_t g_arena[ARENA_SIZE];
 
 static X86pMem arena(void) {
-  X86pMem m;
+  X86pMem m = {0};
   m.host = g_arena;
   m.lo = CODE_BASE;
   m.size = ARENA_SIZE;

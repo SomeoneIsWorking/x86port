@@ -87,6 +87,38 @@ static void check_x87_case(const uint8_t *program, size_t length, X86pCpu initia
   jc_code_region_destroy(&code);
 }
 
+/* The low 64 bits of an IEEE binary128 object are not its numeric value.
+ * Exercise helpers returning V0 and reloading it from scratch with values
+ * that a D0-only call cannot preserve, across every guest precision/rounding
+ * mode. The independently linked oracle compares all registers and memory. */
+static void check_x87_value_abi(void) {
+  static const uint8_t programs[][14] = {
+      {0xD9, 0xC0, 0xDD, 0xD3, 0xD8, 0xE2, 0xDD, 0x1D, 0, 4, 1, 0}, /* copy/sub/store */
+      {0xDF, 0x2D, 0, 4, 1, 0, 0xD9, 0xC0, 0xDE, 0xC1},             /* FILD i64 + register add */
+      {0xD8, 0xC1, 0xD8, 0xD1, 0xDD, 0x1D, 0, 4, 1, 0},             /* add/compare/store */
+      {0xD9, 0xC0, 0xD8, 0xC9, 0xDD, 0xD2, 0xDE, 0xF1},             /* copy/mul/copy/div pop */
+  };
+  static const size_t lengths[] = {12, 10, 10, 8};
+  static const long double values[] = {0x1.000000000000001p0L, -0x1.000000000000001p0L, 0x1p-1000L};
+  static const uint16_t precision[] = {X86P_X87_PC_SINGLE, X86P_X87_PC_DOUBLE, X86P_X87_PC_EXTENDED};
+  for (unsigned v = 0; v < sizeof values / sizeof values[0]; v++) {
+    for (unsigned pc = 0; pc < sizeof precision / sizeof precision[0]; pc++) {
+      for (unsigned rc = 0; rc < 4; rc++) {
+        X86pCpu cpu;
+        x86p_cpu_reset(&cpu);
+        cpu.eip = 0x10000;
+        cpu.reg[kX86pEsp] = 0x10800;
+        cpu.x87.control = (uint16_t)(0x7F | precision[pc] | (rc << 10));
+        x86p_x87_push(&cpu.x87, 1.0L);
+        x86p_x87_push(&cpu.x87, values[v]);
+        for (unsigned p = 0; p < sizeof lengths / sizeof lengths[0]; p++) {
+          check_x87_case(programs[p], lengths[p], cpu, 0);
+        }
+      }
+    }
+  }
+}
+
 int main(void) {
   X86pCpu cpu;
   if (!x86p_jit_available()) {
@@ -374,6 +406,7 @@ int main(void) {
       check_x87_case(register_forms[i], 2, cpu, 0);
     }
   }
+  check_x87_value_abi();
   const uint8_t emms[] = {0x0F, 0x77};
   check_case(emms, sizeof emms, cpu, 0);
   printf("%u translated startup cases, %u named x87 precision refusals, %u failures\n",

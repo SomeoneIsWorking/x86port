@@ -781,9 +781,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   int terminated = 0;
   int last_kind = -1;
 
-  if (!mem || !out || !code) {
-    say(reason, reason_len, "null argument");
-    return kX86pJitOutOfSpace;
+  if (!mem || !out || !code || mem->sparse) {
+    say(reason, reason_len, mem && mem->sparse ? "sparse memory requires the WASM backend" : "null argument");
+    return mem && mem->sparse ? kX86pJitUnsupportedAtEntry : kX86pJitOutOfSpace;
   }
   memset(out, 0, sizeof *out);
 

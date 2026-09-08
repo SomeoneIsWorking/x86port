@@ -212,7 +212,7 @@ static void run_case(const Case *c, X86pRepKind rep, int df, uint32_t ecx, uint3
   static uint8_t host[BUF];
   Outcome real;
   X86pCpu cpu;
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pInsn insn;
   uint32_t esi0 = GUEST_BASE + SRC_OFF;
   uint32_t edi0 = GUEST_BASE + DST_OFF;

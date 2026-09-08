@@ -7,6 +7,8 @@
 #include "alu.h"
 #include "cond.h"
 #include "flags.h"
+#include "jit_wasm_integer.h"
+#include "jit_wasm_memory.h"
 
 #include <string.h>
 
@@ -21,7 +23,10 @@ enum {
   kTypeCond = 1,     /* (i32, i32) -> i32 */
   kTypeAluUnary = 2, /* (i32, i32, i32, i32) -> i32 */
   kTypeAlu = 3,      /* (i32, i32, i32, i32, i32) -> i32 */
-  kTypeCount = 4
+  kTypeThree = 4,
+  kTypeStore = 5,
+  kTypeSix = 6,
+  kTypeCount = 7
 };
 
 /*
@@ -53,6 +58,24 @@ const char *x86p_wasm_import_field(X86pWasmImport which) {
     return "cond";
   case kX86pWasmImportFlagCf:
     return "flag_cf";
+  case kX86pWasmImportMemOk:
+    return "mem_ok";
+  case kX86pWasmImportMemLoad:
+    return "mem_load";
+  case kX86pWasmImportMemStore:
+    return "mem_store";
+  case kX86pWasmImportMultiply:
+    return "multiply";
+  case kX86pWasmImportDivide:
+    return "divide";
+  case kX86pWasmImportString:
+    return "string";
+  case kX86pWasmImportLoop:
+    return "loop";
+  case kX86pWasmImportGetFlags:
+    return "get_flags";
+  case kX86pWasmImportSetFlags:
+    return "set_flags";
   case kX86pWasmImportCount:
   default:
     /* Not a name. A caller that asked for one past the end must not get a
@@ -78,6 +101,24 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which) {
     return (X86pWasmImportFn)x86p_cond;
   case kX86pWasmImportFlagCf:
     return (X86pWasmImportFn)x86p_flag_cf;
+  case kX86pWasmImportMemOk:
+    return (X86pWasmImportFn)x86p_wasm_mem_ok;
+  case kX86pWasmImportMemLoad:
+    return (X86pWasmImportFn)x86p_wasm_mem_load;
+  case kX86pWasmImportMemStore:
+    return (X86pWasmImportFn)x86p_wasm_mem_store;
+  case kX86pWasmImportMultiply:
+    return (X86pWasmImportFn)x86p_wasm_multiply;
+  case kX86pWasmImportDivide:
+    return (X86pWasmImportFn)x86p_wasm_divide;
+  case kX86pWasmImportString:
+    return (X86pWasmImportFn)x86p_wasm_string;
+  case kX86pWasmImportLoop:
+    return (X86pWasmImportFn)x86p_cpu_loop;
+  case kX86pWasmImportGetFlags:
+    return (X86pWasmImportFn)x86p_wasm_get_flags;
+  case kX86pWasmImportSetFlags:
+    return (X86pWasmImportFn)x86p_wasm_set_flags;
   case kX86pWasmImportCount:
   default:
     return NULL;
@@ -94,6 +135,24 @@ static uint32_t import_type(X86pWasmImport which) {
     return (uint32_t)kTypeAluUnary;
   case kX86pWasmImportCond:
     return (uint32_t)kTypeCond;
+  case kX86pWasmImportMemOk:
+    return (uint32_t)kTypeThree;
+  case kX86pWasmImportMemLoad:
+    return (uint32_t)kTypeThree;
+  case kX86pWasmImportMemStore:
+    return (uint32_t)kTypeStore;
+  case kX86pWasmImportMultiply:
+    return (uint32_t)kTypeSix;
+  case kX86pWasmImportDivide:
+    return (uint32_t)kTypeAluUnary;
+  case kX86pWasmImportString:
+    return (uint32_t)kTypeAlu;
+  case kX86pWasmImportLoop:
+    return (uint32_t)kTypeThree;
+  case kX86pWasmImportGetFlags:
+    return (uint32_t)kTypeBlock;
+  case kX86pWasmImportSetFlags:
+    return (uint32_t)kTypeCond;
   case kX86pWasmImportFlagCf:
   case kX86pWasmImportCount:
   default:
@@ -102,14 +161,17 @@ static uint32_t import_type(X86pWasmImport which) {
 }
 
 static void write_types(X86pWasmEmit *e) {
-  static const X86pWasmType i32x5[5] = {kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32};
+  static const X86pWasmType integers[6] = {kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32};
   static const X86pWasmType one_i32[1] = {kWasmI32};
   X86pWasmSize section = x86p_wasm_section_begin(e, kWasmSectionType);
   x86p_wasm_u32(e, (uint32_t)kTypeCount);
-  x86p_wasm_functype(e, i32x5, 1, one_i32, 1);
-  x86p_wasm_functype(e, i32x5, 2, one_i32, 1);
-  x86p_wasm_functype(e, i32x5, 4, one_i32, 1);
-  x86p_wasm_functype(e, i32x5, 5, one_i32, 1);
+  x86p_wasm_functype(e, integers, 1, one_i32, 1);
+  x86p_wasm_functype(e, integers, 2, one_i32, 1);
+  x86p_wasm_functype(e, integers, 4, one_i32, 1);
+  x86p_wasm_functype(e, integers, 5, one_i32, 1);
+  x86p_wasm_functype(e, integers, 3, one_i32, 1);
+  x86p_wasm_functype(e, integers, 4, NULL, 0);
+  x86p_wasm_functype(e, integers, 6, one_i32, 1);
   x86p_wasm_size_end(e, section);
 }
 
@@ -127,7 +189,13 @@ static void write_imports(X86pWasmEmit *e) {
    * against the mapping the block was translated for, which is a far narrower
    * claim than "the memory is at least this big".
    */
+#if defined(__EMSCRIPTEN_PTHREADS__)
+  /* The imported maximum is an upper bound, so this accepts the product's
+   * configured memory ceiling anywhere within wasm32's 65,536 pages. */
+  x86p_wasm_import_shared_memory(e, X86P_WASM_MEMORY_MODULE, X86P_WASM_MEMORY_FIELD, 1u, 65536u);
+#else
   x86p_wasm_import_memory(e, X86P_WASM_MEMORY_MODULE, X86P_WASM_MEMORY_FIELD, 1u, 0, 0u);
+#endif
   x86p_wasm_size_end(e, section);
 }
 

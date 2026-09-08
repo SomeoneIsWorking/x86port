@@ -135,21 +135,25 @@ typedef struct X86pCpu {
   uint64_t tsc;
 } X86pCpu;
 
-/*
- * Guest memory: one host mapping of a contiguous guest range.
- *
- * This matches what the consuming port already has -- `pc/xmen2` maps every PE
- * section into a single arena and resolves addresses against it -- so the
- * interpreter does not impose a new memory model on a port that already works.
- * It is a struct rather than a global because two engines have to be able to
- * run against independent memory for in-process comparison, which is the exact
- * thing jit-common I004 records the port as not yet able to do.
- */
+/* Guest memory uses either one contiguous borrowed host span, or an optional
+ * exact sparse mapping owner (memory_sparse.h). Zero-initialize the structure
+ * before assignment. A sparse owner ignores host/lo/size. Neither mode owns
+ * backing storage. Mapping lifetimes and mutations must be serialized against
+ * execution; consumers invalidate translated ranges before remapping them. */
+typedef struct X86pSparseMem X86pSparseMem;
 typedef struct X86pMem {
-  uint8_t *host; /* host pointer for guest address `lo` */
-  uint32_t lo;   /* first guest address covered */
-  uint32_t size; /* bytes covered from `lo` */
+  uint8_t *host; /* host pointer for guest address `lo`; NULL permits identity */
+  uint32_t lo;
+  uint32_t size;
+  X86pSparseMem *sparse; /* NULL selects the contiguous desktop fast path */
 } X86pMem;
+
+/* Resolve an entire nonempty guest span to contiguous host bytes, or return 0
+ * without changing out. Sparse spans must fit one registered allocation.
+ * Holes, address wrap and allocation crossings refuse; use read/write_bytes
+ * to cross adjacent guest mappings without assuming native contiguity. A writable
+ * pointer bypasses the write observer: caller owns invalidation before mutation. */
+int x86p_mem_resolve(const X86pMem *m, uint32_t addr, uint32_t n, uint8_t **out);
 
 /*
  * Read/write `w` bytes (1, 2 or 4) at a guest address, little-endian.
@@ -205,8 +209,9 @@ int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w);
  * One process-global hook: interpretation is already serialised by the guest
  * lock, and this exists for one caller -- the JIT engine's verify mode, which
  * records each shadow-interpreter store so it can restore memory before running
- * the block for real. Null clears it. The JIT's own emitted stores do not pass
- * through here; nothing else should install an observer.
+ * the block for real. Null clears it. Direct native/contiguous JIT stores bypass
+ * this hook; sparse WASM stores use the checked memory API and notify it.
+ * Observers must not mutate mappings, and they do not replace JIT invalidation.
  */
 typedef void (*X86pMemWriteObserver)(uint32_t addr, uint32_t len, void *user);
 void x86p_mem_set_write_observer(X86pMemWriteObserver fn, void *user);

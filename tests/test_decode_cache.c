@@ -161,7 +161,7 @@ static void test_undecodable_bytes_are_not_cached(void) {
 static void test_stepping_matches_the_uncached_path(void) {
   X86pDecodeCache *c = fresh();
   uint8_t image[64];
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pCpu cached, plain;
   unsigned i;
 
@@ -194,7 +194,7 @@ static void test_stepping_matches_the_uncached_path(void) {
 
 static void test_readable_span_stops_at_the_end(void) {
   uint8_t image[16];
-  X86pMem mem;
+  X86pMem mem = {0};
   memset(image, 0x90, sizeof image);
   memset(&mem, 0, sizeof mem);
   mem.host = image;

@@ -52,7 +52,7 @@ static uint8_t g_guest[GUEST_SIZE];
 static uint8_t g_saved[GUEST_SIZE];
 
 static X86pMem guest_mem(void) {
-  X86pMem m;
+  X86pMem m = {0};
   m.host = g_guest;
   m.lo = GUEST_BASE;
   m.size = GUEST_SIZE;
@@ -191,7 +191,7 @@ static void put_imm32(uint8_t *p, uint32_t v) {
 static size_t probe_bytes_per_insn(void) {
   uint8_t probe_guest[8u + 32u * 5u];
   uint8_t probe_code[8192];
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pJitBlock blk;
   char reason[192];
   unsigned i;
