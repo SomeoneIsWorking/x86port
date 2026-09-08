@@ -293,29 +293,42 @@ primitives. Imports call the compiled C semantic owners, rather than recorded
 helper answers. Compiling on a browser main thread is explicitly refused.
 
 Emscripten 4.0.16 and Node 24.19.0 executed the product library both in
-ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. All five
+ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. All eight
 focused targets pass in both builds. The WebAssembly product-link audit counts
-517 product symbols and ten oracle symbols with zero forbidden product
+570 product symbols and ten oracle symbols with zero forbidden product
 references. The combined native Clang 22.1.8 gate passes all 41 tests; the
 `jit-common` cache/code-memory split passes its three-test gate including
 clang-format and clang-tidy. Emscripten warns that combining pthreads with
 memory growth can slow JavaScript accesses; product performance remains
 unqualified. Recorded synthetic results:
 
-- `test_wasm_runtime`: 6,341 checks, zero failures. The helper chain, warm cache,
+- `test_wasm_runtime`: 6,349 checks, zero failures. The helper chain, warm cache,
   interior-byte invalidation and unsupported-instruction discriminator report
   three translated blocks, 17 entries and one refusal. Two 1,040-block runs
   cross module and cache capacity respectively, release discarded modules,
   preserve another engine's entries and leave zero live modules after destroy.
   The minimum advertised storage capacity and memory growth are also exercised.
-- `test_wasm_integer`: 236 translated cases, 37 expected faults, 1,892 checks,
+- `test_wasm_integer`: 236 translated cases, 37 expected faults, 3,072 checks,
   zero divergences against the separately linked interpreter. MUL/IMUL,
   DIV/IDIV, 32-bit-address strings, LOOP variants and PUSHFD/POPFD use the same
   production arithmetic, fault and repeat owners as native hosts.
-- `test_wasm_sparse`: 21 checks, two translations, five entries, zero failures.
+- `test_wasm_sparse`: 28 checks, five translations, eight entries, zero failures.
   Guest addresses map to separately owned host allocations, including scalar
   accesses crossing allocation boundaries, precise holes and remapping after
-  explicit invalidation. `test_memory_sparse` passes 910 checks on both hosts.
+  explicit invalidation. `test_memory_sparse` passes 933 checks on both hosts.
+- `test_wasm_integer_tail`: 307 translated entries, 47 fault/refusal cases,
+  3,961 checks. Double shifts, bit/BCD operations, conditional moves, flag
+  transfers, PUSHAD/POPAD/ENTER and trap/protection exits retain CPU/memory
+  state and exact refusal denominators. Stack semantics are shared with the oracle.
+- `test_wasm_x87`: 533 translated entries, 108 memory faults, six explicit raw
+  form refusals and 4,518 checks. Tests include stack depths, PC/RC, conditional
+  moves and permissions. FCOMI's explicit ST0/STi decoding exposed an oracle
+  self-comparison defect; independent less/greater/equal/NaN controls prove the
+  corrected source selection in both paths.
+- `test_wasm_simd`: 846 translated entries, 14 fault cases and 12,133 checks.
+  XMM movement, packed integer and single-float arithmetic, conversions, masks,
+  MXCSR and EMMS use the existing lane owners. Nonfinite/out-of-range integer
+  conversions explicitly return integer-indefinite rather than undefined C casts.
 - `test_x87_software`: 3,140 checks, zero failures on wasm32. Arithmetic,
   ext80/binary128 conversion and guest rounding use software math; this host
   performs zero independent x87 hardware comparisons. The native control
@@ -324,13 +337,17 @@ unqualified. Recorded synthetic results:
   against hardware: transcendental intermediates retain ext80 precision while
   FSQRT respects guest precision. The pre-fix control produced 225 failures.
 
-Still partial: x87 and SIMD instruction lowering, SHLD/SHRD, the remaining
-BCD/bit/stack/interrupt families, 16-bit memory addressing and stack forms
-remain absent from the WebAssembly backend. Raw MMX/ext80 aliasing cannot be
-represented by binary128 numerical values. Module batching and representative
-browser consumer gameplay/performance remain unqualified. These synthetic
-results establish runtime execution and its lifetime boundary, not a playable
-X-Men 2 or Little Fighter 2 release.
+Still partial: far/segment transfers, XLAT, IRETD, BOUND, ARPL, SLDT, LFP,
+16-bit memory addressing and stack forms remain absent. Raw MMX/ext80 aliasing
+cannot be represented by binary128 numerical values; raw x87 state forms and
+FXTRACT remain refused. Existing SIMD MXCSR rounding/DAZ/FTZ and approximation
+limitations persist. Generated writes to executable pages still need compiled-page
+classification, cache invalidation and an instruction-complete side exit before
+stale later instructions in the active block can execute. Whole-space invalidation
+preserves callbacks/configuration and is intended between block entries.
+Module batching and representative browser consumer gameplay/performance remain
+unqualified. These synthetic results establish runtime execution and its lifetime
+boundary, not a playable X-Men 2 or Little Fighter 2 release.
 
 ### S008 — native and original dispatch
 

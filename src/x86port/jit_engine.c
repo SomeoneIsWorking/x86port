@@ -245,7 +245,11 @@ const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e) {
  * rewind without a flush leaks the region until nothing can be translated. The
  * two are one operation for that reason and there is no way to do half of it.
  */
-static int reset_code(X86pJitEngine *e, char *reason, unsigned reason_len) {
+int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reason_len) {
+  if (!e) {
+    say(reason, reason_len, "no JIT engine");
+    return 0;
+  }
   jc_block_flush(e->cache);
   /*
    * CHECKED, not assumed. An entry surviving the flush points into arena bytes
@@ -278,7 +282,7 @@ static void *translate_at(
   void *exec;
 
   if (!x86p_jit_storage_has_room(e->storage)) {
-    if (!reset_code(e, reason, reason_len)) {
+    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
       *st = kX86pJitOutOfSpace;
       return NULL;
     }
@@ -293,7 +297,7 @@ static void *translate_at(
     /* The table is full. Flushing invalidates the block just written, so the
        translation is redone rather than entered -- entering it would be a jump
        into memory the rewind has released. */
-    if (!reset_code(e, reason, reason_len)) {
+    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
       *st = kX86pJitOutOfSpace;
       return NULL;
     }
@@ -386,7 +390,7 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
       /* Drop the translation just run so the next entry to this address is
          made from whatever the guest bytes say NOW, not what they said when
          this block was built. */
-      if (!reset_code(e, reason, reason_len)) {
+      if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
         return kX86pRunOutOfCode;
       }
     }

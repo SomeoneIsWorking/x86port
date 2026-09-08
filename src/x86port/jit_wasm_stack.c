@@ -30,7 +30,7 @@ void x86p_wasm_push_local(X86pWasmLower *l, X86pWasmLocal value, uint32_t pc) {
 
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(&l->state, pc, 4);
+  x86p_wasm_state_guard_addr(&l->state, pc, 4, kX86pMemWrite);
   x86p_wasm_state_store_mem(&l->state, 4, value);
 
   /* Committed last: everything above can still leave with a memory fault. */
@@ -61,7 +61,7 @@ void x86p_wasm_push_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   /* Read first: `PUSH ESP` stores the value ESP had before the push, and a
      memory source must be read from where it is now. */
   if (o->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, o, pc, 4);
+    x86p_wasm_state_guard(&l->state, o, pc, 4, kX86pMemRead);
     x86p_wasm_state_load_mem(&l->state, 4);
   } else if (o->kind == kX86pOperandImm) {
     x86p_wasm_i32_const(l->e, (int32_t)o->imm);
@@ -86,7 +86,7 @@ void x86p_wasm_pop_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_load_reg(&l->state, kX86pEsp, 4);
   x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(&l->state, pc, 4);
+  x86p_wasm_state_guard_addr(&l->state, pc, 4, kX86pMemRead);
   x86p_wasm_state_load_mem(&l->state, 4);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
 
@@ -100,7 +100,7 @@ void x86p_wasm_pop_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_store_reg(&l->state, kX86pEsp, 4, kX86pWasmLocalA);
 
   if (o->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, o, pc, 4);
+    x86p_wasm_state_guard(&l->state, o, pc, 4, kX86pMemWrite);
     x86p_wasm_state_store_mem(&l->state, 4, kX86pWasmLocalR);
     return;
   }

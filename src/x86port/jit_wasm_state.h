@@ -70,6 +70,7 @@ void x86p_wasm_state_cpu(X86pWasmState *s);
 /* Push the address of cpu->flags, which is what every imported helper that
    reads or writes flag state takes. */
 void x86p_wasm_state_flags_addr(X86pWasmState *s);
+void x86p_wasm_state_x87_addr(X86pWasmState *s);
 
 /*
  * Push a guest register of width `w` (1, 2 or 4), zero-extended.
@@ -83,6 +84,12 @@ void x86p_wasm_state_load_reg(X86pWasmState *s, int index, int w);
    preserves the rest of the register by construction, because the host is
    little-endian and the slot is a dword -- the rule cpu.h states. */
 void x86p_wasm_state_store_reg(X86pWasmState *s, int index, int w, X86pWasmLocal value);
+
+/* SIMD lanes are 32-bit bit patterns; the state owner keeps CPU layout private. */
+void x86p_wasm_state_load_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane);
+void x86p_wasm_state_store_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane, X86pWasmLocal value);
+void x86p_wasm_state_load_mxcsr(X86pWasmState *s);
+void x86p_wasm_state_store_mxcsr(X86pWasmState *s, X86pWasmLocal value);
 
 /*
  * Push base + index*scale + disp, with NO segment base added.
@@ -102,7 +109,7 @@ void x86p_wasm_state_address_parts(X86pWasmState *s, const X86pOperand *o);
 void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o);
 
 /*
- * Bounds-check the operand for an access of width `w`. Contiguous mode leaves
+ * Bounds-check the operand for width `w` and explicit X86pMemAccess rights. Contiguous mode leaves
  * kX86pWasmLocalAddr holding its linear-memory address; sparse mode leaves the
  * guest address for checked memory imports that can cross backing spans.
  *
@@ -118,13 +125,13 @@ void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o);
  * control flow is structured, an early `return` costs the same as a branch to
  * one, and a stub would need a block wrapping the entire body to branch to.
  */
-void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn_eip, int w);
+void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn_eip, int w, unsigned access);
 
 /*
  * Bounds-check an address ALREADY in kX86pWasmLocalAddr, for the accesses
  * whose address is not an operand -- the stack, and a RET's return address.
  */
-void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w);
+void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access);
 
 /* Push the guest value at kX86pWasmLocalAddr, zero-extended from width `w`. */
 void x86p_wasm_state_load_mem(X86pWasmState *s, int w);

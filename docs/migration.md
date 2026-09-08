@@ -162,21 +162,25 @@ Ordered work:
    compares 236 executed arithmetic/string/loop/flag-stack cases against the
    separately linked oracle. `docs/project-state.md` S016 records denominators.
 
-   Remaining lowering includes x87, SIMD/3DNow!, SHLD/SHRD, BCD and bit
-   operations, PUSHAD/POPAD, ENTER, interrupts, privileged instructions,
-   16-bit memory addressing and 16-bit stack forms. Unsupported forms still
-   refuse at the original instruction.
+   Numeric x87, XMM SIMD, double shifts, BCD/bit operations, multi-access
+   stacks, flag transfers and architectural trap/protection exits now lower
+   through shared arithmetic owners. Remaining families include far/segment
+   transfers, XLAT, IRETD, BOUND, ARPL, SLDT and LFP, plus 16-bit addressing
+   and stack forms. Raw MMX/3DNow! aliasing and raw x87 state remain refused.
 3. **Module lifetime is a correctness requirement, not tuning.** The product
    storage owner now releases module/table references after cache invalidation,
    resets the module arena after flushing the cache, and preserves other engine
    instances. More than 1,024 blocks execute with bounded live modules in the
-   real engine. Batching several guest blocks per module remains tuning work.
+   real engine. Generated self-modifying stores still require compiled-page
+   classification and an instruction-complete side exit before later stale
+   instructions can run. Range invalidation alone only protects future entries.
+   Batching several guest blocks per module remains tuning work.
 4. **x87 has no host floating point to delegate to.** Software arithmetic and
    narrowing now compile and execute on wasm32 with explicit guest rounding.
    Numerical ext80 values round-trip through the binary128 host representation;
    raw MMX/ext80 alias semantics still require a separate representation contract.
-   The WebAssembly backend still needs x87 instruction lowering through these
-   owners before a consumer can use them.
+   The WebAssembly backend calls these owners through scalar imports; no
+   decoded-instruction executor crosses the product boundary.
 5. **Compilation happens off the main thread.** The real host refuses browser
    main-thread instantiation. Pthread builds import shared linear memory with
    its required maximum; product composition must run the blocking guest on a

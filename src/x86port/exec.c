@@ -6,6 +6,7 @@
 #include "cpuid.h"
 #include "privilege.h"
 #include "simd.h"
+#include "stack_ops.h"
 #include "string_ops.h"
 
 #include "x87_exec.h"
@@ -796,74 +797,23 @@ static void execute(Ctx *c) {
     return;
   }
 
-  case kX86pInsnPushad: {
-    /* ESP is pushed as it was BEFORE the instruction, so the saved value is
-       the frame the guest had, not the one four bytes into this push. */
-    static const int kOrder[] = {kX86pEax, kX86pEcx, kX86pEdx, kX86pEbx, -1, kX86pEbp, kX86pEsi, kX86pEdi};
-    const uint32_t esp0 = cpu->reg[kX86pEsp];
-    unsigned i;
-    for (i = 0; i < 8u; i++) {
-      const uint32_t v = (kOrder[i] < 0) ? esp0 : cpu->reg[kOrder[i]];
-      if (!x86p_push32(cpu, c->mem, v)) {
-        c->fault = kX86pStepMemoryFault;
-        c->fault_addr = cpu->reg[kX86pEsp] - 4u;
-        return;
-      }
-    }
-    return;
-  }
-
-  case kX86pInsnPopad: {
-    /* The reverse order, and the saved ESP is DISCARDED rather than loaded --
-       loading it would undo the eight pops this instruction just performed. */
-    static const int kOrder[] = {kX86pEdi, kX86pEsi, kX86pEbp, -1, kX86pEbx, kX86pEdx, kX86pEcx, kX86pEax};
-    unsigned i;
-    for (i = 0; i < 8u; i++) {
-      uint32_t v;
-      if (!x86p_pop32(cpu, c->mem, &v)) {
-        c->fault = kX86pStepMemoryFault;
-        c->fault_addr = cpu->reg[kX86pEsp];
-        return;
-      }
-      if (kOrder[i] >= 0) {
-        cpu->reg[kOrder[i]] = v;
-      }
-    }
-    return;
-  }
-
-  case kX86pInsnEnter: {
-    const uint32_t alloc = (uint32_t)o0->imm & 0xFFFFu;
-    const unsigned level = (unsigned)o1->imm & 0x1Fu;
-    uint32_t frame;
-    unsigned i;
-    if (!x86p_push32(cpu, c->mem, cpu->reg[kX86pEbp])) {
+  case kX86pInsnPushad:
+    if (!x86p_stack_pushad(cpu, c->mem, &c->fault_addr)) {
       c->fault = kX86pStepMemoryFault;
-      c->fault_addr = cpu->reg[kX86pEsp] - 4u;
-      return;
     }
-    frame = cpu->reg[kX86pEsp];
-    /* The nesting level copies the enclosing frames' pointers into the new
-       frame. No C compiler emits a non-zero level, but the instruction has
-       one and a decoder that reaches ENTER can reach ENTER 8,3. */
-    for (i = 1; i < level; i++) {
-      uint32_t v;
-      cpu->reg[kX86pEbp] -= 4u;
-      if (!x86p_mem_read(c->mem, cpu->reg[kX86pEbp], 4, &v) || !x86p_push32(cpu, c->mem, v)) {
-        c->fault = kX86pStepMemoryFault;
-        c->fault_addr = cpu->reg[kX86pEbp];
-        return;
-      }
-    }
-    if (level > 0u && !x86p_push32(cpu, c->mem, frame)) {
-      c->fault = kX86pStepMemoryFault;
-      c->fault_addr = cpu->reg[kX86pEsp] - 4u;
-      return;
-    }
-    cpu->reg[kX86pEbp] = frame;
-    cpu->reg[kX86pEsp] -= alloc;
     return;
-  }
+
+  case kX86pInsnPopad:
+    if (!x86p_stack_popad(cpu, c->mem, &c->fault_addr)) {
+      c->fault = kX86pStepMemoryFault;
+    }
+    return;
+
+  case kX86pInsnEnter:
+    if (!x86p_stack_enter(cpu, c->mem, o0->imm, o1->imm, &c->fault_addr)) {
+      c->fault = kX86pStepMemoryFault;
+    }
+    return;
 
   case kX86pInsnLoop:
   case kX86pInsnLoope:

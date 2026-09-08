@@ -3,6 +3,7 @@
 
 #include "cond.h"
 #include "flags.h"
+#include "x87_memory.h"
 #include "x87_state.h"
 #include "x87_transcendental.h"
 
@@ -53,111 +54,26 @@ static void fault(Ctx *c) {
  * instead, which is why that is a separate function rather than another width
  * in this one.
  */
+static void memory_status(Ctx *c, X86pX87MemoryStatus status) {
+  if (status == kX86pX87MemoryFault) {
+    fault(c);
+  } else if (status == kX86pX87MemoryUnsupported) {
+    c->status = kX86pX87ExecUnsupported;
+  }
+}
+static long double read_value(Ctx *c, int size, int integer) {
+  long double value = 0;
+  memory_status(c, x86p_x87_read_value(c->mem, c->addr, (unsigned)size, integer, &value));
+  return value;
+}
 static long double read_float(Ctx *c, int size) {
-  switch (size) {
-  case 4: {
-    uint32_t bits = 0;
-    if (!x86p_mem_read(c->mem, c->addr, 4, &bits)) {
-      fault(c);
-      return 0.0L;
-    }
-    return x86p_x87_from_f32(bits);
-  }
-  case 8: {
-    uint8_t b[8];
-    uint64_t bits = 0;
-    int i;
-    if (!x86p_mem_read_bytes(c->mem, c->addr, b, 8)) {
-      fault(c);
-      return 0.0L;
-    }
-    for (i = 7; i >= 0; i--) {
-      bits = (bits << 8) | b[i];
-    }
-    return x86p_x87_from_f64(bits);
-  }
-  case 10: {
-    uint8_t b[10];
-    if (!x86p_mem_read_bytes(c->mem, c->addr, b, 10)) {
-      fault(c);
-      return 0.0L;
-    }
-    return x86p_x87_from_f80(b);
-  }
-  default:
-    c->status = kX86pX87ExecUnsupported;
-    return 0.0L;
-  }
+  return read_value(c, size, 0);
 }
-
 static long double read_integer(Ctx *c, int size) {
-  uint32_t v = 0;
-  switch (size) {
-  case 2:
-    if (!x86p_mem_read(c->mem, c->addr, 2, &v)) {
-      fault(c);
-      return 0.0L;
-    }
-    return (long double)(int16_t)(uint16_t)v;
-  case 4:
-    if (!x86p_mem_read(c->mem, c->addr, 4, &v)) {
-      fault(c);
-      return 0.0L;
-    }
-    return (long double)(int32_t)v;
-  case 8: {
-    uint8_t b[8];
-    uint64_t bits = 0;
-    int i;
-    if (!x86p_mem_read_bytes(c->mem, c->addr, b, 8)) {
-      fault(c);
-      return 0.0L;
-    }
-    for (i = 7; i >= 0; i--) {
-      bits = (bits << 8) | b[i];
-    }
-    return (long double)(int64_t)bits;
-  }
-  default:
-    c->status = kX86pX87ExecUnsupported;
-    return 0.0L;
-  }
+  return read_value(c, size, 1);
 }
-
-static void write_float(Ctx *c, int size, long double v) {
-  switch (size) {
-  case 4: {
-    uint32_t bits = x86p_x87_to_f32(c->fpu, v);
-    if (!x86p_mem_write(c->mem, c->addr, 4, bits)) {
-      fault(c);
-    }
-    return;
-  }
-  case 8: {
-    uint64_t bits = x86p_x87_to_f64(c->fpu, v);
-    uint8_t b[8];
-    int i;
-    for (i = 0; i < 8; i++) {
-      b[i] = (uint8_t)(bits & 0xFFu);
-      bits >>= 8;
-    }
-    if (!x86p_mem_write_bytes(c->mem, c->addr, b, 8)) {
-      fault(c);
-    }
-    return;
-  }
-  case 10: {
-    uint8_t b[10];
-    x86p_x87_to_f80(v, b);
-    if (!x86p_mem_write_bytes(c->mem, c->addr, b, 10)) {
-      fault(c);
-    }
-    return;
-  }
-  default:
-    c->status = kX86pX87ExecUnsupported;
-    return;
-  }
+static void write_float(Ctx *c, int size, long double value) {
+  memory_status(c, x86p_x87_write_value(c->fpu, c->mem, c->addr, (unsigned)size, 0, value));
 }
 
 /*
@@ -269,38 +185,18 @@ static void execute(Ctx *c) {
   }
 
   case kX86pX87InsnStoreInt: {
-    long double v;
-    int64_t n;
+    long double value;
     if (!c->has_mem) {
       c->status = kX86pX87ExecUnsupported;
       return;
     }
-    if (!x86p_x87_get(f, 0, &v)) {
+    if (!x86p_x87_get(f, 0, &value)) {
       return;
     }
-    if (!x86p_x87_to_int(f, v, o0->size, &n)) {
-      /* Out of range is an invalid operation with a defined result -- the
-         "integer indefinite" value -- not something to refuse. */
-      f->status |= X86P_X87_IE;
-      n = (o0->size == 2) ? INT64_C(-32768) : (o0->size == 4 ? INT64_C(-2147483648) : INT64_MIN);
+    memory_status(c, x86p_x87_write_value(f, c->mem, c->addr, o0->size, 1, value));
+    if (c->status == kX86pX87ExecOk) {
+      do_pops(c, in->x87_pops);
     }
-    if (o0->size == 8) {
-      uint8_t b[8];
-      uint64_t bits = (uint64_t)n;
-      int i;
-      for (i = 0; i < 8; i++) {
-        b[i] = (uint8_t)(bits & 0xFFu);
-        bits >>= 8;
-      }
-      if (!x86p_mem_write_bytes(c->mem, c->addr, b, 8)) {
-        fault(c);
-        return;
-      }
-    } else if (!x86p_mem_write(c->mem, c->addr, o0->size, (uint32_t)(uint64_t)n)) {
-      fault(c);
-      return;
-    }
-    do_pops(c, in->x87_pops);
     return;
   }
 
@@ -404,8 +300,7 @@ static void execute(Ctx *c) {
 
   case kX86pX87InsnFree:
     if (in->operands >= 1 && o0->kind == kX86pOperandSt) {
-      int p = (f->top + o0->reg) & (X86P_X87_REGS - 1);
-      f->tag[p] = (uint8_t)kX86pX87TagEmpty;
+      x86p_x87_free(f, o0->reg);
     }
     return;
 
@@ -455,34 +350,11 @@ static void execute(Ctx *c) {
     return;
 
   case kX86pX87InsnCompareInt: {
-    /*
-     * FCOMI and friends write EFLAGS rather than the x87 condition codes,
-     * which is the whole point of them: no FNSTSW, no SAHF, just a branch. ZF,
-     * PF and CF carry the same three-way encoding, with PF as UNORDERED.
-     */
-    long double x = 0.0L;
-    long double y = 0.0L;
-    uint32_t e = X86P_EFLAGS_FIXED;
-    int i = (in->operands >= 1 && o0->kind == kX86pOperandSt) ? o0->reg : 1;
-    if (!x86p_x87_get(f, 0, &x) || !x86p_x87_get(f, i, &y)) {
-      /* x86p_x87_get has already set the stack-fault and invalid-operation
-         flags; the instruction produces no result, exactly as the other arms
-         here do. */
-      return;
-    }
-    if (!(x == x) || !(y == y)) {
-      e |= X86P_ZF | X86P_PF | X86P_CF;
-    } else if (x > y) {
-      /* all three clear */
-    } else if (x < y) {
-      e |= X86P_CF;
-    } else {
-      e |= X86P_ZF;
-    }
-    x86p_flags_set_explicit(&c->cpu->flags, e);
-    for (i = 0; i < (int)in->x87_pops; i++) {
-      long double dropped;
-      (void)x86p_x87_pop(f, &dropped);
+    const int index = in->operands == 2                                   ? in->operand[1].reg
+                      : (in->operands == 1 && o0->kind == kX86pOperandSt) ? o0->reg
+                                                                          : 1;
+    if (x86p_x87_compare_flags(f, &c->cpu->flags, index)) {
+      do_pops(c, in->x87_pops);
     }
     return;
   }

@@ -148,6 +148,12 @@ static void lifetime(const X86pMem *mem, unsigned cache_blocks) {
   cpu.eip = kGuestBase;
   run(other, &cpu, 1u);
   check(cpu.reg[kX86pEax] == 37u, "another engine's table entry changed during eviction");
+  char reason[256] = {0};
+  check(x86p_jit_engine_invalidate_all(other, reason, sizeof reason), reason);
+  check(live_modules() == 0u, "whole-space invalidation retained modules");
+  cpu.eip = kGuestBase;
+  run(other, &cpu, 1u);
+  check(cpu.reg[kX86pEax] == 0u, "whole-space invalidation reused stale code");
   x86p_jit_engine_destroy(other);
   check(live_modules() == 0u, "lifetime test leaked modules");
 }

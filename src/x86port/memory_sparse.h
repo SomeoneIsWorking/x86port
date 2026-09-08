@@ -1,6 +1,7 @@
 #ifndef X86PORT_MEMORY_SPARSE_H
 #define X86PORT_MEMORY_SPARSE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -19,7 +20,23 @@ void x86p_sparse_destroy(X86pSparseMem *sparse);
 
 /* Nonempty, nonwrapping, nonoverlapping guest spans only; host backing must
  * be nonnull and valid for size bytes. Failure leaves every mapping intact. */
+int x86p_sparse_range_available(const X86pSparseMem *sparse, uint32_t guest, uint32_t size);
 int x86p_sparse_map(X86pSparseMem *sparse, uint32_t guest, void *host, uint32_t size);
+/* Access uses X86pMemAccess bits from cpu.h; zero reserves inaccessible backing.
+ * The ordinary map API grants read and write. */
+int x86p_sparse_map_access(X86pSparseMem *sparse, uint32_t guest, void *host, uint32_t size, unsigned access);
+/* Atomic mutations, splitting existing ranges at the boundaries. Protect
+ * requires every byte mapped; unmap ignores already-unmapped holes like munmap.
+ * Wrap/allocation failure refuse unchanged. Protect preserves backing and
+ * original-allocation provenance. */
+int x86p_sparse_protect(X86pSparseMem *sparse, uint32_t guest, uint32_t size, unsigned access);
+int x86p_sparse_unmap_range(X86pSparseMem *sparse, uint32_t guest, uint32_t size);
+/* True while any mapped fragment still borrows bytes from this host allocation. */
+int x86p_sparse_host_in_use(const X86pSparseMem *sparse, const void *host, size_t size);
+uint32_t
+x86p_sparse_span_access(const X86pSparseMem *sparse, uint32_t guest, uint32_t max, unsigned access, uint8_t **host);
+int x86p_sparse_resolve(const X86pSparseMem *sparse, uint32_t guest, uint32_t size, unsigned access, uint8_t **host);
+
 /* Remove exactly one registered mapping; partial removal refuses unchanged. */
 int x86p_sparse_unmap(X86pSparseMem *sparse, uint32_t guest, uint32_t size);
 

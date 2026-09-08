@@ -50,7 +50,7 @@ static uint32_t relative_target(const X86pInsn *insn, uint32_t pc) {
  */
 static void read_target(X86pWasmLower *l, const X86pOperand *o, uint32_t pc) {
   if (o->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, o, pc, 4);
+    x86p_wasm_state_guard(&l->state, o, pc, 4, kX86pMemRead);
     x86p_wasm_state_load_mem(&l->state, 4);
   } else {
     x86p_wasm_state_load_reg(&l->state, o->reg, 4);
@@ -148,7 +148,7 @@ void x86p_wasm_ret_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_load_reg(&l->state, kX86pEsp, 4);
   x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(&l->state, pc, 4);
+  x86p_wasm_state_guard_addr(&l->state, pc, 4, kX86pMemRead);
   x86p_wasm_state_load_mem(&l->state, 4);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalTarget);
 

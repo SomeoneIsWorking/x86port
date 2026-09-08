@@ -48,8 +48,12 @@ extern "C" {
  * it chose itself would be a second opinion about this file's worst case.
  */
 #define X86P_WASM_WORST_CASE_INSN_BYTES 320u
-#define X86P_WASM_MODULE_OVERHEAD_BYTES 512u
-#define X86P_WASM_MIN_MODULE_BYTES (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES)
+/* CPU local, EIP/status constants, store, return and body end. */
+#define X86P_WASM_EXIT_BYTES 24u
+/* Framing/types/exports plus a bounded field name and import descriptor per helper. */
+#define X86P_WASM_MODULE_OVERHEAD_BYTES (512u + 48u * (unsigned)kX86pWasmImportCount)
+#define X86P_WASM_MIN_MODULE_BYTES                                                                                     \
+  (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES + X86P_WASM_EXIT_BYTES)
 
 /*
  * Lower the basic block at `eip` into the module's next function body.

@@ -123,9 +123,53 @@ static void compare_contiguous(void) {
   x86p_sparse_destroy(sparse);
 }
 
+static void permissions_and_partial_lifetimes(void) {
+  uint8_t backing[12288] = {0};
+  X86pSparseMem *sparse = x86p_sparse_create();
+  X86pMem memory = {.sparse = sparse};
+  uint8_t *pointer = NULL;
+  uint32_t value = 0;
+  check(sparse != NULL, "create protected mapping owner");
+  if (!sparse) {
+    return;
+  }
+  check(x86p_sparse_map_access(sparse, 0x4000, backing, sizeof backing, 0), "reserve inaccessible backing");
+  check(!x86p_mem_read(&memory, 0x4000, 1, &value) && !x86p_mem_write(&memory, 0x4000, 1, 1),
+        "reservation refuses reads and writes");
+  check(x86p_mem_accessible(&memory, 0x4000, sizeof backing, 0), "reservation retains mapping ownership");
+  check(x86p_sparse_protect(sparse, 0x4000, sizeof backing, kX86pMemRead | kX86pMemWrite), "commit reservation");
+  check(x86p_mem_write(&memory, 0x4fff, 4, 0x12345678), "write cross-page baseline");
+  check(x86p_sparse_protect(sparse, 0x5000, 4096, 0), "decommit middle page");
+  check(!x86p_mem_read(&memory, 0x4fff, 4, &value), "decommitted cross-page read refuses");
+  check(!x86p_mem_write(&memory, 0x4fff, 4, 0xffffffff) && backing[4095] == 0x78,
+        "decommitted cross-page store preserves prefix");
+  check(x86p_mem_accessible(&memory, 0x4000, 4096, kX86pMemWrite) &&
+            x86p_mem_accessible(&memory, 0x6000, 4096, kX86pMemRead),
+        "middle protection preserves neighboring pages");
+  check(x86p_sparse_protect(sparse, 0x5000, 4096, kX86pMemRead), "restore read-only page");
+  check(x86p_mem_read(&memory, 0x4fff, 4, &value) && value == 0x12345678, "protection retains original page contents");
+  check(!x86p_mem_write(&memory, 0x4fff, 4, 0xffffffff) && backing[4095] == 0x78,
+        "read-only crossing store changes no bytes");
+  check(x86p_mem_resolve(&memory, 0x4000, sizeof backing, &pointer) && pointer == backing,
+        "native span crosses fragments from same original allocation");
+  check(!x86p_sparse_protect(sparse, 0x6000, 8192, 0), "protection across hole refuses atomically");
+  check(x86p_mem_accessible(&memory, 0x6000, 4096, kX86pMemRead), "failed protection preserves valid prefix");
+  check(x86p_sparse_unmap_range(sparse, 0x5000, 4096), "release middle page");
+  check(!x86p_sparse_protect(sparse, 0x5000, 4096, kX86pMemRead), "cannot recommit a released hole");
+  check(x86p_sparse_host_in_use(sparse, backing, sizeof backing), "neighboring fragments retain allocation");
+  check(x86p_sparse_unmap_range(sparse, 0x4000, sizeof backing),
+        "release whole allocation also tolerates an earlier released subrange");
+  check(!x86p_sparse_host_in_use(sparse, backing, sizeof backing), "last release returns backing lifetime");
+  check(x86p_sparse_map_access(sparse, 0x4000, backing, sizeof backing, kX86pMemWrite), "map write-only region");
+  check(x86p_mem_write(&memory, 0x4000, 1, 0x93) && !x86p_mem_read(&memory, 0x4000, 1, &value),
+        "write-only access separates read and write permission");
+  x86p_sparse_destroy(sparse);
+}
+
 int main(void) {
   spans_and_faults();
   compare_contiguous();
+  permissions_and_partial_lifetimes();
   printf("sparse memory: %u checks, %u failures\n", checks, failures);
   return failures ? 1 : 0;
 }

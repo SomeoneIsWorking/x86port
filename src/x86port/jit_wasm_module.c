@@ -3,31 +3,9 @@
  * translated block on this host is a module rather than a run of bytes.
  */
 #include "jit_wasm_module.h"
-
-#include "alu.h"
-#include "cond.h"
-#include "flags.h"
-#include "jit_wasm_integer.h"
-#include "jit_wasm_memory.h"
+#include "jit_wasm_imports.h"
 
 #include <string.h>
-
-/*
- * The four function types an emitted module declares, in the order that fixes
- * their type indices. Type 0 is the block signature AND x86p_flag_cf's -- one
- * i32 in, one i32 out -- so it is written once and referenced twice, which is
- * what the format expects and what the engine's own canonicalisation does.
- */
-enum {
-  kTypeBlock = 0,    /* (i32) -> i32 : a block, and x86p_flag_cf */
-  kTypeCond = 1,     /* (i32, i32) -> i32 */
-  kTypeAluUnary = 2, /* (i32, i32, i32, i32) -> i32 */
-  kTypeAlu = 3,      /* (i32, i32, i32, i32, i32) -> i32 */
-  kTypeThree = 4,
-  kTypeStore = 5,
-  kTypeSix = 6,
-  kTypeCount = 7
-};
 
 /*
  * The export names, written out rather than formed at run time.
@@ -48,130 +26,17 @@ const char *x86p_wasm_body_name(unsigned index) {
   return index < X86P_WASM_MAX_BODIES ? kBodyNames[index] : NULL;
 }
 
-const char *x86p_wasm_import_field(X86pWasmImport which) {
-  switch (which) {
-  case kX86pWasmImportAlu:
-    return "alu";
-  case kX86pWasmImportAluUnary:
-    return "alu_unary";
-  case kX86pWasmImportCond:
-    return "cond";
-  case kX86pWasmImportFlagCf:
-    return "flag_cf";
-  case kX86pWasmImportMemOk:
-    return "mem_ok";
-  case kX86pWasmImportMemLoad:
-    return "mem_load";
-  case kX86pWasmImportMemStore:
-    return "mem_store";
-  case kX86pWasmImportMultiply:
-    return "multiply";
-  case kX86pWasmImportDivide:
-    return "divide";
-  case kX86pWasmImportString:
-    return "string";
-  case kX86pWasmImportLoop:
-    return "loop";
-  case kX86pWasmImportGetFlags:
-    return "get_flags";
-  case kX86pWasmImportSetFlags:
-    return "set_flags";
-  case kX86pWasmImportCount:
-  default:
-    /* Not a name. A caller that asked for one past the end must not get a
-       plausible string it would then bind something to. */
-    return "";
-  }
-}
-
-X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which) {
-  /*
-   * The cast goes through a same-signature function pointer because ISO C
-   * defines conversion between function pointer types but not between a
-   * function pointer and void *. Every host this targets defines the latter
-   * too; saying it this way keeps the strict build silent without a
-   * reinterpreting cast through an object pointer.
-   */
-  switch (which) {
-  case kX86pWasmImportAlu:
-    return (X86pWasmImportFn)x86p_alu;
-  case kX86pWasmImportAluUnary:
-    return (X86pWasmImportFn)x86p_alu_unary;
-  case kX86pWasmImportCond:
-    return (X86pWasmImportFn)x86p_cond;
-  case kX86pWasmImportFlagCf:
-    return (X86pWasmImportFn)x86p_flag_cf;
-  case kX86pWasmImportMemOk:
-    return (X86pWasmImportFn)x86p_wasm_mem_ok;
-  case kX86pWasmImportMemLoad:
-    return (X86pWasmImportFn)x86p_wasm_mem_load;
-  case kX86pWasmImportMemStore:
-    return (X86pWasmImportFn)x86p_wasm_mem_store;
-  case kX86pWasmImportMultiply:
-    return (X86pWasmImportFn)x86p_wasm_multiply;
-  case kX86pWasmImportDivide:
-    return (X86pWasmImportFn)x86p_wasm_divide;
-  case kX86pWasmImportString:
-    return (X86pWasmImportFn)x86p_wasm_string;
-  case kX86pWasmImportLoop:
-    return (X86pWasmImportFn)x86p_cpu_loop;
-  case kX86pWasmImportGetFlags:
-    return (X86pWasmImportFn)x86p_wasm_get_flags;
-  case kX86pWasmImportSetFlags:
-    return (X86pWasmImportFn)x86p_wasm_set_flags;
-  case kX86pWasmImportCount:
-  default:
-    return NULL;
-  }
-}
-
-/* Which type index an import has. Kept beside the enum it decodes so a new
-   import cannot be added without answering the question. */
-static uint32_t import_type(X86pWasmImport which) {
-  switch (which) {
-  case kX86pWasmImportAlu:
-    return (uint32_t)kTypeAlu;
-  case kX86pWasmImportAluUnary:
-    return (uint32_t)kTypeAluUnary;
-  case kX86pWasmImportCond:
-    return (uint32_t)kTypeCond;
-  case kX86pWasmImportMemOk:
-    return (uint32_t)kTypeThree;
-  case kX86pWasmImportMemLoad:
-    return (uint32_t)kTypeThree;
-  case kX86pWasmImportMemStore:
-    return (uint32_t)kTypeStore;
-  case kX86pWasmImportMultiply:
-    return (uint32_t)kTypeSix;
-  case kX86pWasmImportDivide:
-    return (uint32_t)kTypeAluUnary;
-  case kX86pWasmImportString:
-    return (uint32_t)kTypeAlu;
-  case kX86pWasmImportLoop:
-    return (uint32_t)kTypeThree;
-  case kX86pWasmImportGetFlags:
-    return (uint32_t)kTypeBlock;
-  case kX86pWasmImportSetFlags:
-    return (uint32_t)kTypeCond;
-  case kX86pWasmImportFlagCf:
-  case kX86pWasmImportCount:
-  default:
-    return (uint32_t)kTypeBlock;
-  }
-}
-
 static void write_types(X86pWasmEmit *e) {
-  static const X86pWasmType integers[6] = {kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32};
-  static const X86pWasmType one_i32[1] = {kWasmI32};
+  static const X86pWasmType integers[8] = {
+      kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32, kWasmI32};
   X86pWasmSize section = x86p_wasm_section_begin(e, kWasmSectionType);
-  x86p_wasm_u32(e, (uint32_t)kTypeCount);
-  x86p_wasm_functype(e, integers, 1, one_i32, 1);
-  x86p_wasm_functype(e, integers, 2, one_i32, 1);
-  x86p_wasm_functype(e, integers, 4, one_i32, 1);
-  x86p_wasm_functype(e, integers, 5, one_i32, 1);
-  x86p_wasm_functype(e, integers, 3, one_i32, 1);
-  x86p_wasm_functype(e, integers, 4, NULL, 0);
-  x86p_wasm_functype(e, integers, 6, one_i32, 1);
+  x86p_wasm_u32(e, 12u);
+  for (unsigned params = 1; params <= 8; ++params) {
+    x86p_wasm_functype(e, integers, params, integers, 1);
+  }
+  for (unsigned params = 1; params <= 4; ++params) {
+    x86p_wasm_functype(e, integers, params, NULL, 0);
+  }
   x86p_wasm_size_end(e, section);
 }
 
@@ -181,7 +46,8 @@ static void write_imports(X86pWasmEmit *e) {
   /* The memory is the one extra entry beyond the functions. */
   x86p_wasm_u32(e, (uint32_t)kX86pWasmImportCount + 1u);
   for (i = 0; i < (unsigned)kX86pWasmImportCount; i++) {
-    x86p_wasm_import_func(e, "env", x86p_wasm_import_field((X86pWasmImport)i), import_type((X86pWasmImport)i));
+    x86p_wasm_import_func(
+        e, "env", x86p_wasm_import_field((X86pWasmImport)i), x86p_wasm_import_type((X86pWasmImport)i));
   }
   /*
    * One page minimum and no maximum. The minimum is a floor the instantiating

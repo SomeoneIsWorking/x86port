@@ -45,3 +45,26 @@ void x86p_x87_test(X86pX87 *f) {
     f->status |= X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
   }
 }
+
+int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index) {
+  long double x, y;
+  uint32_t result = X86P_EFLAGS_FIXED;
+  if (!x86p_x87_get(f, 0, &x) || !x86p_x87_get(f, index, &y)) {
+    return 0;
+  }
+  if (isnan(x) || isnan(y)) {
+    result |= X86P_ZF | X86P_PF | X86P_CF;
+  } else if (x < y) {
+    result |= X86P_CF;
+  } else if (x == y) {
+    result |= X86P_ZF;
+  }
+  x86p_flags_set_explicit(flags, result);
+  return 1;
+}
+void x86p_x87_free(X86pX87 *f, int index) {
+  if (!f || index < 0 || index >= X86P_X87_REGS) {
+    return;
+  }
+  f->tag[(f->top + index) & (X86P_X87_REGS - 1)] = (uint8_t)kX86pX87TagEmpty;
+}

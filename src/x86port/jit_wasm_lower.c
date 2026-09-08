@@ -23,6 +23,10 @@ static void say(char *buf, unsigned len, const char *fmt, ...) {
 
 /* ---- shared operand helpers --------------------------------------------- */
 
+uint32_t x86p_wasm_memory_context(const X86pWasmLower *l) {
+  return l->state.plan.memory_context ? l->state.plan.memory_context : (uint32_t)(uintptr_t)l->fetch;
+}
+
 int x86p_wasm_width_ok(int w) {
   return w == 1 || w == 2 || w == 4;
 }
@@ -126,6 +130,33 @@ void x86p_wasm_carry_in(X86pWasmLower *l) {
  * work.
  */
 static const X86pWasmOpEntry kTable[kX86pInsnOpCount] = {
+    [kX86pInsnShld] = {x86p_wasm_shift_accepts, x86p_wasm_shift_lower, 0},
+    [kX86pInsnShrd] = {x86p_wasm_shift_accepts, x86p_wasm_shift_lower, 0},
+    [kX86pInsnBit] = {x86p_wasm_bit_accepts, x86p_wasm_bit_lower, 0},
+    [kX86pInsnBcd] = {x86p_wasm_bcd_accepts, x86p_wasm_bcd_lower, 0},
+    [kX86pInsnCmovcc] = {x86p_wasm_cmov_accepts, x86p_wasm_cmov_lower, 0},
+    [kX86pInsnSahf] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnLahf] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnStc] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnClc] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnCmc] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnSalc] = {NULL, x86p_wasm_flags_lower, 0},
+    [kX86pInsnPushad] = {NULL, x86p_wasm_stack_lower, 0},
+    [kX86pInsnPopad] = {NULL, x86p_wasm_stack_lower, 0},
+    [kX86pInsnEnter] = {x86p_wasm_enter_accepts, x86p_wasm_stack_lower, 0},
+    [kX86pInsnInt3] = {x86p_wasm_trap_accepts, x86p_wasm_trap_lower, 1},
+    [kX86pInsnInt1] = {x86p_wasm_trap_accepts, x86p_wasm_trap_lower, 1},
+    [kX86pInsnInto] = {x86p_wasm_trap_accepts, x86p_wasm_trap_lower, 1},
+    [kX86pInsnInt] = {x86p_wasm_trap_accepts, x86p_wasm_trap_lower, 1},
+    [kX86pInsnHlt] = {NULL, x86p_wasm_privilege_lower, 1},
+    [kX86pInsnWbinvd] = {NULL, x86p_wasm_privilege_lower, 1},
+    [kX86pInsnCli] = {NULL, x86p_wasm_privilege_lower, 1},
+    [kX86pInsnSti] = {NULL, x86p_wasm_privilege_lower, 1},
+    [kX86pInsnPortIo] = {NULL, x86p_wasm_privilege_lower, 1},
+    [kX86pInsnCpuid] = {NULL, x86p_wasm_cpu_lower, 0},
+    [kX86pInsnRdtsc] = {NULL, x86p_wasm_cpu_lower, 0},
+    [kX86pInsnX87] = {x86p_wasm_x87_accepts, x86p_wasm_x87_lower, 0},
+    [kX86pInsnSimd] = {x86p_wasm_simd_accepts, x86p_wasm_simd_lower, 0},
     [kX86pInsnMul] = {x86p_wasm_multiply_accepts, x86p_wasm_multiply_lower, 0},
     [kX86pInsnImul] = {x86p_wasm_multiply_accepts, x86p_wasm_multiply_lower, 0},
     [kX86pInsnDiv] = {x86p_wasm_divide_accepts, x86p_wasm_divide_lower, 0},
@@ -236,8 +267,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
        the module around it. Discovering the overflow afterwards would mean
        discarding a nearly finished block, and worse, would leave a body whose
        last instruction is half written. */
-    if (x86p_wasm_here(l.e) - body_start + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES >
-        l.e->cap) {
+    if (x86p_wasm_here(l.e) + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_EXIT_BYTES > l.e->cap) {
       break;
     }
 

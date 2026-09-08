@@ -106,6 +106,10 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
    load, DMA into code memory. */
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi);
 
+/* Drop every translation while preserving configuration and callbacks. Use
+   between block entries, including mutations ending at the top of guest space. */
+int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reason_len);
+
 void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out);
 
 /*

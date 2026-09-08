@@ -37,6 +37,7 @@
 #ifndef X86PORT_X87_H
 #define X86PORT_X87_H
 
+#include "flags.h"
 #include "x87_transcendental.h"
 #include <stdint.h>
 
@@ -304,6 +305,8 @@ void x86p_x87_compare_register(X86pX87 *f, int index, unsigned pops);
 void x86p_x87_exchange(X86pX87 *f, int index);
 void x86p_x87_sign(X86pX87 *f, int absolute);
 void x86p_x87_test(X86pX87 *f);
+int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index);
+void x86p_x87_free(X86pX87 *f, int index);
 
 #ifdef __cplusplus
 } /* extern "C" */

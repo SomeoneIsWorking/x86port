@@ -62,7 +62,7 @@ uint32_t x86p_wasm_set_flags(X86pCpu *cpu, uint32_t value) {
 
 static void read_operand(X86pWasmLower *l, const X86pOperand *operand, int width, uint32_t pc) {
   if (operand->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, operand, pc, width);
+    x86p_wasm_state_guard(&l->state, operand, pc, width, kX86pMemRead);
     x86p_wasm_state_load_mem(&l->state, width);
   } else {
     x86p_wasm_push_operand(l, operand, width);
@@ -140,7 +140,7 @@ int x86p_wasm_string_accepts(const X86pInsn *insn) {
 
 void x86p_wasm_string_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_cpu(&l->state);
-  x86p_wasm_i32_const(l->e, (int32_t)(uintptr_t)l->fetch);
+  x86p_wasm_i32_const(l->e, (int32_t)x86p_wasm_memory_context(l));
   x86p_wasm_i32_const(l->e, insn->str);
   x86p_wasm_i32_const(l->e, insn->rep);
   x86p_wasm_i32_const(l->e, insn->str_width);
@@ -188,7 +188,7 @@ void x86p_wasm_popfd_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
   x86p_wasm_state_load_reg(&l->state, kX86pEsp, 4);
   x86p_wasm_local_tee(l->e, kX86pWasmLocalA);
   x86p_wasm_local_set(l->e, kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(&l->state, pc, 4);
+  x86p_wasm_state_guard_addr(&l->state, pc, 4, kX86pMemRead);
   x86p_wasm_state_load_mem(&l->state, 4);
   x86p_wasm_local_set(l->e, kX86pWasmLocalR);
   x86p_wasm_state_cpu(&l->state);
