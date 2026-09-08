@@ -155,41 +155,33 @@ Ordered work:
    a guest arena in linear memory, and compares the whole machine against the
    separately linked interpreter oracle.
 
-   All ten backend files also COMPILE for the target: Emscripten 4.0.16 built
-   them under `-Wall -Wextra -Werror` with no warnings and no x86-64 emitter
-   object in the build, which is what makes the adapter's
-   `_Static_assert(sizeof(void *) == 4)` checked rather than assumed. No wasm32
-   binary has been executed, so that is a compile, not a run.
+   `jit_wasm_host.c` now instantiates modules in Emscripten and binds the
+   production C helpers and memory. `test_wasm_runtime` executes the shipping
+   dispatcher, including warm cache reuse, interior-byte invalidation, refusal,
+   capacity pressure and independent engine lifetimes. `test_wasm_integer`
+   compares 236 executed arithmetic/string/loop/flag-stack cases against the
+   separately linked oracle. `docs/project-state.md` S016 records denominators.
 
-   What is lowered: MOV at 8/16/32 bits, MOVZX/MOVSX, the inline ALU shapes
-   (ADD, OR, AND, SUB, XOR, CMP, TEST) with register, immediate and memory
-   operands, NOT inline, ADC/SBB and the shifts and rotates through `x86p_alu`,
-   INC/DEC/NEG through `x86p_alu_unary`, LEA, XCHG, SETcc, PUSH/POP, LEAVE,
-   CDQ/CWDE, CLD/STD, JMP and CALL both relative and indirect, Jcc, JECXZ, and
-   RET with and without a release count.
-
-   What is not: x87, SIMD and 3DNow!, the string operations, MUL/DIV/IMUL/IDIV,
-   SHLD/SHRD, the BCD and bit-scan families, PUSHFD/POPFD, PUSHAD/POPAD, ENTER,
-   LOOP, the interrupt and privileged instructions, 16-bit addressing, and the
-   16-bit stack forms. Each is refused by name at the instruction, so the
-   remaining set is a ranked work list rather than a count.
-3. **Module lifetime is a correctness requirement, not tuning.** Partly done.
-   `jit_wasm_arena.{h,c}` bounds the number of live instantiations, refuses by
-   name at the cap rather than growing, and counts refusals apart from
-   engine rejections; the module builder takes several block bodies so a caller
-   can batch. What is NOT done is the wiring: nothing releases a module when the
-   block cache discards a block, and nothing batches yet, because the dispatch
-   loop has no wasm publication edge. Eviction inside the arena is deliberately
-   absent -- the block cache holds entry addresses the arena handed out and does
-   not consult it before entering one.
-4. **x87 has no host floating point to delegate to.** WebAssembly has no
-   floating-point environment: no rounding-mode control and no exception flags,
-   which is why `x87.c`'s `#pragma FENV_ACCESS` is refused outright for wasm32.
-   The software float path must be the only one on this host, and the cost of
-   that on top of a wasm JIT is unmeasured.
-5. **Compilation happens off the main thread.** Synchronous module compilation
-   is unrestricted only off the browser's main thread, which is where a
-   blocking guest has to run anyway.
+   Remaining lowering includes x87, SIMD/3DNow!, SHLD/SHRD, BCD and bit
+   operations, PUSHAD/POPAD, ENTER, interrupts, privileged instructions,
+   16-bit memory addressing and 16-bit stack forms. Unsupported forms still
+   refuse at the original instruction.
+3. **Module lifetime is a correctness requirement, not tuning.** The product
+   storage owner now releases module/table references after cache invalidation,
+   resets the module arena after flushing the cache, and preserves other engine
+   instances. More than 1,024 blocks execute with bounded live modules in the
+   real engine. Batching several guest blocks per module remains tuning work.
+4. **x87 has no host floating point to delegate to.** Software arithmetic and
+   narrowing now compile and execute on wasm32 with explicit guest rounding.
+   Numerical ext80 values round-trip through the binary128 host representation;
+   raw MMX/ext80 alias semantics still require a separate representation contract.
+   The WebAssembly backend still needs x87 instruction lowering through these
+   owners before a consumer can use them.
+5. **Compilation happens off the main thread.** The real host refuses browser
+   main-thread instantiation. Pthread builds import shared linear memory with
+   its required maximum; product composition must run the blocking guest on a
+   worker and provide cross-origin isolation. Sparse guest mapping is owned by
+   `memory.c`/`memory_sparse.c`; consumers need not reserve a 4 GiB host arena.
 
 Acceptance evidence mirrors x64 and ARM64: nonzero translated block execution
 with denominators, cache and invalidation behaviour, every refusal counted, and

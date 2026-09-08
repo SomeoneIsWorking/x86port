@@ -948,7 +948,7 @@ int main(void) {
   CHECK(x87_values_are_emittable());
   CHECK(!x86p_x87_precision_is_exact());
 #else
-  CHECK(x87_values_are_emittable() == x86p_x87_precision_is_exact());
+  CHECK(x87_values_are_emittable() == x86p_x87_values_are_supported());
 #endif
 
   if (!x86p_jit_available()) {

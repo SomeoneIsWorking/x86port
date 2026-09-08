@@ -30,6 +30,9 @@ endfunction()
 set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
+if(EMSCRIPTEN)
+  set(ZYAN_NO_LIBC ON CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(vendor/zydis EXCLUDE_FROM_ALL)
 
 # jit-common is CONSUMED, not vendored: the code region and block cache have one
@@ -78,12 +81,15 @@ add_subdirectory("${X86P_JITCOMMON}" "${CMAKE_CURRENT_BINARY_DIR}/jitcommon" EXC
 # processor as `x86` and cannot execute emitted machine code at all. That
 # configure succeeded, that link succeeded, and the product would have died on
 # its first translated block with nothing in the build having said a word.
+set(X86P_JIT_STORAGE_SOURCES src/x86port/jit_storage_native.c)
 set(X86P_JIT_BACKEND_SOURCES "")
 if(EMSCRIPTEN)
   # Asked BEFORE the processor is looked at, because Emscripten reports its
   # processor as `x86` -- which is how it once got the x86-64 emitter.
   set(X86P_JIT_BACKEND_SOURCES
-    src/x86port/jit_wasm.c)
+    src/x86port/jit_wasm.c
+    src/x86port/jit_wasm_host.c)
+  set(X86P_JIT_STORAGE_SOURCES src/x86port/jit_storage_wasm.c)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_arm64.c
@@ -155,6 +161,8 @@ add_library(x86port_runtime STATIC
   src/x86port/flags.c
   src/x86port/alu.c
   src/x86port/cpu.c
+  src/x86port/memory.c
+  src/x86port/memory_sparse.c
   src/x86port/cond.c
   src/x86port/x87.c
   src/x86port/x87_transcendental.c
@@ -168,6 +176,8 @@ add_library(x86port_runtime STATIC
   src/x86port/emit_wasm.c
   src/x86port/jit_status.c
   src/x86port/jit_wasm_module.c
+  src/x86port/jit_wasm_memory.c
+  src/x86port/jit_wasm_integer.c
   src/x86port/jit_wasm_state.c
   src/x86port/jit_wasm_lower.c
   src/x86port/jit_wasm_alu.c
@@ -176,12 +186,18 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_branch.c
   src/x86port/jit_wasm_arena.c
   ${X86P_JIT_BACKEND_SOURCES}
+  ${X86P_JIT_STORAGE_SOURCES}
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
 target_link_libraries(x86port_runtime PRIVATE x86p_softfloat)
 add_library(x86port ALIAS x86port_runtime)
 target_include_directories(x86port_runtime PUBLIC src/x86port)
-target_link_libraries(x86port_runtime PUBLIC jitcommon PRIVATE Zydis)
+if(EMSCRIPTEN)
+  target_link_libraries(x86port_runtime PUBLIC jitcommon_cache PRIVATE Zydis)
+  target_link_options(x86port_runtime INTERFACE "-sALLOW_TABLE_GROWTH=1")
+else()
+  target_link_libraries(x86port_runtime PUBLIC jitcommon PRIVATE Zydis)
+endif()
 if(NOT WIN32)
   target_link_libraries(x86port_runtime PRIVATE m)
 endif()
@@ -193,6 +209,12 @@ x86p_strict_target(x86port_runtime)
 # port. Same reasoning, and same mechanism, as jit-common's own guard.
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   return()
+endif()
+
+if(EMSCRIPTEN)
+  # These are bounded command-line tests/tools: returning from main must
+  # dispose worker threads and report the result to CTest.
+  add_link_options("-sEXIT_RUNTIME=1")
 endif()
 
 # The interpreter exists only as a separately built oracle for this
@@ -226,6 +248,11 @@ add_executable(x86p_decode_diff tools/decode_diff.c)
 target_link_libraries(x86p_decode_diff PRIVATE x86port)
 x86p_strict_target(x86p_decode_diff)
 
+add_executable(test_memory_sparse tests/test_memory_sparse.c)
+target_link_libraries(test_memory_sparse PRIVATE x86port_runtime)
+x86p_strict_target(test_memory_sparse)
+add_test(NAME test_memory_sparse COMMAND test_memory_sparse)
+
 add_executable(test_jit_engine tests/test_jit_engine.c)
 target_link_libraries(test_jit_engine PRIVATE x86port_runtime x86port_test_oracle)
 target_include_directories(test_jit_engine PRIVATE src)
@@ -253,6 +280,24 @@ if(NOT WIN32)
 endif()
 
 enable_testing()
+
+if(EMSCRIPTEN)
+  add_executable(test_wasm_runtime tests/test_wasm_runtime.c)
+  target_link_libraries(test_wasm_runtime PRIVATE x86port_runtime)
+  # The lifetime test holds a 16 MiB translation arena beside the program and
+  # a second engine, deliberately exercising growth of the imported memory.
+  target_link_options(test_wasm_runtime PRIVATE "-sALLOW_MEMORY_GROWTH=1")
+  x86p_strict_target(test_wasm_runtime)
+  add_test(NAME test_wasm_runtime COMMAND test_wasm_runtime)
+  add_executable(test_wasm_sparse tests/test_wasm_sparse.c)
+  target_link_libraries(test_wasm_sparse PRIVATE x86port_runtime)
+  x86p_strict_target(test_wasm_sparse)
+  add_test(NAME test_wasm_sparse COMMAND test_wasm_sparse)
+  add_executable(test_wasm_integer tests/test_wasm_integer.c)
+  target_link_libraries(test_wasm_integer PRIVATE x86port_runtime x86port_test_oracle)
+  x86p_strict_target(test_wasm_integer)
+  add_test(NAME test_wasm_integer COMMAND test_wasm_integer)
+endif()
 add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)
 x86p_strict_target(test_three_dnow)

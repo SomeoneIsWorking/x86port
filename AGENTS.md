@@ -35,8 +35,10 @@ options.
 - A runtime-populated code cache is disposable user data. It is never a
   fresh-install prerequisite or a checked-in product input.
 - x64 and ARM64 lowering backends exist, but instruction and host conformance
-  remain partial. Shared x87 admission retains the user-approved playable Apple ARM64
-  binary64 path with an explicit precision limitation; other narrow-state hosts
+  remain partial. Shared x87 value admission accepts native ext80 and binary128
+  hosts using software ext80 arithmetic/conversion, and retains the user-approved
+  Apple ARM64 binary64 path with an explicit precision limitation. Raw MMX alias
+  operations still require native ext80 object layout; other binary64 hosts
   refuse value-bearing forms. Lack of a backend never permits whole-product
   interpretation.
 

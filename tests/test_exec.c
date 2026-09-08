@@ -72,7 +72,7 @@ static int g_test_failed;
 static uint8_t g_arena[ARENA_SIZE];
 
 static X86pMem arena(void) {
-  X86pMem m;
+  X86pMem m = {0};
   m.host = g_arena;
   m.lo = CODE_BASE;
   m.size = ARENA_SIZE;
@@ -548,7 +548,7 @@ static void test_fetch_fault_and_decode_failure_differ(void) {
    the guest never took, which is worse than one it did. */
 static void test_instruction_at_the_very_end_of_memory(void) {
   X86pCpu cpu;
-  X86pMem m;
+  X86pMem m = {0};
   X86pStepReport rep;
   memset(g_arena, 0, sizeof g_arena);
   m.host = g_arena;

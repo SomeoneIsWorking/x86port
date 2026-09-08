@@ -19,6 +19,7 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "jit_wasm_integer.h"
 #include "jit_wasm_lower.h"
 #include "jit_wasm_module.h"
 #include "jit_wasm_state.h"

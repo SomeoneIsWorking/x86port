@@ -126,6 +126,16 @@ void x86p_wasm_carry_in(X86pWasmLower *l) {
  * work.
  */
 static const X86pWasmOpEntry kTable[kX86pInsnOpCount] = {
+    [kX86pInsnMul] = {x86p_wasm_multiply_accepts, x86p_wasm_multiply_lower, 0},
+    [kX86pInsnImul] = {x86p_wasm_multiply_accepts, x86p_wasm_multiply_lower, 0},
+    [kX86pInsnDiv] = {x86p_wasm_divide_accepts, x86p_wasm_divide_lower, 0},
+    [kX86pInsnIdiv] = {x86p_wasm_divide_accepts, x86p_wasm_divide_lower, 0},
+    [kX86pInsnString] = {x86p_wasm_string_accepts, x86p_wasm_string_lower, 0},
+    [kX86pInsnLoop] = {x86p_wasm_loop_accepts, x86p_wasm_loop_lower, 1},
+    [kX86pInsnLoope] = {x86p_wasm_loop_accepts, x86p_wasm_loop_lower, 1},
+    [kX86pInsnLoopne] = {x86p_wasm_loop_accepts, x86p_wasm_loop_lower, 1},
+    [kX86pInsnPushfd] = {NULL, x86p_wasm_pushfd_lower, 0},
+    [kX86pInsnPopfd] = {NULL, x86p_wasm_popfd_lower, 0},
     [kX86pInsnNop] = {NULL, x86p_wasm_nop_lower, 0},
     [kX86pInsnMov] = {x86p_wasm_mov_accepts, x86p_wasm_mov_lower, 0},
     [kX86pInsnMovzx] = {x86p_wasm_movx_accepts, x86p_wasm_movzx_lower, 0},
@@ -226,7 +236,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
        the module around it. Discovering the overflow afterwards would mean
        discarding a nearly finished block, and worse, would leave a body whose
        last instruction is half written. */
-    if (x86p_wasm_here(l.e) + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES > l.e->cap) {
+    if (x86p_wasm_here(l.e) - body_start + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES >
+        l.e->cap) {
       break;
     }
 

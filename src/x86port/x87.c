@@ -1,5 +1,6 @@
 /* x87.c -- see x87.h for why ST(i) is a position and not a register. */
 #include "x87.h"
+#include "x87_softfloat.h"
 
 #include <fenv.h>
 #include <float.h>
@@ -38,10 +39,20 @@ const char *x86p_x87_op_name(X86pX87Op op) {
 }
 
 int x86p_x87_precision_is_exact(void) {
-  /* 64 mantissa bits and a 15-bit exponent is x87's extended format exactly.
-     Anything else -- quad, or a 53-bit double -- computes different low bits
-     for values that are not exactly representable. */
+  /* This describes the object layout used by raw-register access, not whether
+     software operations can preserve ext80 values in a wider host type. */
   return X86P_EXACT_LONG_DOUBLE;
+}
+
+int x86p_x87_values_are_supported(void) {
+  /* IEEE binary128 contains every finite ext80 value. Arithmetic/conversions
+   * on that host pass through the software ext80 owner, which rounds once at
+   * the guest precision; native binary128 arithmetic is never the guest FPU. */
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  return 1;
+#else
+  return X86P_EXACT_LONG_DOUBLE;
+#endif
 }
 
 /*
@@ -231,6 +242,9 @@ int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
   default:
     return 0;
   }
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  value = x86p_x87_software_constant(f ? f->control : X86P_X87_CW_INIT, value);
+#endif
   return x86p_x87_push(f, value);
 }
 
@@ -435,7 +449,11 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
          by default and expects the infinity. */
       f->status |= X86P_X87_ZE;
     }
-#if defined(X86P_X87_HOST_FPU)
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+    uint16_t status = 0;
+    r = x86p_x87_software_arith(f->control, op, x, y, &status);
+    f->status |= status;
+#elif defined(X86P_X87_HOST_FPU)
     /* One rounding, at the guest's precision, on the unit that defines it. */
     r = host_arith(op, x, y, f->control);
 #else
@@ -524,6 +542,10 @@ static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
     return bits;
   }
 }
+#elif LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
+  return x86p_x87_software_narrow(cw, v, is64);
+}
 #else
 static uint64_t host_narrow(long double v, uint16_t cw, int is64) {
 #pragma STDC FENV_ACCESS ON
@@ -594,7 +616,9 @@ long double x86p_x87_from_f80(const uint8_t bytes[10]) {
   if (!bytes) {
     return 0.0L;
   }
-#if X86P_EXACT_LONG_DOUBLE
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  return x86p_x87_software_decode(bytes);
+#elif X86P_EXACT_LONG_DOUBLE
   {
     long double v = 0.0L;
     memcpy(&v, bytes, 10);
@@ -627,7 +651,9 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]) {
   if (!bytes) {
     return;
   }
-#if X86P_EXACT_LONG_DOUBLE
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  x86p_x87_software_encode(v, bytes);
+#elif X86P_EXACT_LONG_DOUBLE
   {
     memcpy(bytes, &v, 10);
     return;
@@ -656,6 +682,9 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]) {
 }
 
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out) {
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  return f && x86p_x87_software_integer(f->control, v, width_bytes, out);
+#else
   long double r;
   int64_t lo, hi;
   if (!out || !f) {
@@ -707,4 +736,5 @@ int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *o
   }
   *out = (int64_t)r;
   return 1;
+#endif
 }

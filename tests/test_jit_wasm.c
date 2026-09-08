@@ -463,7 +463,7 @@ static int record_helper(const Case *c, const X86pCpu *cpu, uint32_t insns, Reco
   uint32_t pc = GUEST_LO + CODE_OFF;
   uint32_t i;
   int found = -1;
-  X86pMem mem;
+  X86pMem mem = {0};
   mem.host = g_arena;
   mem.lo = GUEST_LO;
   mem.size = ARENA_SIZE;
@@ -551,7 +551,7 @@ static int record_helper(const Case *c, const X86pCpu *cpu, uint32_t insns, Reco
    instructions as the block covered, stopping at the first non-Ok status --
    which is itself part of what the block must reproduce. */
 static void run_reference(X86pCpu *cpu, uint32_t insns) {
-  X86pMem mem;
+  X86pMem mem = {0};
   uint32_t i;
   mem.host = g_ref_arena;
   mem.lo = GUEST_LO;
@@ -722,9 +722,9 @@ static void run_case(const char *node, const char *oracle, const Case *c) {
   X86pCpu cpu;
   X86pCpu reference;
   X86pCpu observed;
-  X86pMem mem;
+  X86pMem mem = {0};
   X86pWasmModule module;
-  X86pWasmPlan plan;
+  X86pWasmPlan plan = {0};
   X86pJitBlock block;
   Recording helper;
   Recording flag_cf;

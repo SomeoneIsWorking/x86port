@@ -1,43 +1,15 @@
 /*
  * jit_arm64_x87.c -- native x87 emission for the AArch64 JIT backend.
  *
- * See jit_arm64_x87.h for the scope. jit_x87_predicates.c owns the common
- * admission checks and refuses value-bearing lowering when host long double
- * cannot represent x87 extended state exactly. The value emitters below are
- * therefore unavailable on macOS binary64 and Linux/Android binary128 hosts
- * until the semantic state owner becomes host-independent f80.
- * Every emitted sequence calls the same x86p_x87_* helper the interpreter
- * calls, so the reverse flag, the ZE/IE/SF status bits, the divide-by-zero
- * infinity, the result tag and TOP stay that one module's business -- see
- * x87.h.
+ * The shared predicates admit native ext80 or software ext80 arithmetic with
+ * lossless binary128 storage, plus the separately approved Darwin binary64
+ * limitation. Emitted calls use the same value/stack helpers as the oracle.
  *
- * WHY THIS FILE HAS NO EQUIVALENT OF x64'S x87_widen_mem_to_scratch. The x64
- * backend widens a 32/64-bit guest float to 80 bits with the HOST's own x87
- * unit (a real `fld`), because x86-64's `long double` is that exact 80-bit
- * extended format -- free and exact. AArch64 has no x87 unit, and on the
- * target this backend actually builds for (Apple Silicon / Darwin), the
- * compiler's own `long double` is not a 128-bit quad either -- it IS
- * `double`, 8 bytes (verified: `sizeof(long double) == 8` on this host,
- * unlike Linux AArch64's 128-bit quad that an earlier comment in
- * emit_arm64.h assumed). So there is no widening trick to reproduce: the bit
- * pattern already needed converting to `long double` in C for the
- * interpreter to share this module at all, and x87.h already exposes that
- * conversion as a plain function -- x86p_x87_from_f32 / x86p_x87_from_f64.
- * This file calls it and receives the result already sitting in D0, exactly
- * where the next helper call's `long double` argument belongs under AAPCS64
- * -- no memory round-trip, no widen-and-spill, no scratch slot at all for
- * that path.
- *
- * A scratch slot IS still needed wherever a helper hands a `long double`
- * BACK by pointer (x86p_x87_get, x86p_x87_pop): AAPCS64 has no way to return
- * a struct-sized value in a register pair the caller can address as `[sp]`
- * without one. The slot is 16, not 8, bytes so `x86p_a64_emit_load_q` can
- * read it back into V0 as a single aligned load -- the upper 64 bits it also
- * reads are never-written stack garbage that AAPCS64 requires the callee to
- * ignore when it only reads D0 (the low 64 bits of V0), so this is safe
- * despite `long double` here being half that width. `sub sp,#16` / `add
- * sp,#16` keeps SP 16-byte aligned, which every AArch64 load/store through it
- * requires.
+ * AAPCS64 assigns long double to V0 independently of integer arguments: Q0
+ * carries Linux/Android binary128, while D0 carries Darwin binary64. Conversion
+ * helpers return that same register. Pointer-result helpers use a 16-byte
+ * aligned scratch slot and a Q0 load, preserving all binary128 bits; Darwin
+ * callees consume only its low 64 bits. GP argument setup never touches V0.
  *
  * ORDERING VERSUS emit_mem_prepare_w: identical constraint to jit_x64_x87.c.
  * A bounds check must never run while a scratch slot is open, because its
@@ -53,6 +25,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+_Static_assert(sizeof(long double) <= 16, "x87 helper scratch must hold the host value");
 
 /* The X86pX87 sub-struct, and where it lives in X86pCpu. */
 static int32_t x87_off(void) {
@@ -103,7 +77,7 @@ static void x87_store_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip,
 
 /* x86p_x87_from_f32(w0) / x86p_x87_from_f64(x0) -- the exact bit-pattern to
    `long double` conversion x87.h already owns; see the file comment for why
-   this replaces x64's hardware `fld` widen. Leaves the result in D0. */
+   this replaces x64's hardware `fld` widen. Leaves the result in V0. */
 static void x87_from_bits(X86pA64Emit *e, int w, int integer) {
   if (integer) {
     x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
@@ -158,7 +132,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     } else {
       x87_from_bits(e, w, 0);
     }
-    x87_lea_self(e); /* X0 = &cpu->x87; D0 survives (GP-only in between) */
+    x87_lea_self(e); /* X0 = &cpu->x87; V0 survives (GP-only in between) */
     x87_call(e, (const void *)&x86p_x87_push);
     return;
   }
@@ -172,7 +146,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
   {
     X86pA64EmitSite skip = x86p_a64_emit_bcc(e, kA64CondEq); /* source register was empty */
-    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0);                  /* D0 = the slot's value */
+    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0);                  /* V0 = the slot's value */
     x87_lea_self(e);
     x87_call(e, (const void *)&x86p_x87_push);
     x86p_a64_emit_bind(e, skip);
@@ -182,7 +156,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
 /*
  * FADD / FSUB / FMUL / FDIV (+R, +P). The source is converted to `long
- * double` in D0 -- from memory bits via x86p_x87_from_f32/f64, or from a
+ * double` in V0 -- from memory bits via x86p_x87_from_f32/f64, or from a
  * stack register via x86p_x87_get -- and x86p_x87_arith runs the real op
  * under the guest control word. A named source register that is empty is a
  * stack fault arith_operands turns into a whole no-op there too: this jumps
@@ -199,7 +173,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   if (o0->kind == kX86pOperandMem) {
     x87_load_bits(c, o0, insn_eip, o0->size);
-    x87_from_bits(e, o0->size, insn->x87_mem_int); /* D0 = src */
+    x87_from_bits(e, o0->size, insn->x87_mem_int); /* V0 = src */
   } else {
     x86p_a64_emit_sub_sp_imm(e, 16u);
     x87_lea_self(e);
@@ -209,12 +183,12 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
     skip = x86p_a64_emit_bcc(e, kA64CondEq); /* empty source register */
     have_skip = 1;
-    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* D0 = src */
+    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = src */
   }
 
-  /* x86p_x87_arith(f, op, dst, src=D0, reverse): GP args and the one FP arg
+  /* x86p_x87_arith(f, op, dst, src=V0, reverse): GP args and the one FP arg
      are allocated from independent register files under AAPCS64, so setting
-     X0..X3 here does not disturb D0. */
+     X0..X3 here does not disturb V0. */
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)insn->x87_op);
   x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)dst);
@@ -244,7 +218,7 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
   int i;
 
   x87_load_bits(c, o0, insn_eip, o0->size);
-  x87_from_bits(e, o0->size, insn->x87_mem_int); /* D0 = other */
+  x87_from_bits(e, o0->size, insn->x87_mem_int); /* V0 = other */
   x87_lea_self(e);
   x87_call(e, (const void *)&x86p_x87_compare);
   for (i = 0; i < (int)insn->x87_pops; i++) {
@@ -273,7 +247,7 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
   skip = x86p_a64_emit_bcc(e, kA64CondEq); /* ST(0) empty */
 
-  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* D0 = value */
+  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = value */
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)o0->reg);
   x87_call(e, (const void *)&x86p_x87_set);
@@ -318,7 +292,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
   empty = x86p_a64_emit_bcc(e, kA64CondEq); /* ST(0) empty -> no store, no pop, no fault */
 
-  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* D0 = value */
+  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = value */
   x87_lea_self(e);
   x87_call(e,
            insn->x87 == kX86pX87InsnStoreInt

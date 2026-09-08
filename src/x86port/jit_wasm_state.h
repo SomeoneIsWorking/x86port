@@ -12,7 +12,7 @@
  *
  * THE MAPPING IS 32-BIT HERE, AND THAT IS NOT A NARROWING. On a wasm host the
  * whole address space IS the imported memory, so a host pointer is a 32-bit
- * offset into it. The plan is therefore three plain integers rather than a
+ * offset into it. The plan is therefore plain integers rather than a
  * host pointer -- which has the further effect that the lowering can be driven
  * on a machine that is not the wasm host at all, with a plan describing a
  * memory image that machine merely holds the bytes of. That is what makes the
@@ -46,12 +46,15 @@ extern "C" {
  * constants exactly as the other backends bake theirs in: an access becomes a
  * compare and an add rather than a call. A block is only valid for the mapping
  * it was translated for, and the block cache's flush is what discards blocks
- * when the guest memory moves or is resized.
+ * when the guest memory moves or is resized. For sparse memory, memory_context
+ * instead names the X86pMem passed to checked imports; base/lo/size are ignored.
+ * The context and mappings stay alive and immutable during block entry.
  */
 typedef struct X86pWasmPlan {
-  uint32_t base; /* linear-memory offset that guest address `lo` lives at */
-  uint32_t lo;   /* first guest address covered */
-  uint32_t size; /* bytes covered from `lo` */
+  uint32_t base;           /* linear-memory offset that guest address `lo` lives at */
+  uint32_t lo;             /* first guest address covered */
+  uint32_t size;           /* bytes covered from `lo` */
+  uint32_t memory_context; /* nonzero: X86pMem offset for checked sparse imports */
 } X86pWasmPlan;
 
 typedef struct X86pWasmState {
@@ -99,8 +102,9 @@ void x86p_wasm_state_address_parts(X86pWasmState *s, const X86pOperand *o);
 void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o);
 
 /*
- * Bounds-check the operand for an access of width `w` and leave
- * kX86pWasmLocalAddr holding the linear-memory address to use.
+ * Bounds-check the operand for an access of width `w`. Contiguous mode leaves
+ * kX86pWasmLocalAddr holding its linear-memory address; sparse mode leaves the
+ * guest address for checked memory imports that can cross backing spans.
  *
  * ONE unsigned compare covers both ends: the offset from `lo` is huge when the
  * guest address is below it, so underflow and overflow are caught together.

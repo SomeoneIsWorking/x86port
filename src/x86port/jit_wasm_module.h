@@ -54,7 +54,16 @@ typedef enum X86pWasmImport {
   kX86pWasmImportAluUnary, /* x86p_alu_unary(op, a, w, flags) -> result */
   kX86pWasmImportCond,     /* x86p_cond(cc, flags) -> 0 or 1 */
   kX86pWasmImportFlagCf,   /* x86p_flag_cf(flags) -> 0 or 1 */
-  kX86pWasmImportCount     /* MUST stay last */
+  kX86pWasmImportMemOk,
+  kX86pWasmImportMemLoad,
+  kX86pWasmImportMemStore,
+  kX86pWasmImportMultiply,
+  kX86pWasmImportDivide,
+  kX86pWasmImportString,
+  kX86pWasmImportLoop,
+  kX86pWasmImportGetFlags,
+  kX86pWasmImportSetFlags,
+  kX86pWasmImportCount /* MUST stay last */
 } X86pWasmImport;
 
 /* The field name an import is looked up under, inside module "env". */

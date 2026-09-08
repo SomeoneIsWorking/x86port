@@ -143,7 +143,7 @@ static void guest_mem_init(void) {
 }
 
 static X86pMem guest_mem(void) {
-  X86pMem m;
+  X86pMem m = {0};
   m.host = g_guest;
   m.lo = GUEST_BASE;
   m.size = GUEST_SIZE;

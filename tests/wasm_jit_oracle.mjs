@@ -33,18 +33,20 @@ const job = JSON.parse(readFileSync(jobPath, "utf8"));
 const base = dirname(jobPath);
 const resolve = (p) => (isAbsolute(p) ? p : join(base, p));
 
-const HELPERS = ["alu", "alu_unary", "cond", "flag_cf"];
-
 function main() {
   const memory = new WebAssembly.Memory({ initial: job.pages });
   const bytes = new Uint8Array(memory.buffer);
   bytes.set(new Uint8Array(readFileSync(resolve(job.image))));
 
+  const module = new WebAssembly.Module(readFileSync(resolve(job.wasm)));
   const lines = [];
   const env = { memory };
-  for (const name of HELPERS) {
-    const spec = job.helpers?.[name] ?? { return: 0, writes: [] };
+  for (const entry of WebAssembly.Module.imports(module)) {
+    if (entry.kind !== "function") continue;
+    const name = entry.name;
+    const spec = job.helpers?.[name];
     env[name] = (...args) => {
+      if (!spec) throw new Error(`unrecorded helper ${name}`);
       lines.push(`call ${name} ${args.map((a) => a >>> 0).join(" ")}`);
       for (const write of spec.writes ?? []) {
         const raw = write.hex;
@@ -56,7 +58,6 @@ function main() {
     };
   }
 
-  const module = new WebAssembly.Module(readFileSync(resolve(job.wasm)));
   const instance = new WebAssembly.Instance(module, { env });
   const fn = instance.exports[job.entry];
   if (typeof fn !== "function") {

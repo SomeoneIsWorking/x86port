@@ -143,7 +143,7 @@ static void test_partial_writes_preserve_the_rest(void) {
 static uint8_t g_arena[256];
 
 static X86pMem arena(void) {
-  X86pMem m;
+  X86pMem m = {0};
   m.host = g_arena;
   m.lo = 0x1000u;
   m.size = sizeof g_arena;
@@ -227,7 +227,7 @@ static void test_out_of_range_is_refused(void) {
     refused++; /* not a real operand width */
   }
   {
-    X86pMem nul = {NULL, 0, 0};
+    X86pMem nul = {0};
     if (!x86p_mem_read(&nul, 0, 4, &v)) {
       refused++;
     }
@@ -316,8 +316,8 @@ static void test_identity_mapping_is_not_an_unconfigured_one(void) {
      the host address of guest `lo`, so a mapping whose host address happens to
      equal its guest address is the identity, and g_arena is at some real
      address that stands in for one. */
-  X86pMem identity;
-  X86pMem unconfigured;
+  X86pMem identity = {0};
+  X86pMem unconfigured = {0};
   uint32_t v = 0;
 
   identity.host = g_arena;

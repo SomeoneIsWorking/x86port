@@ -36,6 +36,11 @@ int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
      and an out-of-range trigonometric argument, and guest code loops on it. */
   f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
   f->status |= (uint16_t)(sw & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
+#if !defined(__x86_64__) && !defined(__i386__)
+  /* The software environment starts clean for each guest operation. Native
+     x87 status also contains unrelated host sticky flags and is not copied. */
+  f->status |= (uint16_t)(sw & (X86P_X87_IE | X86P_X87_DE | X86P_X87_ZE | X86P_X87_OE | X86P_X87_UE | X86P_X87_PE));
+#endif
 
   if (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1) {
     /* These consume BOTH registers and leave one result: pop, then replace. */

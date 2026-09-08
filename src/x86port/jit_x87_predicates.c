@@ -9,7 +9,7 @@ int x87_values_are_emittable(void) {
    * this admission must not be reported as exact x87 representation. */
   return 1;
 #else
-  return x86p_x87_precision_is_exact();
+  return x86p_x87_values_are_supported();
 #endif
 }
 

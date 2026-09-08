@@ -181,10 +181,18 @@ not verification of the merged tree or complete guest semantics: macOS uses
 binary64 `long double`, and the prior interpreter/JIT comparison shared that
 inexact x87 representation. Both host backends use `jit_x87_predicates.c` for
 value admission: exact extended state, or the explicitly approved Apple ARM64
-binary64 path described below. Other narrow-state hosts still refuse value
-forms; status/control operations remain available. A portable f80 owner is
-required for exact Windows and ARM64 floating-point conformance, not for this
-approved integration.
+binary64 path described below. Binary128 hosts (including Android ARM64 and
+Emscripten) now convert numerical state through ext80 software arithmetic rather
+than refusing ordinary value forms. Raw MMX aliasing still requires native
+extended storage; this numerical bridge does not establish complete raw-state
+Windows/ARM64 floating-point conformance.
+
+Android API 21 NDK ARM64 static bionic executables now run under QEMU
+AArch64 10.2.2: software x87 passes 3,068 checks, narrow state 341 checks,
+startup 4,357 translated cases with zero precision refusals, and control
+10,178 checks including 16 value-bearing x87 cases with zero refusals.
+These are user-mode Android binaries, not an Android OS/APK or device
+performance result.
 
 The differential uses the shipping `jit-common` region publication API for
 W^X transitions and instruction-cache coherence. Gap: ARM64 caller-saved helper
@@ -272,39 +280,57 @@ engine has no unload and a module per block would be a permanent engine object
 per block. It refuses by name at the cap instead of evicting -- the block cache
 holds entry addresses the arena handed out and does not consult it before
 entering one -- and counts cap refusals apart from engine rejections.
-`test_jit_wasm_arena` drives it through a stub engine, which can be made to fail
-instantiation as a real one cannot: 32 checks over publish/release accounting,
+`test_jit_wasm_arena` drives it through a stub engine with deterministic
+instantiation failures: 32 checks over publish/release accounting,
 the cap, release-all, a rejected module, an unreachable export, an arena with no
 engine, and a host that can create but not destroy.
 
-NOT established, and the reason this capability is partial rather than verified:
+The Emscripten host now runs generated modules through the shipping dispatcher.
+`jit_storage_native.c` owns protected code pages; `jit_storage_wasm.c` owns
+module publication, cache-ordered reclamation and indirect-table entries.
+The WASM path consumes `jitcommon_cache` without linking native executable-memory
+primitives. Imports call the compiled C semantic owners, rather than recorded
+helper answers. Compiling on a browser main thread is explicitly refused.
 
-- **The library COMPILES for wasm32; nothing has RUN there.** Emscripten 4.0.16
-  configured this project and built all ten WebAssembly backend files -- the
-  encoder, module builder, guest-state access, lowering, module lifetime and
-  `jit_wasm.c` itself -- under `-Wall -Wextra -Werror` with no warnings, and no
-  x86-64 emitter object in the build, which also makes the adapter's
-  `_Static_assert(sizeof(void *) == 4)` a checked fact rather than an
-  assumption. What that does NOT establish: no wasm32 binary has been executed,
-  so `x86p_jit_enter` calling through an indirect-table index is compiled and
-  untested. Everything verified above is the lowering, which is a different
-  claim from "a wasm product JIT works".
-- **No engine glue exists.** Nothing implements `X86pWasmHost`, so no module can
-  be instantiated in a browser and no block can be entered there.
-- **The dispatch loop has no wasm publication edge.** `jit_engine.c` publishes
-  code memory; it does not know about `x86p_jit_wasm_publish`, so nothing
-  releases a module when a block is discarded and nothing batches blocks into
-  one module yet.
-- **The instruction set is a first slice.** x87, SIMD, the string operations,
-  MUL/DIV, SHLD/SHRD, the BCD and bit families, PUSHFD/POPFD, PUSHAD/POPAD,
-  ENTER, LOOP, the interrupt and privileged instructions, 16-bit addressing and
-  the 16-bit stack forms are all refused by name. `docs/migration.md` Gate 8
-  lists them.
-- **x87 has no host floating point here at all**, so the software float path
-  must be the only one on this host and the cost of that is unmeasured.
+Emscripten 4.0.16 and Node 24.19.0 executed the product library both in
+ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. All five
+focused targets pass in both builds. The WebAssembly product-link audit counts
+517 product symbols and ten oracle symbols with zero forbidden product
+references. The combined native Clang 22.1.8 gate passes all 41 tests; the
+`jit-common` cache/code-memory split passes its three-test gate including
+clang-format and clang-tidy. Emscripten warns that combining pthreads with
+memory growth can slow JavaScript accesses; product performance remains
+unqualified. Recorded synthetic results:
 
-Without a WebAssembly engine both wasm tests SKIP (77) and say so; neither
-reports a pass in which zero modules reached one.
+- `test_wasm_runtime`: 6,341 checks, zero failures. The helper chain, warm cache,
+  interior-byte invalidation and unsupported-instruction discriminator report
+  three translated blocks, 17 entries and one refusal. Two 1,040-block runs
+  cross module and cache capacity respectively, release discarded modules,
+  preserve another engine's entries and leave zero live modules after destroy.
+  The minimum advertised storage capacity and memory growth are also exercised.
+- `test_wasm_integer`: 236 translated cases, 37 expected faults, 1,892 checks,
+  zero divergences against the separately linked interpreter. MUL/IMUL,
+  DIV/IDIV, 32-bit-address strings, LOOP variants and PUSHFD/POPFD use the same
+  production arithmetic, fault and repeat owners as native hosts.
+- `test_wasm_sparse`: 21 checks, two translations, five entries, zero failures.
+  Guest addresses map to separately owned host allocations, including scalar
+  accesses crossing allocation boundaries, precise holes and remapping after
+  explicit invalidation. `test_memory_sparse` passes 910 checks on both hosts.
+- `test_x87_software`: 3,140 checks, zero failures on wasm32. Arithmetic,
+  ext80/binary128 conversion and guest rounding use software math; this host
+  performs zero independent x87 hardware comparisons. The native control
+  executed 9,120 checks and 8,995 hardware comparisons with zero failures.
+  FPATAN and logarithm regressions exercise every precision/rounding control
+  against hardware: transcendental intermediates retain ext80 precision while
+  FSQRT respects guest precision. The pre-fix control produced 225 failures.
+
+Still partial: x87 and SIMD instruction lowering, SHLD/SHRD, the remaining
+BCD/bit/stack/interrupt families, 16-bit memory addressing and stack forms
+remain absent from the WebAssembly backend. Raw MMX/ext80 aliasing cannot be
+represented by binary128 numerical values. Module batching and representative
+browser consumer gameplay/performance remain unqualified. These synthetic
+results establish runtime execution and its lifetime boundary, not a playable
+X-Men 2 or Little Fighter 2 release.
 
 ### S008 — native and original dispatch
 

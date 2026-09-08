@@ -27,13 +27,12 @@
  * PC=double/nearest and 3.8% at PC=double/up, and agrees exactly only at
  * PC=extended, where there is no second rounding to do.
  *
- * On a host with no x87 unit (ARM64, where `long double` is a 128-bit quad)
- * only that two-step form is available, so those percentages are the fidelity
- * gap there. It is NOT silently accepted:
- * x86p_x87_precision_is_exact() reports it, x86p_x87_arith_portable() exposes
- * the path so the gap stays measured rather than assumed, and the test suite
- * prints the number every run. Closing it means an 80-bit softfloat, which is
- * a separate piece of work and is recorded as such rather than half-done here.
+ * Binary128 hosts store ext80 values losslessly and delegate arithmetic and
+ * narrowing to software ext80 operations, preserving one guest rounding step.
+ * x86p_x87_values_are_supported() describes that numeric capability separately
+ * from x86p_x87_precision_is_exact(), which describes the native object layout
+ * required for raw register/MMX aliasing. Binary64 hosts still have a precision
+ * limitation; only the explicitly approved Darwin path admits their values.
  */
 #ifndef X86PORT_X87_H
 #define X86PORT_X87_H
@@ -131,10 +130,13 @@ void x86p_x87_emms(X86pX87 *f);
 /* Reset to the state a process starts in: empty stack, CW_INIT, clear status. */
 void x86p_x87_reset(X86pX87 *f);
 
-/* Whether this host's `long double` really is x87's 80-bit extended format.
-   When it is not, every arithmetic result here is an approximation of the
-   guest's, and callers must say so rather than report parity. */
+/* Whether host long double has the native x87 object layout. This controls
+   raw register-byte/MMX alias access, independently of numeric support. */
 int x86p_x87_precision_is_exact(void);
+
+/* Value helpers support native ext80 or lossless binary128 storage with
+   software ext80 arithmetic. This does not admit raw MMX alias operations. */
+int x86p_x87_values_are_supported(void);
 
 /*
  * Stack access by POSITION, which is the only correct way to name a value

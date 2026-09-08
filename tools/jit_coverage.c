@@ -283,7 +283,7 @@ int main(int argc, char **argv) {
     uint32_t entry;
     uint32_t nbytes = 0;
     const char *h;
-    X86pMem mem;
+    X86pMem mem = {0};
     X86pJitBlock blk;
     char reason[256];
     X86pJitStatus st;
