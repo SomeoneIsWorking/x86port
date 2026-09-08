@@ -44,16 +44,16 @@ extern "C" {
  * x86p_wasm_import_field() and x86p_wasm_import_address(), so neither side
  * spells a name the other does not know.
  *
- * All four are the framework's existing semantic authorities, imported rather
+ * These are the framework's existing semantic authorities, imported rather
  * than reimplemented in emitted code for the reason jit_x64.h states: a second
  * implementation of the flag rules is free to disagree, and the disagreement
  * surfaces thousands of instructions later as a branch taken the other way.
  */
 typedef enum X86pWasmImport {
-  kX86pWasmImportAlu = 0,  /* x86p_alu(op, a, b, w, flags) -> result */
-  kX86pWasmImportAluUnary, /* x86p_alu_unary(op, a, w, flags) -> result */
-  kX86pWasmImportCond,     /* x86p_cond(cc, flags) -> 0 or 1 */
-  kX86pWasmImportFlagCf,   /* x86p_flag_cf(flags) -> 0 or 1 */
+  kX86pWasmImportAlu,
+  kX86pWasmImportAluUnary,
+  kX86pWasmImportCond,
+  kX86pWasmImportFlagCf,
   kX86pWasmImportMemOk,
   kX86pWasmImportMemLoad,
   kX86pWasmImportMemStore,
@@ -63,14 +63,45 @@ typedef enum X86pWasmImport {
   kX86pWasmImportLoop,
   kX86pWasmImportGetFlags,
   kX86pWasmImportSetFlags,
-  kX86pWasmImportCount /* MUST stay last */
+  kX86pWasmImportDoubleShift,
+  kX86pWasmImportBit,
+  kX86pWasmImportBcd,
+  kX86pWasmImportPushad,
+  kX86pWasmImportPopad,
+  kX86pWasmImportEnter,
+  kX86pWasmImportTrap,
+  kX86pWasmImportSahf,
+  kX86pWasmImportLahf,
+  kX86pWasmImportCpuid,
+  kX86pWasmImportRdtsc,
+  kX86pWasmImportX87Load,
+  kX86pWasmImportX87Store,
+  kX86pWasmImportX87ArithMem,
+  kX86pWasmImportX87ArithReg,
+  kX86pWasmImportX87CompareMem,
+  kX86pWasmImportX87Copy,
+  kX86pWasmImportX87Constant,
+  kX86pWasmImportX87Status,
+  kX86pWasmImportX87Clear,
+  kX86pWasmImportX87Reset,
+  kX86pWasmImportX87Fn,
+  kX86pWasmImportX87Pop,
+  kX86pWasmImportX87CompareRegister,
+  kX86pWasmImportX87Exchange,
+  kX86pWasmImportX87Sign,
+  kX86pWasmImportX87Test,
+  kX86pWasmImportX87CompareFlags,
+  kX86pWasmImportX87Free,
+  kX86pWasmImportX87Emms,
+  kX86pWasmImportSimdArithmetic,
+  kX86pWasmImportCount
 } X86pWasmImport;
 
 /* The field name an import is looked up under, inside module "env". */
 const char *x86p_wasm_import_field(X86pWasmImport which);
 
 /*
- * A generic function pointer type, because the addresses below have four
+ * A generic function pointer type, because the addresses below have
  * different signatures and ISO C has no single pointer that fits them all.
  * The host casts to the signature the enum documents.
  */

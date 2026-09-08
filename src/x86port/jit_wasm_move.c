@@ -42,14 +42,14 @@ void x86p_wasm_mov_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   const int w = (int)dst->size;
 
   if (dst->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, dst, pc, w);
+    x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemWrite);
     x86p_wasm_push_operand(l, src, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
     x86p_wasm_state_store_mem(&l->state, w, kX86pWasmLocalR);
     return;
   }
   if (src->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, src, pc, w);
+    x86p_wasm_state_guard(&l->state, src, pc, w, kX86pMemRead);
     x86p_wasm_state_load_mem(&l->state, w);
   } else {
     x86p_wasm_push_operand(l, src, w);
@@ -86,7 +86,7 @@ static void lower_movx(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc, int 
   const int sw = (int)src->size;
 
   if (src->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, src, pc, sw);
+    x86p_wasm_state_guard(&l->state, src, pc, sw, kX86pMemRead);
     x86p_wasm_state_load_mem(&l->state, sw);
   } else {
     x86p_wasm_state_load_reg(&l->state, src->reg, sw);
@@ -189,7 +189,7 @@ void x86p_wasm_xchg_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
    * make anywhere else either.
    */
   if (b->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, b, pc, w);
+    x86p_wasm_state_guard(&l->state, b, pc, w, kX86pMemRead | kX86pMemWrite);
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
     x86p_wasm_state_load_reg(&l->state, a->reg, w);
@@ -199,7 +199,7 @@ void x86p_wasm_xchg_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     return;
   }
   if (a->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, a, pc, w);
+    x86p_wasm_state_guard(&l->state, a, pc, w, kX86pMemRead | kX86pMemWrite);
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalA);
     x86p_wasm_state_load_reg(&l->state, b->reg, w);
@@ -232,7 +232,7 @@ void x86p_wasm_setcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
   /* The canonical condition evaluator's 0/1 result, materialised without
      touching guest flags. */
   if (dst->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, dst, pc, 1);
+    x86p_wasm_state_guard(&l->state, dst, pc, 1, kX86pMemWrite);
   }
   x86p_wasm_i32_const(l->e, (int32_t)insn->cond);
   x86p_wasm_state_flags_addr(&l->state);
@@ -260,7 +260,7 @@ void x86p_wasm_leave_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
 
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(&l->state, pc, 4);
+  x86p_wasm_state_guard_addr(&l->state, pc, 4, kX86pMemRead);
   x86p_wasm_state_load_mem(&l->state, 4);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
 

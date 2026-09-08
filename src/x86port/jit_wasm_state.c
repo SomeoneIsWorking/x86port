@@ -64,6 +64,12 @@ void x86p_wasm_state_flags_addr(X86pWasmState *s) {
   x86p_wasm_i32_op(s->e, kWasmI32Add);
 }
 
+void x86p_wasm_state_x87_addr(X86pWasmState *s) {
+  x86p_wasm_state_cpu(s);
+  x86p_wasm_i32_const(s->e, (int32_t)offsetof(X86pCpu, x87));
+  x86p_wasm_i32_op(s->e, kWasmI32Add);
+}
+
 /* Load of width `w` from a cpu-relative field. Zero-extending, because the
    value is about to be used at that width and stale high bits would reach the
    flag tuple. */
@@ -96,6 +102,28 @@ void x86p_wasm_state_store_reg(X86pWasmState *s, int index, int w, X86pWasmLocal
   x86p_wasm_state_cpu(s);
   x86p_wasm_local_get(s->e, (uint32_t)value);
   store_w(s, reg_offset_w(index, w), w);
+}
+
+static uint32_t xmm_offset(unsigned index, unsigned lane) {
+  return (uint32_t)offsetof(X86pCpu, xmm) + index * 16u + lane * 4u;
+}
+void x86p_wasm_state_load_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane) {
+  x86p_wasm_state_cpu(s);
+  load_w(s, xmm_offset(index, lane), 4);
+}
+void x86p_wasm_state_store_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane, X86pWasmLocal value) {
+  x86p_wasm_state_cpu(s);
+  x86p_wasm_local_get(s->e, (uint32_t)value);
+  store_w(s, xmm_offset(index, lane), 4);
+}
+void x86p_wasm_state_load_mxcsr(X86pWasmState *s) {
+  x86p_wasm_state_cpu(s);
+  load_w(s, (uint32_t)offsetof(X86pCpu, mxcsr), 4);
+}
+void x86p_wasm_state_store_mxcsr(X86pWasmState *s, X86pWasmLocal value) {
+  x86p_wasm_state_cpu(s);
+  x86p_wasm_local_get(s->e, (uint32_t)value);
+  store_w(s, (uint32_t)offsetof(X86pCpu, mxcsr), 4);
 }
 
 void x86p_wasm_state_address_parts(X86pWasmState *s, const X86pOperand *o) {
@@ -146,11 +174,12 @@ void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o) {
   }
 }
 
-void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w) {
+void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access) {
   if (s->plan.memory_context) {
     x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
     x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
     x86p_wasm_i32_const(s->e, w);
+    x86p_wasm_i32_const(s->e, (int32_t)access);
     x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemOk);
     x86p_wasm_i32_op(s->e, kWasmI32Eqz);
     x86p_wasm_if(s->e, kWasmVoid);
@@ -190,10 +219,10 @@ void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w) {
   x86p_wasm_local_set(s->e, (uint32_t)kX86pWasmLocalAddr);
 }
 
-void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn_eip, int w) {
+void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn_eip, int w, unsigned access) {
   x86p_wasm_state_address(s, o);
   x86p_wasm_local_set(s->e, (uint32_t)kX86pWasmLocalAddr);
-  x86p_wasm_state_guard_addr(s, insn_eip, w);
+  x86p_wasm_state_guard_addr(s, insn_eip, w, access);
 }
 
 void x86p_wasm_state_load_mem(X86pWasmState *s, int w) {

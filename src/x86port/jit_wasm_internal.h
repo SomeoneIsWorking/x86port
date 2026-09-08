@@ -19,10 +19,14 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "jit_wasm_bitops.h"
+#include "jit_wasm_control.h"
 #include "jit_wasm_integer.h"
 #include "jit_wasm_lower.h"
 #include "jit_wasm_module.h"
+#include "jit_wasm_simd.h"
 #include "jit_wasm_state.h"
+#include "jit_wasm_x87.h"
 
 #include <stdint.h>
 
@@ -73,6 +77,9 @@ const X86pWasmOpEntry *x86p_wasm_op_entry(uint8_t op);
 int x86p_wasm_operand_ok(const X86pOperand *o, int w, int for_write);
 
 /* Width in {1, 2, 4}: the integer widths this lowering covers. */
+/* Explicit engine-memory context wins over an in-process fetch pointer. */
+uint32_t x86p_wasm_memory_context(const X86pWasmLower *l);
+
 int x86p_wasm_width_ok(int w);
 
 /* The value mask for a width. */

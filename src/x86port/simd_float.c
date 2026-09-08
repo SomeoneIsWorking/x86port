@@ -101,6 +101,16 @@ static void comiss_flags(float a, float b, X86pFlags *f) {
   x86p_flags_set_explicit(f, e);
 }
 
+/* Invalid or unrepresentable SSE conversions produce integer-indefinite.
+ * Checking before the C cast is essential: casting NaN/out-of-range values is
+ * undefined and WebAssembly's conversion can trap instead of returning it. */
+static uint32_t integer_result(double rounded) {
+  if (!isfinite(rounded) || rounded < (double)INT32_MIN || rounded > (double)INT32_MAX) {
+    return UINT32_C(0x80000000);
+  }
+  return (uint32_t)(int32_t)rounded;
+}
+
 int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t imm, X86pVec *out, X86pFlags *flags) {
   X86pVec r;
   unsigned n;
@@ -265,7 +275,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
          mode and the only one this build models; the truncating form is right
          regardless of the mode, which is why it is the one compilers emit. */
       double d = (op == kX86pSimdCvttps2pi) ? (double)truncf(x) : (double)nearbyintf(x);
-      vec_set_u32(&r, i, (uint32_t)(int32_t)d);
+      vec_set_u32(&r, i, integer_result(d));
     }
     break;
   case kX86pSimdCvtsi2ss:
@@ -277,7 +287,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
     double d = (op == kX86pSimdCvttss2si) ? (double)truncf(x) : (double)nearbyintf(x);
     memset(&r, 0, sizeof r);
     r.bytes = 4u;
-    vec_set_u32(&r, 0, (uint32_t)(int32_t)d);
+    vec_set_u32(&r, 0, integer_result(d));
     break;
   }
 

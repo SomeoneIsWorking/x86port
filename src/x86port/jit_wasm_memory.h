@@ -3,7 +3,7 @@
 
 #include "cpu.h"
 
-int x86p_wasm_mem_ok(const X86pMem *mem, uint32_t address, uint32_t width);
+int x86p_wasm_mem_ok(const X86pMem *mem, uint32_t address, uint32_t width, unsigned access);
 uint32_t x86p_wasm_mem_load(const X86pMem *mem, uint32_t address, uint32_t width);
 void x86p_wasm_mem_store(const X86pMem *mem, uint32_t address, uint32_t width, uint32_t value);
 

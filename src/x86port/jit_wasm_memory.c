@@ -2,8 +2,8 @@
 
 #include "diagnostic.h"
 
-int x86p_wasm_mem_ok(const X86pMem *mem, uint32_t address, uint32_t width) {
-  return x86p_mem_ok(mem, address, (int)width);
+int x86p_wasm_mem_ok(const X86pMem *mem, uint32_t address, uint32_t width, unsigned access) {
+  return x86p_mem_accessible(mem, address, width, access);
 }
 
 uint32_t x86p_wasm_mem_load(const X86pMem *mem, uint32_t address, uint32_t width) {

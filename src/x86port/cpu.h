@@ -135,6 +135,8 @@ typedef struct X86pCpu {
   uint64_t tsc;
 } X86pCpu;
 
+typedef enum X86pMemAccess { kX86pMemRead = 1u, kX86pMemWrite = 2u } X86pMemAccess;
+
 /* Guest memory uses either one contiguous borrowed host span, or an optional
  * exact sparse mapping owner (memory_sparse.h). Zero-initialize the structure
  * before assignment. A sparse owner ignores host/lo/size. Neither mode owns
@@ -153,6 +155,11 @@ typedef struct X86pMem {
  * Holes, address wrap and allocation crossings refuse; use read/write_bytes
  * to cross adjacent guest mappings without assuming native contiguity. A writable
  * pointer bypasses the write observer: caller owns invalidation before mutation. */
+/* All bytes must satisfy access (READ/WRITE or their combination); zero asks
+ * whether backing is mapped regardless of permission. Native contiguous
+ * permissions remain enforced by the host VM; sparse permissions are exact. */
+int x86p_mem_accessible(const X86pMem *m, uint32_t addr, uint32_t n, unsigned access);
+
 int x86p_mem_resolve(const X86pMem *m, uint32_t addr, uint32_t n, uint8_t **out);
 
 /*

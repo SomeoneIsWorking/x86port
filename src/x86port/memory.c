@@ -8,13 +8,13 @@ static void *g_write_observer_user;
 
 /* Query one backing span. The identity-mapping desktop contract uses integer
  * address addition because adding to a null C pointer is undefined. */
-static uint32_t backing_span(const X86pMem *m, uint32_t addr, uint32_t max, uint8_t **out) {
+static uint32_t backing_span(const X86pMem *m, uint32_t addr, uint32_t max, unsigned access, uint8_t **out) {
   uint32_t offset, room;
-  if (!m || !max) {
+  if (!m || !max || access & ~(kX86pMemRead | kX86pMemWrite)) {
     return 0;
   }
   if (m->sparse) {
-    return x86p_sparse_span(m->sparse, addr, max, out);
+    return x86p_sparse_span_access(m->sparse, addr, max, access, out);
   }
   if (!m->size || addr < m->lo) {
     return 0;
@@ -38,10 +38,10 @@ static uint32_t backing_span(const X86pMem *m, uint32_t addr, uint32_t max, uint
   return room;
 }
 
-uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max) {
+static uint32_t accessible_span(const X86pMem *m, uint32_t addr, uint32_t max, unsigned access) {
   uint32_t total = 0;
   while (total < max) {
-    uint32_t n = backing_span(m, addr, max - total, NULL);
+    uint32_t n = backing_span(m, addr, max - total, access, NULL);
     if (!n) {
       break;
     }
@@ -54,13 +54,20 @@ uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max) {
   return total;
 }
 
-static int span_ok(const X86pMem *m, uint32_t addr, uint32_t n) {
-  return n && addr <= UINT32_MAX - (n - 1u) && x86p_mem_readable_span(m, addr, n) == n;
+uint32_t x86p_mem_readable_span(const X86pMem *m, uint32_t addr, uint32_t max) {
+  return accessible_span(m, addr, max, kX86pMemRead);
+}
+
+int x86p_mem_accessible(const X86pMem *m, uint32_t addr, uint32_t n, unsigned access) {
+  return n && addr <= UINT32_MAX - (n - 1u) && accessible_span(m, addr, n, access) == n;
 }
 
 int x86p_mem_resolve(const X86pMem *m, uint32_t addr, uint32_t n, uint8_t **out) {
   uint8_t *host = NULL;
-  if (!out || !n || backing_span(m, addr, n, &host) != n) {
+  if (m && m->sparse) {
+    return x86p_sparse_resolve(m->sparse, addr, n, kX86pMemRead, out);
+  }
+  if (!out || !n || backing_span(m, addr, n, kX86pMemRead, &host) != n) {
     return 0;
   }
   *out = host;
@@ -68,17 +75,17 @@ int x86p_mem_resolve(const X86pMem *m, uint32_t addr, uint32_t n, uint8_t **out)
 }
 
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w) {
-  return (w == 1 || w == 2 || w == 4) && span_ok(m, addr, (uint32_t)w);
+  return (w == 1 || w == 2 || w == 4) && x86p_mem_accessible(m, addr, (uint32_t)w, kX86pMemRead);
 }
 
 int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n) {
   uint8_t *output = dst;
-  if (!dst || !span_ok(m, addr, n)) {
+  if (!dst || !x86p_mem_accessible(m, addr, n, kX86pMemRead)) {
     return 0;
   }
   while (n) {
     uint8_t *host = NULL;
-    uint32_t count = backing_span(m, addr, n, &host);
+    uint32_t count = backing_span(m, addr, n, kX86pMemRead, &host);
     memcpy(output, host, count);
     output += count;
     addr += count;
@@ -94,7 +101,7 @@ void x86p_mem_set_write_observer(X86pMemWriteObserver fn, void *user) {
 
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n) {
   const uint8_t *input = src;
-  if (!src || !span_ok(m, addr, n)) {
+  if (!src || !x86p_mem_accessible(m, addr, n, kX86pMemWrite)) {
     return 0;
   }
   if (g_write_observer) {
@@ -102,7 +109,7 @@ int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint3
   }
   while (n) {
     uint8_t *host = NULL;
-    uint32_t count = backing_span(m, addr, n, &host);
+    uint32_t count = backing_span(m, addr, n, kX86pMemWrite, &host);
     memcpy(host, input, count);
     input += count;
     addr += count;

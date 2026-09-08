@@ -70,6 +70,28 @@ static void sparse_generated_access(void) {
   x86p_jit_engine_stats(engine, &after);
   check(after.blocks_translated == 1 && after.blocks_entered == 2, "sparse warm entry reuses translated block");
 
+  check(x86p_sparse_protect(sparse, DATA, 2u * kPage, kX86pMemRead), "protect data read-only");
+  cpu.eip = kCode;
+  cpu.reg[kX86pEax] = 0xffffffff;
+  snapshot = cpu;
+  check(run(engine, &cpu) == kX86pRunMemoryFault && !memcmp(&cpu, &snapshot, sizeof cpu),
+        "generated read-only MOV store faults before any CPU commit");
+  check(first[kPage - 2] == 0x10 && second[1] == 0x76, "read-only store preserves both backing spans");
+  x86p_jit_engine_invalidate(engine, kCode, kCode + sizeof code);
+  code[0] = 0x01; /* ADD [EBX],EAX: failed store must not commit lazy flags. */
+  cpu.eip = kCode;
+  snapshot = cpu;
+  check(run(engine, &cpu) == kX86pRunMemoryFault && !memcmp(&cpu, &snapshot, sizeof cpu),
+        "read-only generated ALU faults before flags or memory commit");
+  x86p_jit_engine_invalidate(engine, kCode, kCode + sizeof code);
+  code[0] = 0x89;
+  check(x86p_sparse_protect(sparse, DATA, 2u * kPage, kX86pMemWrite), "protect data write-only");
+  cpu.eip = kCode + 2;
+  snapshot = cpu;
+  check(run(engine, &cpu) == kX86pRunMemoryFault && !memcmp(&cpu, &snapshot, sizeof cpu),
+        "write-only generated load faults before destination commit");
+  check(x86p_sparse_protect(sparse, DATA, 2u * kPage, kX86pMemRead | kX86pMemWrite), "restore data read-write");
+
   /* The same compiled store now crosses a hole. The guard must return to the
    * CPU fault boundary without a JS trap, memory prefix write, or flag change. */
   x86p_jit_engine_invalidate(engine, DATA + kPage, DATA + 2u * kPage);

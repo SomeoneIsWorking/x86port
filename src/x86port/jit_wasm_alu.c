@@ -124,9 +124,9 @@ static void lower_via_helper(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc
    * `ADC [EAX+4], EAX` must store where it loaded.
    */
   if (dst->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, dst, pc, w);
+    x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemRead | kX86pMemWrite);
   } else if (src->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, src, pc, w);
+    x86p_wasm_state_guard(&l->state, src, pc, w, kX86pMemRead);
   }
 
   x86p_wasm_i32_const(l->e, (int32_t)insn->alu);
@@ -191,14 +191,14 @@ void x86p_wasm_alu_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_carry_in(l);
 
   if (dst->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, dst, pc, w);
+    x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemRead | (writes_dest ? kX86pMemWrite : 0u));
     x86p_wasm_state_store_carry(&l->state);
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalA);
     x86p_wasm_push_operand(l, src, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
   } else if (src->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, src, pc, w);
+    x86p_wasm_state_guard(&l->state, src, pc, w, kX86pMemRead);
     x86p_wasm_state_store_carry(&l->state);
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
@@ -255,7 +255,7 @@ void x86p_wasm_alu_unary_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t 
   const int w = (int)dst->size;
 
   if (dst->kind == kX86pOperandMem) {
-    x86p_wasm_state_guard(&l->state, dst, pc, w);
+    x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemRead | kX86pMemWrite);
   }
 
   if (insn->alu == (uint8_t)kX86pAluNot) {

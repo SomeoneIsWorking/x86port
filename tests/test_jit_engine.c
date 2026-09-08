@@ -579,6 +579,15 @@ static void test_intercept_stops_before_block(void) {
   CHECK(cpu.eip == intercept_target);
   CHECK(cpu.reg[kX86pEax] == 42u);
 
+  /* A whole-address-space mutation drops code, not consumer policy. */
+  CHECK(x86p_jit_engine_invalidate_all(eng, reason, sizeof reason));
+  g_guest[1] = 43u;
+  cpu.eip = GUEST_BASE;
+  st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  CHECK(st == kX86pRunIntercept);
+  CHECK(cpu.eip == intercept_target);
+  CHECK(cpu.reg[kX86pEax] == 43u);
+
   /* Clear intercept and run again: should execute until budget */
   x86p_jit_engine_set_intercept(eng, NULL, NULL);
   st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
