@@ -78,6 +78,8 @@ static unsigned long g_branch_blocks;
 static unsigned long g_refused;
 static unsigned long g_self_modified;
 static unsigned long g_helper_calls;
+static unsigned long g_cond_inline;
+static unsigned long g_cond_helper_calls;
 
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
@@ -1269,6 +1271,22 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     }
     g_helper_calls += blk.flag_helper_calls;
 
+    /* Conditions are counted, not bounded: a backend that lowers none is
+       correct, only slower. What must hold is that every Jcc/SETcc the block
+       emitted took exactly one of the two paths, so an inline lowering that
+       silently emitted nothing cannot hide as a missing count. */
+    g_checks++;
+    if (blk.cond_inline + blk.cond_helper_calls != blk.conds) {
+      g_failed++;
+      printf("    FAIL round %d: %u condition(s) emitted but %u inline + %u helper accounted\n",
+             round,
+             blk.conds,
+             blk.cond_inline,
+             blk.cond_helper_calls);
+    }
+    g_cond_inline += blk.cond_inline;
+    g_cond_helper_calls += blk.cond_helper_calls;
+
     g_programs++;
     g_guest_insns += blk.insns;
     if (blk.ends_in_branch) {
@@ -1609,12 +1627,20 @@ int main(void) {
          g_self_modified,
          g_helper_calls,
          g_programs);
+  printf("%lu of %lu condition(s) lowered inline; %lu called x86p_cond\n",
+         g_cond_inline,
+         g_cond_inline + g_cond_helper_calls,
+         g_cond_helper_calls);
   if (g_single_compares == 0u) {
     printf("NO single-instruction comparison ran: this suite claims nothing\n");
     return 1;
   }
   if (g_programs == 0u || g_state_compares == 0u) {
     printf("REFUSED: the differential compared nothing; these results mean nothing\n");
+    return 1;
+  }
+  if (g_cond_inline + g_cond_helper_calls == 0u) {
+    printf("NO Jcc or SETcc was emitted: this run says nothing about condition lowering\n");
     return 1;
   }
   if (g_branch_blocks == 0u) {

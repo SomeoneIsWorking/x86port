@@ -10,12 +10,14 @@
 #ifndef X86PORT_JIT_X64_INTERNAL_H
 #define X86PORT_JIT_X64_INTERNAL_H
 
+#include "bit_ops.h"
 #include "cpu.h"
 #include "decode.h"
 #include "emit_x64.h"
 #include "jit_x64.h"
 #include "jit_x64_abi.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -68,6 +70,9 @@ typedef struct BlockCtx {
   X86pEmit *e;
   const X86pMem *mem;
   unsigned flag_helper_calls;
+  unsigned conds;
+  unsigned cond_helper_calls;
+  unsigned cond_inline;
   MemPlan plan;
   X86pEmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
@@ -82,6 +87,39 @@ typedef struct BlockCtx {
  * must be refused.
  */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w);
+
+/* Guest CPU layout, shared by every x64 emission family. These were statics in
+   jit_x64.c until jit_x64_cond.c needed the same two answers; jit_arm64_internal.h
+   states the identical, arch-independent forms. */
+static inline int32_t reg_off(int index) {
+  return (int32_t)(offsetof(X86pCpu, reg) + (size_t)index * sizeof(uint32_t));
+}
+
+static inline int32_t flags_off(void) {
+  return (int32_t)offsetof(X86pCpu, flags);
+}
+
+/*
+ * Where a guest register operand of width `w` lives, as a byte offset.
+ *
+ * The host is little-endian and the guest slot is a dword, so the low byte of a
+ * register is the slot's first byte and a HIGH byte register (AH, CH, DH, BH)
+ * is its second. That means narrow writes need no read-modify-write at all: a
+ * one-byte store to the right offset preserves the other 24 bits by
+ * construction, which is exactly the rule x86p_reg_write states.
+ *
+ * x86p_byte_reg owns which register an index names -- indices 4..7 are the
+ * SECOND byte of EAX..EBX, not four different registers -- so this does not
+ * restate it.
+ */
+static inline int32_t reg_off_w(int index, int w) {
+  if (w == 1) {
+    int shift = 0;
+    int r = x86p_byte_reg(index, &shift);
+    return reg_off(r) + shift / 8;
+  }
+  return reg_off(index);
+}
 
 void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit);

@@ -45,6 +45,7 @@ typedef struct X86pWasmLower {
   X86pWasmState state;
   const X86pMem *fetch;
   unsigned flag_helper_calls;
+  unsigned conds;
   int last_kind;
 } X86pWasmLower;
 

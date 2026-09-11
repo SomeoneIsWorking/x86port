@@ -77,6 +77,9 @@ typedef struct BlockCtx {
   X86pA64Emit *e;
   const X86pMem *mem;
   unsigned flag_helper_calls;
+  unsigned conds;
+  unsigned cond_helper_calls;
+  unsigned cond_inline;
   MemPlan plan;
   X86pA64EmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;

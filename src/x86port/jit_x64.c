@@ -6,6 +6,7 @@
 #include "decode.h"
 #include "emit_x64.h"
 #include "flags.h"
+#include "jit_x64_cond.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
 #include "simd.h"
@@ -54,16 +55,8 @@ static void say(char *buf, unsigned len, const char *fmt, ...) {
  * emitted code silently reads a different register than the canonical CPU
  * layout requires.
  */
-static int32_t reg_off(int index) {
-  return (int32_t)(offsetof(X86pCpu, reg) + (size_t)index * sizeof(uint32_t));
-}
-
 static int32_t eip_off(void) {
   return (int32_t)offsetof(X86pCpu, eip);
-}
-
-static int32_t flags_off(void) {
-  return (int32_t)offsetof(X86pCpu, flags);
 }
 
 static int32_t flag_off(size_t field) {
@@ -511,28 +504,6 @@ void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, in
 
 static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
   emit_mem_prepare_w(c, o, insn_eip, 4);
-}
-
-/*
- * Where a guest register operand of width `w` lives, as a byte offset.
- *
- * The host is little-endian and the guest slot is a dword, so the low byte of a
- * register is the slot's first byte and a HIGH byte register (AH, CH, DH, BH)
- * is its second. That means narrow writes need no read-modify-write at all: a
- * one-byte store to the right offset preserves the other 24 bits by
- * construction, which is exactly the rule x86p_reg_write states.
- *
- * x86p_byte_reg owns which register an index names -- indices 4..7 are the
- * SECOND byte of EAX..EBX, not four different registers -- so this does not
- * restate it.
- */
-static int32_t reg_off_w(int index, int w) {
-  if (w == 1) {
-    int shift = 0;
-    int r = x86p_byte_reg(index, &shift);
-    return reg_off(r) + shift / 8;
-  }
-  return reg_off(index);
 }
 
 /* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
@@ -1347,38 +1318,6 @@ static void emit_restore_host_frame(X86pEmit *e) {
   x86p_jit_abi_emit_leave(e, X86P_JIT_HOST_ABI, CPU_REG);
 }
 
-static void emit_condition_value(X86pEmit *e, uint8_t cond) {
-  x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG0, (uint32_t)cond);
-  x86p_emit_lea64(e, X86P_JIT_HOST_ARG1, CPU_REG, flags_off());
-  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cond);
-  x86p_emit_call_r64(e, kX64Rax);
-}
-
-static void emit_jcc(X86pEmit *e, uint8_t cond, uint32_t target, uint32_t fallthrough) {
-  emit_condition_value(e, cond);
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, fallthrough);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, target);
-  x86p_emit_cmovcc_r32_r32(e, (unsigned)kX86pCondNZ, kX64Rax, kX64Rcx);
-  emit_epilogue_from(e, kX64Rax, kX86pJitExitBlockEnd);
-}
-
-/* SETcc materialises the canonical condition evaluator's 0/1 result without
-   touching guest flags. A memory destination computes the condition first,
-   then preserves it in RCX while the shared address/bounds path uses RAX. */
-static void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  const X86pOperand *dst = &insn->operand[0];
-
-  emit_condition_value(c->e, insn->cond);
-  if (dst->kind == kX86pOperandMem) {
-    x86p_emit_mov_r32_r32(c->e, CARRY_REG, kX64Rax);
-    emit_mem_prepare_w(c, dst, insn_eip, 1);
-    x86p_emit_store8_reg(c->e, HOSTPTR_REG, 0, CARRY_REG);
-    return;
-  }
-  x86p_emit_store8_reg(c->e, CPU_REG, reg_off_w(dst->reg, 1), kX64Rax);
-}
-
 /*
  * CALL and RET: control transfers the block can COMPLETE rather than refuse.
  *
@@ -1586,7 +1525,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       } else if (insn.op != kX86pInsnJcc) {
         emit_loop(&ctx, &insn, target, next);
       } else {
-        emit_jcc(&e, insn.cond, target, next);
+        x86p_x64_emit_jcc(&ctx, insn.cond, target, next);
       }
       pc = next;
       count++;
@@ -1618,7 +1557,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_xchg32(&ctx, &insn, pc);
       break;
     case kX86pInsnSetcc:
-      emit_setcc(&ctx, &insn, pc);
+      x86p_x64_emit_setcc(&ctx, &insn, pc);
       break;
     case kX86pInsnAluUnary: {
       int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
@@ -1820,6 +1759,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->host_bytes = e.len;
   out->stopper = stopper;
   out->flag_helper_calls = ctx.flag_helper_calls;
+  out->conds = ctx.conds;
+  out->cond_helper_calls = ctx.cond_helper_calls;
+  out->cond_inline = ctx.cond_inline;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
