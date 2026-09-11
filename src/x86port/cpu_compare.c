@@ -47,16 +47,13 @@ static void diff_flags(Diff *d) {
   const X86pFlags *fa = &d->a->flags;
   const X86pFlags *fb = &d->b->flags;
   /*
-   * `carry_in` is a cache, not architectural state: x86p_flag_cf reads it ONLY
-   * when kind is Inc or Dec (flags.c), because those are the operations that
-   * preserve CF without recomputing it. For every other kind CF falls out of
-   * a/b/r and carry_in is dead. The JIT's dead-flag-store elimination can leave
-   * a stale carry_in behind exactly one such write (the block's last flag
-   * writer, whose own predecessor's store was elided) -- semantically
-   * invisible, so comparing it there would be a false divergence. When the kind
-   * IS Inc/Dec the field is live and still compared.
+   * `carry_in` is a cache, not architectural state -- x86p_flags_carry_in_is_live
+   * owns which kinds read it. A translator that skips the dead stores, and
+   * dead-flag elimination that leaves a stale byte behind one, are both
+   * semantically invisible, so comparing the field there would be a false
+   * divergence. When it is live it is still compared.
    */
-  const int carry_live = (fa->kind == (uint8_t)kX86pFlagsInc || fa->kind == (uint8_t)kX86pFlagsDec);
+  const int carry_live = x86p_flags_carry_in_is_live((X86pFlagKind)fa->kind);
   const int carry_diff = carry_live && fa->carry_in != fb->carry_in;
   if (fa->kind != fb->kind || fa->a != fb->a || fa->b != fb->b || fa->r != fb->r || fa->w != fb->w || carry_diff) {
     char at[80];

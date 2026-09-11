@@ -215,6 +215,20 @@ inline and helper counts add up to the conditions actually emitted and refuses
 a run that emitted none, so a lowering that silently emitted nothing cannot
 pass as one that was never reached.
 
+Carry-in derivation is no longer emitted for binary ALU operations on either
+backend. `x86p_flags_carry_in_is_live` in `flags.h` is the one rule: only the
+Inc and Dec lazy-flag kinds ever read `carry_in` back, because every other kind
+derives CF from a, b and r. A binary ALU records Add, Sub or Logic, so both the
+derivation -- whose unknown-predecessor arm is a call to `x86p_flag_cf` per
+block, paid on every entry to that block -- and the `FLAG_CARRY_IN` store were
+dead work there. `cpu_compare.c`, which already skipped the field when it was
+not live, now consumes the same rule instead of open-coding it, so a state
+comparison and a translator cannot disagree about what is architectural. The
+unary INC/DEC/NEG path still pays for both. Motivation: `x86p_flag_cf` was 5.07%
+of the arm64 Android build's port-library samples, twice `x86p_cond`. On the
+same AArch64 differential corpus the carry-in helper calls fell from 789 to 268
+over 1,423 blocks, with 25,155 checks and zero failures against the oracle.
+
 Binary128 hosts no longer pay a general softfloat conversion for ordinary
 values. `x87_f128_ext80.{h,cpp}` reassembles the bits directly when a value is a
 finite normal that both formats hold exactly -- which is every value that has
