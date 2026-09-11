@@ -33,9 +33,14 @@
  * registers: dead-flag elimination only skips those stores when nothing reads
  * them, and a Jcc reading them is precisely the case where they were stored.
  *
- * Width 4 only. A narrower operation's flags come from the masked value, and
- * a 32-bit CMP would take sign and zero from bits the guest operation never
- * wrote.
+ * A narrower operation's flags come from its masked value, so its operands are
+ * LEFT-ALIGNED into the top of the word first: shifting a and b left by
+ * 32 - 8w puts the guest's sign bit in bit 31 and zeros below it, and the
+ * 32-bit compare then produces exactly the narrow operation's N, Z, C and V.
+ * The shift also discards whatever the caller left above the width -- flags.c
+ * masks on read rather than on store, so those bits are not guaranteed to be
+ * clean -- which is why the alignment is done on both operands and not just
+ * assumed away.
  */
 
 /* After `cmp w(a), w(b)`: AArch64 NZCV equals what x86 SUB/CMP wrote, flag for
@@ -229,28 +234,38 @@ static int cond_after_cmp_result(uint8_t cond, X86pA64Cond *out) {
 
 /* Materialise the condition as 0/1 in X0 without a helper call, or return 0
    having emitted nothing. */
+/* Load a flag operand and left-align it for the recorded width. */
+static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, uint8_t shift) {
+  x86p_a64_emit_load32(e, reg, CPU_REG, offset);
+  if (shift) {
+    x86p_a64_emit_shl_w_imm(e, reg, shift);
+  }
+}
+
 int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, int last_w) {
   X86pA64Cond cc = kA64CondAl;
   int constant = -1;
+  uint8_t shift;
 
-  if (last_w != 4) {
+  if (last_w != 1 && last_w != 2 && last_w != 4) {
     return 0;
   }
+  shift = (uint8_t)(32 - 8 * last_w);
   switch (last_kind) {
   case (int)kX86pFlagsSub:
     if (!cond_after_cmp_sub(cond, &cc)) {
       return 0;
     }
-    x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_A);
-    x86p_a64_emit_load32(e, kA64X1, CPU_REG, FLAG_B);
+    load_aligned(e, kA64X0, FLAG_A, shift);
+    load_aligned(e, kA64X1, FLAG_B, shift);
     x86p_a64_emit_cmp_w_w(e, kA64X0, kA64X1);
     break;
   case (int)kX86pFlagsAdd:
     if (!cond_after_cmn_add(cond, &cc)) {
       return 0;
     }
-    x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_A);
-    x86p_a64_emit_load32(e, kA64X1, CPU_REG, FLAG_B);
+    load_aligned(e, kA64X0, FLAG_A, shift);
+    load_aligned(e, kA64X1, FLAG_B, shift);
     x86p_a64_emit_cmn_w_w(e, kA64X0, kA64X1);
     break;
   case (int)kX86pFlagsLogic:
@@ -261,7 +276,7 @@ int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, 
       x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)constant);
       return 1;
     }
-    x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_R);
+    load_aligned(e, kA64X0, FLAG_R, shift);
     x86p_a64_emit_cmp_w_imm(e, kA64X0, 0u);
     break;
   case (int)kX86pFlagsInc:
@@ -269,7 +284,7 @@ int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, 
     if (!cond_after_cmp_result(cond, &cc)) {
       return 0;
     }
-    x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_R);
+    load_aligned(e, kA64X0, FLAG_R, shift);
     x86p_a64_emit_cmp_w_imm(e, kA64X0, 0u);
     break;
   default:
