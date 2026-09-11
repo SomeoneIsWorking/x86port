@@ -133,6 +133,27 @@ int x86p_mem_copy_disjoint(const X86pMem *m, uint32_t dst, uint32_t src, uint32_
   return 1;
 }
 
+int x86p_mem_fill(const X86pMem *m, uint32_t addr, const uint8_t *unit, uint32_t w, uint32_t count) {
+  uint8_t *destination = NULL;
+  uint64_t bytes = (uint64_t)w * count;
+  if (!unit || !count || (w != 1u && w != 2u && w != 4u) || bytes > UINT32_MAX) {
+    return 0;
+  }
+  /* The same refusals as the bulk copy: a sparse mapping can alias, and an
+     observer is entitled to see one notification per guest store. */
+  if (!m || m->sparse || g_write_observer || !x86p_mem_resolve(m, addr, (uint32_t)bytes, &destination)) {
+    return 0;
+  }
+  if (w == 1u) {
+    memset(destination, unit[0], (size_t)bytes);
+    return 1;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    memcpy(destination + (size_t)i * w, unit, w);
+  }
+  return 1;
+}
+
 int x86p_mem_read(const X86pMem *m, uint32_t addr, int w, uint32_t *out) {
   uint8_t bytes[4];
   uint32_t value = 0;

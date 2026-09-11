@@ -170,6 +170,24 @@ X86pStringStatus x86p_string_execute(X86pCpu *cpu, const X86pMem *mem, const X86
     }
   }
 
+  /* The same admission for a forward REP STOS: one resolved span, filled with
+     the AL/AX/EAX pattern, instead of a bounds check and a four-byte memcpy per
+     element. A guest memset is the other half of the guest memcpy above. */
+  if (op == kX86pStringStos && !cpu->df) {
+    uint8_t unit[4];
+    uint32_t value = x86p_reg_read(cpu, kX86pEax, w);
+    int i;
+    for (i = 0; i < w; ++i) {
+      unit[i] = (uint8_t)value;
+      value >>= 8;
+    }
+    if (x86p_mem_fill(mem, cpu->reg[kX86pEdi], unit, (uint32_t)w, cpu->reg[kX86pEcx])) {
+      cpu->reg[kX86pEdi] += cpu->reg[kX86pEcx] * (uint32_t)w;
+      cpu->reg[kX86pEcx] = 0;
+      return kX86pStringOk;
+    }
+  }
+
   /*
    * The repeat. ECX is tested BEFORE the first iteration, so REP with ECX == 0
    * does nothing at all -- it does not do one pass and then check.
