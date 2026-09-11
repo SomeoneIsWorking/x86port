@@ -28,6 +28,7 @@
 #include "decode.h"
 #include "emit_arm64.h"
 #include "flags.h"
+#include "jit_arm64_cond.h"
 #include "jit_arm64_integer.h"
 #include "jit_arm64_internal.h"
 #include "jit_arm64_x87.h"
@@ -669,14 +670,21 @@ static void emit_prologue(X86pA64Emit *e) {
   x86p_a64_emit_mov_x_x(e, CPU_REG, kA64X0);
 }
 
-static void emit_condition_value(X86pA64Emit *e, uint8_t cond) {
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
-  x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
-  emit_call(e, (void *)&x86p_cond);
+static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w) {
+  if (x86p_a64_emit_condition_inline(c->e, cond, last_kind, last_w)) {
+    c->cond_inline++;
+    return;
+  }
+  c->cond_helper_calls++;
+  x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)cond);
+  x86p_a64_emit_lea64(c->e, kA64X1, CPU_REG, flags_off());
+  emit_call(c->e, (void *)&x86p_cond);
 }
 
-static void emit_jcc(X86pA64Emit *e, uint8_t cond, uint32_t target, uint32_t fallthrough) {
-  emit_condition_value(e, cond);
+static void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
+  X86pA64Emit *e = c->e;
+  c->conds++;
+  emit_condition_value(c, cond, last_kind, last_w);
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
   x86p_a64_emit_mov_w_imm32(e, kA64X0, fallthrough);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, target);
@@ -688,10 +696,11 @@ static void emit_jcc(X86pA64Emit *e, uint8_t cond, uint32_t target, uint32_t fal
    touching guest flags. A memory destination computes the condition first,
    then preserves it in CARRY_REG while the shared address/bounds path uses
    X0. */
-static void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+static void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w) {
   const X86pOperand *dst = &insn->operand[0];
 
-  emit_condition_value(c->e, insn->cond);
+  c->conds++;
+  emit_condition_value(c, insn->cond, last_kind, last_w);
   if (dst->kind == kX86pOperandMem) {
     x86p_a64_emit_mov_w_w(c->e, CARRY_REG, kA64X0);
     emit_mem_prepare_w(c, dst, insn_eip, 1);
@@ -780,6 +789,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   const char *stopper = NULL;
   int terminated = 0;
   int last_kind = -1;
+  /* The operand width that produced last_kind, in bytes, or -1 when unknown.
+     Tracked with the kind because a derivation is only reusable when BOTH are
+     known: the flags of a byte operation are not the flags of a 32-bit one. */
+  int last_w = -1;
 
   if (!mem || !out || !code || mem->sparse) {
     say(reason, reason_len, mem && mem->sparse ? "sparse memory requires the WASM backend" : "null argument");
@@ -879,7 +892,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       } else if (insn.op != kX86pInsnJcc) {
         emit_loop(&ctx, &insn, target, next);
       } else {
-        emit_jcc(&e, insn.cond, target, next);
+        emit_jcc(&ctx, insn.cond, target, next, last_kind, last_w);
       }
       pc = next;
       count++;
@@ -894,6 +907,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnShrd:
       emit_double_shift(&ctx, &insn, pc);
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnSimd:
       emit_simd_bits(&ctx, &insn, pc);
@@ -911,13 +925,14 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_xchg32(&ctx, &insn, pc);
       break;
     case kX86pInsnSetcc:
-      emit_setcc(&ctx, &insn, pc);
+      emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
       int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       if (k >= 0 && !dead) {
         last_kind = k;
+        last_w = insn.operand[0].size;
       }
       break;
     }
@@ -939,6 +954,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnMul:
       emit_mul32(&ctx, &insn, pc);
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnImul:
       if (insn.operands == 1) {
@@ -947,11 +963,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_imul32(&ctx, &insn, pc);
       }
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnString:
       emit_string(&ctx, &insn, pc);
       if (insn.str == (uint8_t)kX86pStringScas || insn.str == (uint8_t)kX86pStringCmps) {
         last_kind = -1;
+        last_w = -1;
       }
       break;
     case kX86pInsnX87:
@@ -998,6 +1016,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_cpu_transfer(&ctx, insn.op);
       if (insn.op == kX86pInsnSahf) {
         last_kind = (int)kX86pFlagsExplicit;
+        last_w = -1;
       }
       break;
     case kX86pInsnPushfd:
@@ -1009,6 +1028,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
          like ADC/SBB below -- the next carry-in is statically known rather
          than worth a helper call to ask. */
       last_kind = (int)kX86pFlagsExplicit;
+      last_w = -1;
       break;
     case kX86pInsnAlu: {
       X86pA64Alu host;
@@ -1019,13 +1039,16 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         if (!dead) {
           last_kind = (int)kind;
+          last_w = insn.operand[0].size;
         }
       } else {
         emit_alu_helper(&ctx, &insn, pc);
         if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluRcr) {
           last_kind = -1;
+          last_w = -1;
         } else {
           last_kind = (int)kX86pFlagsExplicit;
+          last_w = -1;
         }
       }
       break;
@@ -1091,6 +1114,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->host_bytes = e.len;
   out->stopper = stopper;
   out->flag_helper_calls = ctx.flag_helper_calls;
+  out->conds = ctx.conds;
+  out->cond_helper_calls = ctx.cond_helper_calls;
+  out->cond_inline = ctx.cond_inline;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

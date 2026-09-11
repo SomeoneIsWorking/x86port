@@ -70,6 +70,12 @@ void x86p_wasm_push_operand(X86pWasmLower *l, const X86pOperand *o, int w) {
 }
 
 void x86p_wasm_call_import(X86pWasmLower *l, X86pWasmImport which) {
+  /* This backend lowers no condition to a host comparison -- wasm has no flag
+     register to read one off -- so every condition it evaluates is a call to
+     the shared authority, counted here rather than at four call sites. */
+  if (which == kX86pWasmImportCond) {
+    l->conds++;
+  }
   x86p_wasm_call(l->e, (uint32_t)which);
 }
 
@@ -365,6 +371,9 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->host_bytes = x86p_wasm_here(l.e) - body_start;
   out->stopper = stopper;
   out->flag_helper_calls = l.flag_helper_calls;
+  out->conds = l.conds;
+  out->cond_helper_calls = l.conds;
+  out->cond_inline = 0u;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

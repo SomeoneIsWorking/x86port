@@ -4,23 +4,6 @@
 #include "jit_x64_internal.h"
 #include <stddef.h>
 
-static int32_t reg_off(int index) {
-  return (int32_t)(offsetof(X86pCpu, reg) + (size_t)index * sizeof(uint32_t));
-}
-
-static int32_t flags_off(void) {
-  return (int32_t)offsetof(X86pCpu, flags);
-}
-
-static int32_t reg_off_w(int index, int w) {
-  if (w == 1) {
-    int shift = 0;
-    int r = x86p_byte_reg(index, &shift);
-    return reg_off(r) + shift / 8;
-  }
-  return reg_off(index);
-}
-
 static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
   if (w == 1) {
     x86p_emit_load8_zx(e, dst, base, disp);

@@ -382,6 +382,14 @@ void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
   put32(e, word);
 }
 
+/* CMN is the same shifted-register encoding with op=0: ADDS Wzr, Wa, Wb. Its
+   NZCV is what x86 ADD writes, C included -- unlike SUBS, whose C is the
+   complement of x86's borrow. */
+void x86p_a64_emit_cmn_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
+  uint32_t word = (0u << 31) | (0u << 30) | (1u << 29) | (0x0Bu << 24) | ((uint32_t)b << 16) | ((uint32_t)a << 5) | 31u;
+  put32(e, word);
+}
+
 void x86p_a64_emit_cmp_w_imm(X86pA64Emit *e, X86pA64Reg a, uint32_t imm) {
   if (imm <= 0xFFFu) {
     uint32_t word = (0u << 31) | (1u << 30) | (1u << 29) | (0x22u << 23) | (0u << 22) | ((imm & 0xFFFu) << 10) |

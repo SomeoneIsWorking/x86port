@@ -185,6 +185,7 @@ void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 
 /* cmp w(a), w(b) -- SUBS with the result discarded; sets NZCV. */
 void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
+void x86p_a64_emit_cmn_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
 /* cmp w(a), #imm */
 void x86p_a64_emit_cmp_w_imm(X86pA64Emit *e, X86pA64Reg a, uint32_t imm);
 /* tst w(a), w(b) -- ANDS with the result discarded; sets NZCV (V and C to 0). */

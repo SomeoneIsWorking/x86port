@@ -133,6 +133,22 @@ typedef struct X86pJitBlock {
    * information it had.
    */
   unsigned flag_helper_calls;
+  /*
+   * Jcc and SETcc conditions evaluated by CALLING x86p_cond, and those lowered
+   * to the host's own condition codes instead. Published for the same reason
+   * as flag_helper_calls: calling the authority is entirely correct and merely
+   * slow, so losing the inline form is invisible in guest state and in every
+   * differential comparison. Both are needed -- the call count alone cannot
+   * distinguish "nothing was inlined" from "there were no conditions".
+   *
+   * `conds` is counted one level up, at the Jcc/SETcc site itself, so the two
+   * path counters can be checked against it. An inline lowering that returned
+   * "handled" without emitting anything would otherwise be indistinguishable
+   * from one that was never reached.
+   */
+  unsigned conds;
+  unsigned cond_helper_calls;
+  unsigned cond_inline;
 } X86pJitBlock;
 
 /*

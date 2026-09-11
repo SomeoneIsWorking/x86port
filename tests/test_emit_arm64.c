@@ -374,6 +374,16 @@ static void test_cmp_and_tst(void) {
   CHECK(fbits(w, 20, 16) == (uint32_t)kA64X1);
   CHECK(fbits(w, 4, 0) == 31u); /* Rd = WZR, result discarded */
 
+  /* cmn wa,wb == ADDS wzr,wa,wb -- same fixed 01011, opc=01 (add, S=1) */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_cmn_w_w(&e, kA64X6, kA64X1);
+  w = last_word(&e);
+  CHECK(fbits(w, 28, 24) == 0x0Bu);
+  CHECK(fbits(w, 30, 29) == 1u); /* op=0 add, S=1 */
+  CHECK(fbits(w, 9, 5) == (uint32_t)kA64X6);
+  CHECK(fbits(w, 20, 16) == (uint32_t)kA64X1);
+  CHECK(fbits(w, 4, 0) == 31u);
+
   /* cmp wa,#imm == SUBS wzr,wa,#imm -- ADD/SUB immediate, fixed 10001 */
   x86p_a64_emit_init(&e, buf, sizeof buf);
   x86p_a64_emit_cmp_w_imm(&e, kA64X6, 50u);
