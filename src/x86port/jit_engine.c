@@ -307,6 +307,8 @@ static void *translate_at(
 
   e->stats.blocks_translated++;
   e->stats.guest_insns_translated += blk.insns;
+  e->stats.conds_translated += blk.conds;
+  e->stats.conds_inline += blk.cond_inline;
   if (out_blk) {
     *out_blk = blk;
   }

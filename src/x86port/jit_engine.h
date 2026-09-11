@@ -71,7 +71,15 @@ typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
   uint64_t blocks_translated;
   uint64_t guest_insns_translated; /* summed at TRANSLATION, where it is known */
-  uint64_t translate_refusals;     /* translations that hit an unmodelled entry */
+  /* Jcc and SETcc emitted, and how many of those the backend lowered to the
+     host's own condition codes instead of a call to x86p_cond. Summed at
+     translation for the same reason as the instruction count, so these are a
+     property of the CODE the run translated, not of how often it ran. A
+     backend that lowers none is correct and merely slower, which is why the
+     total is published beside the inline count rather than alone. */
+  uint64_t conds_translated;
+  uint64_t conds_inline;
+  uint64_t translate_refusals; /* translations that hit an unmodelled entry */
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
 } X86pJitEngineStats;

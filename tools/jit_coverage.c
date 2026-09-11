@@ -245,6 +245,8 @@ int main(int argc, char **argv) {
   unsigned long fns_with_block = 0;
   unsigned long insns_total = 0;
   unsigned long insns_covered = 0;
+  unsigned long conds = 0;
+  unsigned long conds_inline = 0;
   /*
    * WHERE THE UNTRANSLATED INSTRUCTIONS WENT.
    *
@@ -385,6 +387,8 @@ int main(int argc, char **argv) {
       blocks_here++;
       blocks++;
       insns_covered += blk.insns;
+      conds += blk.conds;
+      conds_inline += blk.cond_inline;
       if (blk.ends_in_branch) {
         note_stopper("(branch: block ended normally)");
       } else if (blk.stopper == NULL) {
@@ -540,6 +544,19 @@ int main(int argc, char **argv) {
     printf("    undecodable bytes       %lu\n", skipped_undec);
     printf("    function tail < 4 bytes %lu\n", skipped_tail);
     printf("    unaccounted             %ld   <-- must be 0\n", (long)lost - (long)named);
+  }
+  /* How often the backend read a condition off the host's own flags instead of
+     calling x86p_cond, over REAL game code rather than generated programs: the
+     synthetic differential almost never places a width-4 ALU immediately before
+     a branch, so its rate says nothing about a shipped binary. */
+  if (conds == 0u) {
+    printf("  NO Jcc or SETcc was emitted, so condition lowering is unmeasured here\n");
+  } else {
+    printf("  conditions lowered inline %lu of %lu  (%.1f%%); %lu call x86p_cond\n",
+           conds_inline,
+           conds,
+           100.0 * (double)conds_inline / (double)conds,
+           conds - conds_inline);
   }
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
