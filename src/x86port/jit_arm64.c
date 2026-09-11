@@ -671,8 +671,15 @@ static void emit_prologue(X86pA64Emit *e) {
 }
 
 static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w) {
-  if (x86p_a64_emit_condition_inline(c->e, cond, last_kind, last_w)) {
+  X86pA64Cond cc;
+  int constant;
+  if (x86p_a64_emit_condition_flags(c->e, cond, last_kind, last_w, &cc, &constant)) {
     c->cond_inline++;
+    if (constant >= 0) {
+      x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)constant);
+    } else {
+      x86p_a64_emit_cset_w(c->e, cc, kA64X0);
+    }
     return;
   }
   c->cond_helper_calls++;
@@ -683,8 +690,32 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
 
 static void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
   X86pA64Emit *e = c->e;
+  X86pA64Cond cc;
+  int constant;
   c->conds++;
-  emit_condition_value(c, cond, last_kind, last_w);
+  /*
+   * A branch selects between two addresses, so the inline form reads the host
+   * condition DIRECTLY with the csel -- materialising 0/1 with a cset and then
+   * testing it again would be three instructions to say what one already says.
+   * A condition that is constant for the kind (CF and OF after a logic
+   * operation) picks its successor here, at translation time.
+   */
+  if (x86p_a64_emit_condition_flags(e, cond, last_kind, last_w, &cc, &constant)) {
+    c->cond_inline++;
+    if (constant >= 0) {
+      x86p_a64_emit_mov_w_imm32(e, kA64X0, constant ? target : fallthrough);
+    } else {
+      x86p_a64_emit_mov_w_imm32(e, kA64X0, fallthrough);
+      x86p_a64_emit_mov_w_imm32(e, kA64X1, target);
+      x86p_a64_emit_csel_w(e, cc, kA64X0, kA64X1, kA64X0);
+    }
+    emit_epilogue_from(e, kA64X0, kX86pJitExitBlockEnd);
+    return;
+  }
+  c->cond_helper_calls++;
+  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
+  x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
+  emit_call(e, (void *)&x86p_cond);
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
   x86p_a64_emit_mov_w_imm32(e, kA64X0, fallthrough);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, target);
