@@ -140,7 +140,7 @@ static void test_engine_matches_interpreter_on_a_looping_program(void) {
 
   seed(&ce);
   reason[0] = '\0';
-  rs = x86p_jit_engine_run(eng, &ce, 4096u, reason, (unsigned)sizeof reason);
+  rs = x86p_jit_engine_run(eng, &ce, NULL, 4096u, reason, (unsigned)sizeof reason);
   CHECK(rs == kX86pRunBudget);
   if (rs != kX86pRunBudget) {
     printf("    (%s: %s)\n", x86p_jit_run_status_name(rs), reason);
@@ -301,7 +301,7 @@ static void test_a_full_code_region_flushes_and_keeps_going(void) {
   }
 
   seed(&ce);
-  CHECK(x86p_jit_engine_run(eng, &ce, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &ce, NULL, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(same_cpu(&ci, &ce));
 
   x86p_jit_engine_stats(eng, &st);
@@ -357,7 +357,7 @@ static void test_invalidation_drops_a_stale_translation(void) {
   }
 
   seed(&cpu);
-  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 64u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(cpu.reg[kX86pEax] == 1u);
 
   /* Rewrite the immediate and tell the engine. */
@@ -365,7 +365,7 @@ static void test_invalidation_drops_a_stale_translation(void) {
   x86p_jit_engine_invalidate(eng, GUEST_BASE, GUEST_BASE + 8u);
 
   seed(&cpu);
-  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 64u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(cpu.reg[kX86pEax] == 2u);
 
   x86p_jit_engine_destroy(eng);
@@ -404,7 +404,7 @@ static void test_a_guest_memory_fault_stops_the_run_and_says_so(void) {
   seed(&cpu);
   cpu.reg[kX86pEdx] = 0xDEAD0000u;
   reason[0] = '\0';
-  rs = x86p_jit_engine_run(eng, &cpu, 64u, reason, (unsigned)sizeof reason);
+  rs = x86p_jit_engine_run(eng, &cpu, NULL, 64u, reason, (unsigned)sizeof reason);
   CHECK(rs == kX86pRunMemoryFault);
   CHECK(cpu.eip == GUEST_BASE); /* ON the faulting instruction, not past it */
   CHECK(reason[0] != '\0');
@@ -477,7 +477,7 @@ static void test_a_rewound_arena_does_not_leave_stale_cache_entries(void) {
     return;
   }
   seed(&ce);
-  CHECK(x86p_jit_engine_run(eng, &ce, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &ce, NULL, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(ce.eip == GUEST_BASE + spin_off);
   CHECK(same_cpu(&ci, &ce));
 
@@ -526,7 +526,7 @@ static void test_the_same_run_through_dual_mapping(void) {
   CHECK(eng != NULL);
   if (eng) {
     seed(&ce);
-    CHECK(x86p_jit_engine_run(eng, &ce, 4096u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+    CHECK(x86p_jit_engine_run(eng, &ce, NULL, 4096u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
     CHECK(same_cpu(&ci, &ce));
     x86p_jit_engine_destroy(eng);
   } else {
@@ -535,8 +535,15 @@ static void test_the_same_run_through_dual_mapping(void) {
   (void)jc_code_select_mechanism(NULL);
 }
 
-static int intercept_at_target(const X86pCpu *cpu, void *user) {
+/* Reads the address from the REGISTERED pointer, and separately checks that
+   the per-run pointer arrived: the run passes the same address as run_user, so
+   a run_user that never reached the callback fails here rather than being
+   silently ignored. */
+static int g_run_user_matched;
+
+static int intercept_at_target(const X86pCpu *cpu, void *user, void *run_user) {
   uint32_t target = *(const uint32_t *)user;
+  g_run_user_matched = run_user == user;
   return cpu->eip == target;
 }
 
@@ -574,8 +581,10 @@ static void test_intercept_stops_before_block(void) {
   x86p_jit_engine_set_intercept(eng, intercept_at_target, &intercept_target);
 
   /* Run: should execute block 1 and stop on intercept before block 2 */
-  X86pJitRunStatus st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  g_run_user_matched = 0;
+  X86pJitRunStatus st = x86p_jit_engine_run(eng, &cpu, &intercept_target, 100u, reason, sizeof reason);
   CHECK(st == kX86pRunIntercept);
+  CHECK(g_run_user_matched);
   CHECK(cpu.eip == intercept_target);
   CHECK(cpu.reg[kX86pEax] == 42u);
 
@@ -583,14 +592,14 @@ static void test_intercept_stops_before_block(void) {
   CHECK(x86p_jit_engine_invalidate_all(eng, reason, sizeof reason));
   g_guest[1] = 43u;
   cpu.eip = GUEST_BASE;
-  st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  st = x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason);
   CHECK(st == kX86pRunIntercept);
   CHECK(cpu.eip == intercept_target);
   CHECK(cpu.reg[kX86pEax] == 43u);
 
   /* Clear intercept and run again: should execute until budget */
   x86p_jit_engine_set_intercept(eng, NULL, NULL);
-  st = x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason);
+  st = x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason);
   CHECK(st == kX86pRunBudget);
   CHECK(cpu.eip == intercept_target);
 
@@ -630,7 +639,7 @@ static void test_boundary_ends_a_block_before_a_flagged_address(void) {
   /* No boundary: the ten INCs and the JMP are one translated block. */
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
   x86p_jit_engine_stats(eng, &st);
   CHECK(cpu.eip == GUEST_BASE + 10u);
   CHECK(cpu.reg[kX86pEax] == 10u);
@@ -649,14 +658,14 @@ static void test_boundary_ends_a_block_before_a_flagged_address(void) {
   x86p_jit_engine_set_intercept(eng, intercept_at_target, &flagged);
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunIntercept);
   CHECK(cpu.eip == flagged);
   CHECK(cpu.reg[kX86pEax] == 5u); /* exactly the five INCs before the boundary */
 
   /* Drop the intercept, keep the boundary: it still runs to the spin, but as
      at least two blocks split at +5. */
   x86p_jit_engine_set_intercept(eng, NULL, NULL);
-  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
   x86p_jit_engine_stats(eng, &st);
   CHECK(cpu.eip == GUEST_BASE + 10u);
   CHECK(cpu.reg[kX86pEax] == 10u);
@@ -689,7 +698,7 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   }
   seed(&cpu);
   before = cpu;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunUnsupported);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason) == kX86pRunUnsupported);
   CHECK(x86p_cpu_diff(&cpu, &before, NULL, NULL) == 0u);
   CHECK(strstr(reason, "RCPPS") != NULL);
   x86p_jit_engine_stats(eng, &stats);
@@ -704,13 +713,15 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
 static uint32_t g_disp_thunk, g_disp_unwind;
 static int g_disp_calls;
 
-static int intercept_thunk_or_unwind(const X86pCpu *cpu, void *user) {
+static int intercept_thunk_or_unwind(const X86pCpu *cpu, void *user, void *run_user) {
   (void)user;
+  (void)run_user;
   return cpu->eip == g_disp_thunk || cpu->eip == g_disp_unwind;
 }
 
-static X86pJitDispatchResult dispatch_thunk_or_unwind(X86pCpu *cpu, void *user) {
+static X86pJitDispatchResult dispatch_thunk_or_unwind(X86pCpu *cpu, void *user, void *run_user) {
   (void)user;
+  (void)run_user;
   if (cpu->eip == g_disp_thunk) {
     g_disp_calls++;
     cpu->reg[kX86pEax] += 0x10u; /* the "thunk" side effect */
@@ -721,14 +732,16 @@ static X86pJitDispatchResult dispatch_thunk_or_unwind(X86pCpu *cpu, void *user) 
 }
 
 /* A handler that never advances eip -- the slice must still terminate. */
-static int intercept_always(const X86pCpu *cpu, void *user) {
+static int intercept_always(const X86pCpu *cpu, void *user, void *run_user) {
   (void)cpu;
   (void)user;
+  (void)run_user;
   return 1;
 }
-static X86pJitDispatchResult dispatch_stuck(X86pCpu *cpu, void *user) {
+static X86pJitDispatchResult dispatch_stuck(X86pCpu *cpu, void *user, void *run_user) {
   (void)cpu;
   (void)user;
+  (void)run_user;
   g_disp_calls++;
   return kX86pDispatchContinue;
 }
@@ -768,7 +781,7 @@ static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
   /* No dispatch handler: the interception point unwinds the run, as before. */
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason) == kX86pRunIntercept);
   CHECK(cpu.eip == GUEST_BASE + 5u);
   CHECK(cpu.reg[kX86pEax] == 1u);
   CHECK(g_disp_calls == 0);
@@ -778,7 +791,7 @@ static void test_inline_dispatch_continues_the_run_without_unwinding(void) {
   x86p_jit_engine_set_dispatch(eng, dispatch_thunk_or_unwind, NULL);
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 100u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason) == kX86pRunIntercept);
   CHECK(cpu.eip == GUEST_BASE + 7u); /* stopped at the sentinel, not the thunk */
   CHECK(g_disp_calls == 1);          /* the thunk ran exactly once */
   CHECK(cpu.reg[kX86pEax] == 0x12u); /* mov eax,1; +0x10 in the handler; inc */
@@ -808,7 +821,7 @@ static void test_inline_dispatch_that_never_advances_still_ends_the_slice(void) 
   x86p_jit_engine_set_dispatch(eng, dispatch_stuck, NULL);
 
   seed(&cpu);
-  CHECK(x86p_jit_engine_run(eng, &cpu, 64u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 64u, reason, sizeof reason) == kX86pRunBudget);
   CHECK(g_disp_calls == 64); /* one per step, then the budget stops it */
 
   x86p_jit_engine_destroy(eng);
@@ -843,7 +856,7 @@ static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
   CHECK(x86p_jit_engine_set_profile(eng, 1, 64u, reason, sizeof reason));
   seed(&cpu);
   cpu.reg[kX86pEax] = 0u;
-  CHECK(x86p_jit_engine_run(eng, &cpu, 200u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
 
   x86p_jit_engine_stats(eng, &st);
   CHECK(x86p_jit_profile_total_hits(x86p_jit_engine_profile(eng)) == st.blocks_entered);

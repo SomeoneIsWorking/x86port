@@ -315,8 +315,8 @@ static void *translate_at(
   return exec;
 }
 
-X86pJitRunStatus
-x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *reason, unsigned reason_len) {
+X86pJitRunStatus x86p_jit_engine_run(
+    X86pJitEngine *e, X86pCpu *cpu, void *run_user, uint64_t max_steps, char *reason, unsigned reason_len) {
   uint64_t steps = 0u;
   unsigned consecutive_translate_retries = 0u;
 
@@ -326,8 +326,8 @@ x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *re
   }
 
   while (steps < max_steps) {
-    if (e->intercept && e->intercept(cpu, e->intercept_user)) {
-      if (e->dispatch && e->dispatch(cpu, e->dispatch_user) == kX86pDispatchContinue) {
+    if (e->intercept && e->intercept(cpu, e->intercept_user, run_user)) {
+      if (e->dispatch && e->dispatch(cpu, e->dispatch_user, run_user) == kX86pDispatchContinue) {
         /* Handled in place; the run stays on this stack. Counts as a step so a
            handler that does not advance eip still ends the slice. */
         steps++;

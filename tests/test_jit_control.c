@@ -733,7 +733,7 @@ static void expect_x87_precision_refusal(Fixture *fixture, X86pCpu initial) {
     printf("  precision-refusal fixture: %s\n", reason);
     return;
   }
-  CHECK(x86p_jit_engine_run(engine, &cpu, 1u, reason, sizeof reason) == kX86pRunUnsupported);
+  CHECK(x86p_jit_engine_run(engine, &cpu, NULL, 1u, reason, sizeof reason) == kX86pRunUnsupported);
   CHECK(strstr(reason, decoded.mnemonic) != NULL);
   CHECK(x86p_cpu_diff(&cpu, &initial, NULL, NULL) == 0u);
   CHECK(memcmp(fixture->guest, fixture->before, sizeof fixture->guest) == 0);

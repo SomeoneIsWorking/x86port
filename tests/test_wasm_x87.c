@@ -71,7 +71,7 @@ static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu
   X86pJitEngine *engine = x86p_jit_engine_create(&mem, 65536, 128, reason, sizeof reason);
   check(engine != NULL, reason);
   if (engine) {
-    const X86pJitRunStatus actual = x86p_jit_engine_run(engine, &cpu, 1, reason, sizeof reason);
+    const X86pJitRunStatus actual = x86p_jit_engine_run(engine, &cpu, NULL, 1, reason, sizeof reason);
     check((expected == kX86pStepOk && actual == kX86pRunBudget) ||
               (expected == kX86pStepMemoryFault && actual == kX86pRunMemoryFault),
           reason[0] ? reason : "exit differs");

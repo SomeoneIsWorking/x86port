@@ -45,7 +45,7 @@ static X86pJitEngine *create(const X86pMem *mem, size_t capacity, unsigned block
 
 static void run(X86pJitEngine *engine, X86pCpu *cpu, unsigned steps) {
   char reason[256] = {0};
-  X86pJitRunStatus status = x86p_jit_engine_run(engine, cpu, steps, reason, sizeof reason);
+  X86pJitRunStatus status = x86p_jit_engine_run(engine, cpu, NULL, steps, reason, sizeof reason);
   check(status == kX86pRunBudget, reason);
 }
 
@@ -98,7 +98,7 @@ static void helpers_and_invalidation(const X86pMem *mem) {
   cpu.eip = kGuestBase;
   {
     char reason[256] = {0};
-    X86pJitRunStatus status = x86p_jit_engine_run(engine, &cpu, 1u, reason, sizeof reason);
+    X86pJitRunStatus status = x86p_jit_engine_run(engine, &cpu, NULL, 1u, reason, sizeof reason);
     check(status == kX86pRunUnsupported, "unsupported guest instruction was not refused");
     check(strstr(reason, "RCPPS") != NULL, "unsupported refusal lost its mnemonic");
     check(cpu.reg[kX86pEax] == 123u, "unsupported instruction mutated guest registers");

@@ -22,7 +22,7 @@ static void check(int value, const char *message) {
 
 static X86pJitRunStatus run(X86pJitEngine *engine, X86pCpu *cpu) {
   char reason[256] = {0};
-  X86pJitRunStatus result = x86p_jit_engine_run(engine, cpu, 1, reason, sizeof reason);
+  X86pJitRunStatus result = x86p_jit_engine_run(engine, cpu, NULL, 1, reason, sizeof reason);
   if (result != kX86pRunBudget && result != kX86pRunMemoryFault) {
     check(0, reason);
   }

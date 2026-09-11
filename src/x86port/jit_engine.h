@@ -106,9 +106,21 @@ void x86p_jit_engine_destroy(X86pJitEngine *e);
  * coverage improves a given budget covers MORE guest instructions, since more
  * of them fit inside a block. A caller that needs a bound on guest work should
  * read the stats, not assume a step is an instruction.
+ *
+ * `run_user` is the caller's state for THIS run, handed unchanged to the
+ * intercept and dispatch callbacks beside their registered user pointer. It
+ * exists because those callbacks almost always need the consumer's current
+ * call frame, which is per-thread: without it a consumer must reach that frame
+ * through a thread-local, and the run loop consults the intercept once per
+ * block boundary. On a host whose thread-locals are emulated -- an Android
+ * shared object below API 29 -- that lookup is a function call through a
+ * pthread key, and it measured 13.4% of the port library's samples in X-Men 2.
+ * Living on this run's own stack, it is per-thread by construction and cannot
+ * be raced by a second guest thread the way a registered pointer can. Null
+ * when the consumer has no such state.
  */
-X86pJitRunStatus
-x86p_jit_engine_run(X86pJitEngine *e, X86pCpu *cpu, uint64_t max_steps, char *reason, unsigned reason_len);
+X86pJitRunStatus x86p_jit_engine_run(
+    X86pJitEngine *e, X86pCpu *cpu, void *run_user, uint64_t max_steps, char *reason, unsigned reason_len);
 
 /* Forget translations overlapping [lo, hi) -- self-modifying code, an overlay
    load, DMA into code memory. */
@@ -128,7 +140,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out);
  * When this returns non-zero, x86p_jit_engine_run immediately returns
  * kX86pRunIntercept with cpu->eip untouched.
  */
-typedef int (*X86pJitInterceptFn)(const X86pCpu *cpu, void *user);
+typedef int (*X86pJitInterceptFn)(const X86pCpu *cpu, void *user, void *run_user);
 
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user);
 
@@ -159,7 +171,7 @@ typedef enum X86pJitDispatchResult {
  * the run: correct, but at ~20k host-API calls per game frame the teardown and
  * re-entry of x86p_jit_engine_run dominates. Null clears it.
  */
-typedef X86pJitDispatchResult (*X86pJitDispatchFn)(X86pCpu *cpu, void *user);
+typedef X86pJitDispatchResult (*X86pJitDispatchFn)(X86pCpu *cpu, void *user, void *run_user);
 
 void x86p_jit_engine_set_dispatch(X86pJitEngine *e, X86pJitDispatchFn fn, void *user);
 

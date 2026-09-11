@@ -226,7 +226,7 @@ static void permissions(void) {
       x86p_sparse_destroy(sparse);
       continue;
     }
-    status = x86p_jit_engine_run(engine, &cpu, 1, reason, sizeof reason);
+    status = x86p_jit_engine_run(engine, &cpu, NULL, 1, reason, sizeof reason);
     wasm_test_check(&suite, status == (forms[i].faults ? kX86pRunMemoryFault : kX86pRunBudget), reason);
     wasm_test_check(
         &suite, memcmp(suite.guest, suite.reference, sizeof suite.guest) == 0, "read-only operand changed memory");
