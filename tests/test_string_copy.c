@@ -1,4 +1,7 @@
-/* REP MOVS against independent one-element stepping, plus fast-span controls. */
+/* REP MOVS and REP STOS against independent one-element stepping, plus
+   fast-span controls. Both have a bulk path that must be indistinguishable
+   from element-wise execution, including at a fault and in what an observer
+   sees. */
 #include "cpu.h"
 #include "cpu_compare.h"
 #include "string_ops.h"
@@ -49,46 +52,50 @@ static void differential(void) {
                                         {0, 1000},
                                         {1023, 512},
                                         {512, 1023}};
+  static const X86pStringOp ops[] = {kX86pStringMovs, kX86pStringStos};
   uint8_t actual[1024], expected[1024];
-  for (unsigned width = 1; width <= 4; width *= 2) {
-    for (unsigned df = 0; df < 2; df++) {
-      for (unsigned count = 0; count < sizeof counts / sizeof counts[0]; count++) {
-        for (unsigned pos = 0; pos < sizeof offsets / sizeof offsets[0]; pos++) {
-          for (unsigned watch = 0; watch < 2; watch++) {
-            for (unsigned high = 0; high < 2; high++) {
-              for (unsigned i = 0; i < sizeof actual; i++) {
-                actual[i] = expected[i] = (uint8_t)(i * 37);
+  for (unsigned opi = 0; opi < sizeof ops / sizeof ops[0]; opi++) {
+    for (unsigned width = 1; width <= 4; width *= 2) {
+      for (unsigned df = 0; df < 2; df++) {
+        for (unsigned count = 0; count < sizeof counts / sizeof counts[0]; count++) {
+          for (unsigned pos = 0; pos < sizeof offsets / sizeof offsets[0]; pos++) {
+            for (unsigned watch = 0; watch < 2; watch++) {
+              for (unsigned high = 0; high < 2; high++) {
+                for (unsigned i = 0; i < sizeof actual; i++) {
+                  actual[i] = expected[i] = (uint8_t)(i * 37);
+                }
+                const uint32_t base = high ? 0xFFFFFE00u : 0x10000u;
+                X86pMem am = {.host = actual, .lo = base, .size = sizeof actual}, em = am;
+                em.host = expected;
+                X86pCpu a, b;
+                x86p_cpu_reset(&a);
+                a.reg[kX86pEsi] = base + offsets[pos][0];
+                a.reg[kX86pEdi] = base + offsets[pos][1];
+                a.reg[kX86pEcx] = counts[count];
+                a.reg[kX86pEax] = 0xA5B6C7D8u;
+                a.df = (uint8_t)df;
+                x86p_flags_set_explicit(&a.flags, 0xAD7);
+                b = a;
+                X86pInsn in = {0};
+                in.str = (uint8_t)ops[opi];
+                in.rep = kX86pRepRep;
+                in.str_width = (uint8_t)width;
+                uint32_t af, bf;
+                x86p_mem_set_write_observer(watch ? observer : NULL, NULL);
+                observed = 0;
+                observed_hash = 0;
+                X86pStringStatus as = x86p_string_execute(&a, &am, &in, &af);
+                unsigned aw = observed;
+                uint32_t ah = observed_hash;
+                observed = 0;
+                observed_hash = 0;
+                X86pStringStatus bs = reference(&b, &em, in, &bf);
+                CHECK(as == bs && af == bf);
+                CHECK(x86p_cpu_diff(&a, &b, NULL, NULL) == 0);
+                CHECK(memcmp(actual, expected, sizeof actual) == 0);
+                CHECK(aw == observed && ah == observed_hash);
+                x86p_mem_set_write_observer(NULL, NULL);
               }
-              const uint32_t base = high ? 0xFFFFFE00u : 0x10000u;
-              X86pMem am = {.host = actual, .lo = base, .size = sizeof actual}, em = am;
-              em.host = expected;
-              X86pCpu a, b;
-              x86p_cpu_reset(&a);
-              a.reg[kX86pEsi] = base + offsets[pos][0];
-              a.reg[kX86pEdi] = base + offsets[pos][1];
-              a.reg[kX86pEcx] = counts[count];
-              a.df = (uint8_t)df;
-              x86p_flags_set_explicit(&a.flags, 0xAD7);
-              b = a;
-              X86pInsn in = {0};
-              in.str = kX86pStringMovs;
-              in.rep = kX86pRepRep;
-              in.str_width = (uint8_t)width;
-              uint32_t af, bf;
-              x86p_mem_set_write_observer(watch ? observer : NULL, NULL);
-              observed = 0;
-              observed_hash = 0;
-              X86pStringStatus as = x86p_string_execute(&a, &am, &in, &af);
-              unsigned aw = observed;
-              uint32_t ah = observed_hash;
-              observed = 0;
-              observed_hash = 0;
-              X86pStringStatus bs = reference(&b, &em, in, &bf);
-              CHECK(as == bs && af == bf);
-              CHECK(x86p_cpu_diff(&a, &b, NULL, NULL) == 0);
-              CHECK(memcmp(actual, expected, sizeof actual) == 0);
-              CHECK(aw == observed && ah == observed_hash);
-              x86p_mem_set_write_observer(NULL, NULL);
             }
           }
         }
@@ -121,6 +128,32 @@ static void admission(void) {
   x86p_mem_set_write_observer(NULL, NULL);
   mem.lo = UINT32_MAX - 15;
   CHECK(!x86p_mem_copy_disjoint(&mem, mem.lo + 8, mem.lo, 16));
+  CHECK(memcmp(data, saved, sizeof data) == 0);
+
+  /* The fill's admission, refusal by refusal. */
+  static const uint8_t unit[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+  mem.lo = 0x10000;
+  CHECK(x86p_mem_fill(&mem, mem.lo, unit, 4u, 8u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == unit[i % 4u]);
+  }
+  CHECK(x86p_mem_fill(&mem, mem.lo, unit, 1u, 32u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == unit[0]);
+  }
+  memcpy(saved, data, sizeof data);
+  CHECK(!x86p_mem_fill(NULL, mem.lo, unit, 4u, 8u));
+  CHECK(!x86p_mem_fill(&mem, mem.lo, NULL, 4u, 8u));
+  CHECK(!x86p_mem_fill(&mem, mem.lo, unit, 4u, 0u));
+  CHECK(!x86p_mem_fill(&mem, mem.lo, unit, 3u, 8u)); /* not a guest width */
+  CHECK(!x86p_mem_fill(&mem, mem.lo, unit, 4u, 9u)); /* past the mapping */
+  CHECK(!x86p_mem_fill(&mem, mem.lo - 1, unit, 1u, 4u));
+  CHECK(!x86p_mem_fill(&mem, mem.lo, unit, 4u, 0x80000000u)); /* byte count overflows */
+  observed = 0;
+  x86p_mem_set_write_observer(observer, NULL);
+  CHECK(!x86p_mem_fill(&mem, mem.lo, unit, 4u, 8u));
+  CHECK(observed == 0);
+  x86p_mem_set_write_observer(NULL, NULL);
   CHECK(memcmp(data, saved, sizeof data) == 0);
 }
 

@@ -194,6 +194,18 @@ the registered user pointer can. `test_jit_engine` checks that the value
 arrives at the callback, so a run that dropped it would fail rather than pass
 with the callback ignoring it.
 
+A forward REP STOS fills its span in one call, the way a forward REP MOVS
+already copied one. `x86p_mem_fill` carries the same admission rule as
+`x86p_mem_copy_disjoint` -- nonempty, wholly mapped, no write observer, no
+sparse mapping -- and every case it refuses keeps element-wise execution, so a
+partial fault still leaves ECX and EDI exactly where the guest would see them.
+`test_string_copy`'s differential now runs STOS beside MOVS against its
+independent one-element reference across widths, both directions, nine counts,
+thirteen operand positions, with and without an observer, and at the top of the
+address space: 22,579 state checks. Breaking the fill by one bit in the filled
+byte fails 177 of them, so the bulk path is known to be reached rather than
+assumed to be.
+
 Binary128 hosts (including Android ARM64 and
 Emscripten) now convert numerical state through ext80 software arithmetic rather
 than refusing ordinary value forms. Raw MMX aliasing still requires native

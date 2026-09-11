@@ -205,6 +205,13 @@ int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint3
    guest bounds/wrap, not host page protections. It does not invalidate JIT code. */
 int x86p_mem_copy_disjoint(const X86pMem *m, uint32_t dst, uint32_t src, uint32_t n);
 
+/* Bulk-fill admission for repeated guest stores: writes `count` copies of the
+   `w`-byte little-endian `unit` starting at `addr`. Same admission rule as the
+   bulk copy -- nonempty, wholly mapped, no write observer, no sparse mapping --
+   and the same obligation on the caller to keep element-wise execution for
+   every case it refuses. It does not invalidate JIT code. */
+int x86p_mem_fill(const X86pMem *m, uint32_t addr, const uint8_t *unit, uint32_t w, uint32_t count);
+
 /* Whether an access of `w` bytes at `addr` is wholly mapped. Exposed so a
    caller can check before doing work it would have to undo. */
 int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w);
