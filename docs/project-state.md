@@ -194,6 +194,20 @@ startup 4,357 translated cases with zero precision refusals, and control
 These are user-mode Android binaries, not an Android OS/APK or device
 performance result.
 
+Binary128 hosts no longer pay a general softfloat conversion for ordinary
+values. `x87_f128_ext80.{h,cpp}` reassembles the bits directly when a value is a
+finite normal that both formats hold exactly -- which is every value that has
+been through ext80 arithmetic or arrived as f32/f64 -- and refuses zero,
+subnormal, infinity, NaN and ext80 unnormals to the existing
+`f128_to_extF80`/`extF80_to_f128` path. `test_x87_f128_ext80` checks both
+directions against softfloat itself and the ext80 round trip over 28,372 cases,
+passing natively and on the ARM64 Cuttlefish device alongside the unchanged
+3,140 software-math and 341 narrowing checks. An NDK arm64 micro-benchmark under
+`qemu-aarch64` measured a multiply/add pair at 214 -> 145 ns per operation
+(softfloat arithmetic alone is 99 ns), so the conversions were roughly half of
+the cost of every guest x87 operation on that host. That is a leaf measurement,
+not a frame-rate claim.
+
 The differential uses the shipping `jit-common` region publication API for
 W^X transitions and instruction-cache coherence. Gap: ARM64 caller-saved helper
 register lifetimes, macOS execution, Android runtime/package behavior, and

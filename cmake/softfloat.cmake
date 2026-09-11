@@ -13,9 +13,11 @@ add_library(x86p_softfloat STATIC ${X86P_SOFTFLOAT_SOURCES}
   "${X86P_SOFTFLOAT_ROOT}/fpu/poly.cc"
   "${X86P_SOFTFLOAT_ROOT}/fpu/f2xm1.cc"
   "${CMAKE_CURRENT_LIST_DIR}/../src/x86port/x87_softfloat_atan.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/../src/x86port/x87_f128_ext80.cpp"
   "${X86P_SOFTFLOAT_ROOT}/fpu/fprem.cc"
   "${X86P_SOFTFLOAT_ROOT}/fpu/fyl2x.cc")
 target_include_directories(x86p_softfloat PUBLIC
+  "${CMAKE_CURRENT_LIST_DIR}/../src/x86port"
   "${CMAKE_CURRENT_LIST_DIR}/softfloat"
   "${X86P_SOFTFLOAT_ROOT}" "${X86P_SOFTFLOAT_ROOT}/fpu" "${X86P_SOFTFLOAT_ROOT}/softfloat3e/include")
 target_compile_definitions(x86p_softfloat PRIVATE SOFTFLOAT_FAST_INT64 INLINE_LEVEL=5
