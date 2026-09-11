@@ -67,7 +67,7 @@ void wasm_test_case_mem(WasmTest *suite,
   if (!engine) {
     return;
   }
-  actual = x86p_jit_engine_run(engine, &cpu, 1u, reason, sizeof reason);
+  actual = x86p_jit_engine_run(engine, &cpu, NULL, 1u, reason, sizeof reason);
   wasm_test_check(suite,
                   (expected == kX86pStepOk && actual == kX86pRunBudget) ||
                       (expected == kX86pStepMemoryFault && actual == kX86pRunMemoryFault) ||

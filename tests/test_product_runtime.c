@@ -51,7 +51,7 @@ static int translated_program_runs(X86pJitEngine *engine, X86pCpu *cpu, uint8_t 
   memcpy(guest, program, sizeof program);
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
-  status = x86p_jit_engine_run(engine, cpu, 8u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 8u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunBudget, "translated program did not consume its block budget") &&
@@ -74,7 +74,7 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEsp] = kGuestBase + 0x800u;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "unsupported instruction did not return the product refusal") &&
@@ -108,7 +108,7 @@ static int setz_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEdx] = 0x112233FFu;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-SETZ refusal did not return the product status") &&
@@ -148,7 +148,7 @@ static int cdq_and_div_execute_before_a_named_refusal(X86pJitEngine *engine, X86
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEdx] = 0xFFFFFFFFu;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-DIV refusal did not return the product status") &&
@@ -187,7 +187,7 @@ static int idiv_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
   x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)sizeof program);
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-IDIV refusal did not return the product status") &&
@@ -223,7 +223,7 @@ static int imul_memory_executes_before_a_named_refusal(X86pJitEngine *engine, X8
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEbp] = kGuestBase + 0x400u - 0x0Cu;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-IMUL refusal did not return the product status") &&
@@ -255,7 +255,7 @@ static int imul_immediate_alias_executes_before_a_named_refusal(X86pJitEngine *e
   x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)sizeof program);
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-IMUL-immediate refusal did not return the product status") &&
@@ -282,7 +282,7 @@ static int xchg_eax_esp_executes_before_a_named_refusal(X86pJitEngine *engine, X
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEax] = 0x12345678u;
   cpu->reg[kX86pEsp] = 0x89ABCDEFu;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-XCHG refusal did not return the product status") &&
@@ -322,7 +322,7 @@ static int fnclex_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu
   cpu->x87.status = UINT16_C(0xFFFF);
   memcpy(tags, cpu->x87.tag, sizeof tags);
 
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   x86p_jit_engine_stats(engine, &stats);
 
   return expect(status == kX86pRunUnsupported, "post-FNCLEX refusal did not return the product status") &&
@@ -347,7 +347,7 @@ static int translation_failures_are_distinct(X86pJitEngine *engine, X86pCpu *cpu
 
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase + kGuestSize;
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   if (!expect(status == kX86pRunFetchFault, "unmapped EIP was not reported as a fetch fault")) {
     return 0;
   }
@@ -357,7 +357,7 @@ static int translation_failures_are_distinct(X86pJitEngine *engine, X86pCpu *cpu
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   reason[0] = '\0';
-  status = x86p_jit_engine_run(engine, cpu, 1u, reason, (unsigned)sizeof reason);
+  status = x86p_jit_engine_run(engine, cpu, NULL, 1u, reason, (unsigned)sizeof reason);
   return expect(status == kX86pRunDecodeFailed, "invalid instruction bytes were not reported as a decode failure");
 }
 

@@ -181,7 +181,20 @@ not verification of the merged tree or complete guest semantics: macOS uses
 binary64 `long double`, and the prior interpreter/JIT comparison shared that
 inexact x87 representation. Both host backends use `jit_x87_predicates.c` for
 value admission: exact extended state, or the explicitly approved Apple ARM64
-binary64 path described below. Binary128 hosts (including Android ARM64 and
+binary64 path described below. `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
+intercept and dispatch callbacks. The run loop consults the intercept once per
+block boundary, and a consumer's interception predicate needs the guest call
+frame it is currently inside -- which is per-thread. Before this the consumer
+had to reach that frame through a thread-local; on an Android shared object
+below API 29 a thread-local is emulated, so each of those reads is a call
+through a pthread key, and `x86_guest_call_top` measured 13.4% of the X-Men 2
+port library's samples. The new pointer lives on the run's own stack, so it is
+per-thread by construction and cannot be raced by a second guest thread the way
+the registered user pointer can. `test_jit_engine` checks that the value
+arrives at the callback, so a run that dropped it would fail rather than pass
+with the callback ignoring it.
+
+Binary128 hosts (including Android ARM64 and
 Emscripten) now convert numerical state through ext80 software arithmetic rather
 than refusing ordinary value forms. Raw MMX aliasing still requires native
 extended storage; this numerical bridge does not establish complete raw-state
