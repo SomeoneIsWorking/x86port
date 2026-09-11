@@ -116,6 +116,10 @@ int x86p_flag_pf(const X86pFlags *f) {
   return (int)(~v & 1u);
 }
 
+int x86p_flags_carry_in_is_live(X86pFlagKind kind) {
+  return kind == kX86pFlagsInc || kind == kX86pFlagsDec;
+}
+
 int x86p_flag_cf(const X86pFlags *f) {
   if (__builtin_expect(!f, 0)) {
     return 0;

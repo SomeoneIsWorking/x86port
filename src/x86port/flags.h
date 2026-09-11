@@ -111,6 +111,21 @@ typedef struct X86pFlags {
   uint8_t carry_in; /* CF before an operation that preserves it (INC, DEC) */
 } X86pFlags;
 
+/*
+ * Whether `carry_in` is READ once `kind` has been recorded.
+ *
+ * Only INC and DEC consult it: x86p_flag_cf derives CF from a/b/r for every
+ * other kind, so the byte a preceding ADD or AND left behind is never looked
+ * at again. That makes computing and storing it for those kinds dead work, and
+ * a translator may skip both -- which is worth a named rule rather than the
+ * same reasoning restated in each backend, because getting it wrong produces a
+ * CF that is right until a carry-carrying loop reaches an INC.
+ *
+ * A state comparison must use this too: comparing a dead carry_in reports a
+ * divergence that no guest-visible value can see.
+ */
+int x86p_flags_carry_in_is_live(X86pFlagKind kind);
+
 /* Record an operation. `w` must be 1, 2 or 4; anything else is a caller defect
    and is reported rather than silently treated as 4. */
 void x86p_flags_set(X86pFlags *f, X86pFlagKind kind, uint32_t a, uint32_t b, uint32_t r, int w);

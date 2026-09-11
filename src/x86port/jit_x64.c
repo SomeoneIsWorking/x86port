@@ -809,7 +809,18 @@ static void emit_alu_inline(BlockCtx *c,
    * every EFLAGS bit before anything reads them: the whole tuple, carry_in
    * included, is skipped. The native arithmetic and its write-back stay.
    */
-  if (!flags_dead) {
+  /*
+   * A binary ALU operation records Add, Sub or Logic, and
+   * x86p_flags_carry_in_is_live says none of those ever reads carry_in again.
+   * So the derivation AND the store are dead here -- only the unary INC/DEC
+   * path below, which records a kind that does preserve CF, still pays for
+   * them. Measured on the arm64 Android build, the derivation's
+   * unknown-predecessor arm alone (one call to x86p_flag_cf per block, paid on
+   * every entry to that block) was 5.07% of the port library's samples.
+   */
+  const int carry_live = x86p_flags_carry_in_is_live(kind);
+
+  if (!flags_dead && carry_live) {
     c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
   }
 
@@ -824,20 +835,20 @@ static void emit_alu_inline(BlockCtx *c,
 
   if (dst->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, dst, insn_eip, w);
-    if (!flags_dead) {
+    if (!flags_dead && carry_live) {
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
     emit_read_alu_src(c, kX64Rdx, src, w);
   } else if (src->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, src, insn_eip, w);
-    if (!flags_dead) {
+    if (!flags_dead && carry_live) {
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kX64Rdx, HOSTPTR_REG, 0, w);
     emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
   } else {
-    if (!flags_dead) {
+    if (!flags_dead && carry_live) {
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_read_alu_src(c, kX64Rdx, src, w);
