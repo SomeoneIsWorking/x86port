@@ -232,8 +232,8 @@ static int cond_after_cmp_result(uint8_t cond, X86pA64Cond *out) {
   }
 }
 
-/* Materialise the condition as 0/1 in X0 without a helper call, or return 0
-   having emitted nothing. */
+/* Put the condition in NZCV without a helper call, or return 0 having emitted
+   nothing. */
 /* Load a flag operand and left-align it for the recorded width. */
 static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, uint8_t shift) {
   x86p_a64_emit_load32(e, reg, CPU_REG, offset);
@@ -242,10 +242,13 @@ static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, uint8_t
   }
 }
 
-int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, int last_w) {
+int x86p_a64_emit_condition_flags(
+    X86pA64Emit *e, uint8_t cond, int last_kind, int last_w, X86pA64Cond *out_cc, int *out_constant) {
   X86pA64Cond cc = kA64CondAl;
   int constant = -1;
   uint8_t shift;
+
+  *out_constant = -1;
 
   if (last_w != 1 && last_w != 2 && last_w != 4) {
     return 0;
@@ -273,7 +276,7 @@ int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, 
       return 0;
     }
     if (constant >= 0) {
-      x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)constant);
+      *out_constant = constant;
       return 1;
     }
     load_aligned(e, kA64X0, FLAG_R, shift);
@@ -290,6 +293,6 @@ int x86p_a64_emit_condition_inline(X86pA64Emit *e, uint8_t cond, int last_kind, 
   default:
     return 0;
   }
-  x86p_a64_emit_cset_w(e, cc, kA64X0);
+  *out_cc = cc;
   return 1;
 }

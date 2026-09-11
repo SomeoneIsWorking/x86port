@@ -234,7 +234,11 @@ left-aligned into the top of the word (`lsl` by 32 - 8w) before the compare, so
 the 32-bit NZCV is exactly the narrow operation's, and the shift also discards
 the bits above the width that flags.c masks on read rather than on store. That
 took the synthetic corpus from 32 to 55 of its 249 conditions, still with zero
-divergences.
+divergences, and the running title from 76.5% of its conditions lowered inline
+to 98.2% (15,777 of 16,059). A Jcc also reads the host condition directly with
+its `csel` now instead of materialising 0/1 with a `cset` and testing it again,
+and a condition that is constant for the kind picks its successor at
+translation time.
 
 Evidence is the differential against the interpreter oracle on AArch64 under
 `qemu-aarch64`: 25,155 checks with zero failures over 1,423 generated programs
