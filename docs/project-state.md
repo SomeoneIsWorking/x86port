@@ -194,6 +194,27 @@ startup 4,357 translated cases with zero precision refusals, and control
 These are user-mode Android binaries, not an Android OS/APK or device
 performance result.
 
+A Jcc or SETcc no longer always calls `x86p_cond` on ARM64. `jit_arm64_cond.c`
+lowers the condition onto AArch64's own NZCV for the Add, Sub, Logic, Inc and
+Dec lazy-flag kinds at width 4, with one `cmp`/`cmn` and a `cset`; everything
+else -- PF, narrower widths, the Inc/Dec conditions that read CF or OF -- still
+calls the shared evaluator, which remains the one authority. The motivation was
+a thread-attributed profile of the arm64 Android build of X-Men 2: `x86p_cond`
+was 59 samples of the port's own thread against 424 in all emitted guest code.
+`jit_x64_cond.c` is the same split for x64, which lowers nothing inline yet and
+counts its calls so the field is not a silent zero.
+
+Evidence is the differential against the interpreter oracle on AArch64 under
+`qemu-aarch64`: 25,155 checks with zero failures over 1,423 generated programs
+and 20,020 translated guest instructions, 823 of the blocks ending in a
+translated branch. 32 of the 249 conditions in that run took the inline path;
+that rate is a property of randomly generated programs, which rarely place a
+width-4 ALU immediately before a branch, so `jit_coverage` and the engine now
+report the same ratio over real title code. `test_jit_x64` checks that the
+inline and helper counts add up to the conditions actually emitted and refuses
+a run that emitted none, so a lowering that silently emitted nothing cannot
+pass as one that was never reached.
+
 Binary128 hosts no longer pay a general softfloat conversion for ordinary
 values. `x87_f128_ext80.{h,cpp}` reassembles the bits directly when a value is a
 finite normal that both formats hold exactly -- which is every value that has
