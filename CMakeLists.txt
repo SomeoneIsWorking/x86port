@@ -481,6 +481,11 @@ x86p_strict_target(test_jit_x64)
 add_test(NAME test_jit_x64 COMMAND test_jit_x64)
 set_tests_properties(test_jit_x64 PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(test_x87_f128_ext80 tests/test_x87_f128_ext80.cpp)
+target_link_libraries(test_x87_f128_ext80 PRIVATE x86p_softfloat)
+x86p_strict_target(test_x87_f128_ext80)
+add_test(NAME test_x87_f128_ext80 COMMAND test_x87_f128_ext80)
+
 add_executable(test_x87_software tests/test_x87_software.c)
 target_link_libraries(test_x87_software PRIVATE x86port_runtime)
 x86p_strict_target(test_x87_software)

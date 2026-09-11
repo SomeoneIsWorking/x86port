@@ -3,6 +3,7 @@
 #include "x87_softfloat.h"
 #include "fpu/fpu_trans.h"
 #include "x87.h"
+#include "x87_f128_ext80.h"
 #include "x87_transcendental.h"
 #include <cfloat>
 #include <cstring>
@@ -32,6 +33,12 @@ static softfloat_status_t environment(uint16_t control) {
 static floatx80 widen(long double value) {
 #if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
   static_assert(sizeof(long double) == sizeof(float128_t), "binary128 storage");
+  /* The guest's own values round-trip through ext80, so the exact reassembly
+   * covers them; anything else keeps the general conversion. */
+  floatx80 exact{};
+  if (x86p_x87_f128_to_ext80_exact(&value, &exact)) {
+    return exact;
+  }
   float128_t bits{};
   std::memcpy(&bits, &value, sizeof bits);
   auto status = environment(X86P_X87_CW_INIT);
@@ -47,6 +54,10 @@ static floatx80 widen(long double value) {
 }
 static long double narrow(floatx80 value) {
 #if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
+  long double exact;
+  if (x86p_x87_ext80_to_f128_exact(value, &exact)) {
+    return exact;
+  }
   auto status = environment(X86P_X87_CW_INIT);
   const float128_t bits = extF80_to_f128(value, &status);
   long double result;
