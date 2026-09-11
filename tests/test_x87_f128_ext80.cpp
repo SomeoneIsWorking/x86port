@@ -29,7 +29,9 @@ float128_t f128_from_words(uint64_t low, uint64_t high) {
   return value;
 }
 
-int same_ext80(floatx80 a, floatx80 b) { return a.signExp == b.signExp && a.signif == b.signif; }
+int same_ext80(floatx80 a, floatx80 b) {
+  return a.signExp == b.signExp && a.signif == b.signif;
+}
 
 unsigned failures;
 unsigned checks;
@@ -44,8 +46,11 @@ void check_widen(uint64_t low, uint64_t high, int expect_exact) {
   checks++;
   if (taken != expect_exact) {
     failures++;
-    printf("widen %016llx:%016llx claimed %d, expected %d\n", (unsigned long long)high,
-           (unsigned long long)low, taken, expect_exact);
+    printf("widen %016llx:%016llx claimed %d, expected %d\n",
+           (unsigned long long)high,
+           (unsigned long long)low,
+           taken,
+           expect_exact);
     return;
   }
   if (!taken) {
@@ -57,8 +62,12 @@ void check_widen(uint64_t low, uint64_t high, int expect_exact) {
   if (!same_ext80(fast, general)) {
     failures++;
     printf("widen %016llx:%016llx gave %04x:%016llx, softfloat gave %04x:%016llx\n",
-           (unsigned long long)high, (unsigned long long)low, fast.signExp,
-           (unsigned long long)fast.signif, general.signExp, (unsigned long long)general.signif);
+           (unsigned long long)high,
+           (unsigned long long)low,
+           fast.signExp,
+           (unsigned long long)fast.signif,
+           general.signExp,
+           (unsigned long long)general.signif);
   }
 }
 
@@ -71,8 +80,11 @@ void check_narrow(uint16_t sign_exponent, uint64_t significand, int expect_exact
   checks++;
   if (taken != expect_exact) {
     failures++;
-    printf("narrow %04x:%016llx claimed %d, expected %d\n", sign_exponent,
-           (unsigned long long)significand, taken, expect_exact);
+    printf("narrow %04x:%016llx claimed %d, expected %d\n",
+           sign_exponent,
+           (unsigned long long)significand,
+           taken,
+           expect_exact);
     return;
   }
   if (!taken) {
@@ -86,8 +98,11 @@ void check_narrow(uint16_t sign_exponent, uint64_t significand, int expect_exact
   if (fast[0] != expected[0] || fast[1] != expected[1]) {
     failures++;
     printf("narrow %04x:%016llx gave %016llx:%016llx, softfloat gave %016llx:%016llx\n",
-           sign_exponent, (unsigned long long)significand, (unsigned long long)fast[1],
-           (unsigned long long)fast[0], (unsigned long long)expected[1],
+           sign_exponent,
+           (unsigned long long)significand,
+           (unsigned long long)fast[1],
+           (unsigned long long)fast[0],
+           (unsigned long long)expected[1],
            (unsigned long long)expected[0]);
   }
 }
@@ -125,15 +140,15 @@ int main(void) {
   check_widen(0ULL, 0x7FFF000000000000ULL, 0);                  /* infinity */
   check_widen(1ULL, 0x7FFF000000000000ULL, 0);                  /* NaN */
 
-  check_narrow(0x3FFFu, 0x8000000000000000ULL, 1);  /* 1.0 */
-  check_narrow(0xBFFFu, 0x8000000000000000ULL, 1);  /* -1.0 */
-  check_narrow(0x4000u, 0xC000000000000000ULL, 1);  /* 3.0 */
-  check_narrow(0x0001u, 0x8000000000000000ULL, 1);  /* smallest normal exponent */
-  check_narrow(0x7FFEu, 0xFFFFFFFFFFFFFFFFULL, 1);  /* largest finite */
-  check_narrow(0x0000u, 0x8000000000000000ULL, 0);  /* zero/subnormal exponent */
-  check_narrow(0x7FFFu, 0x8000000000000000ULL, 0);  /* infinity */
-  check_narrow(0x7FFFu, 0xC000000000000000ULL, 0);  /* NaN */
-  check_narrow(0x3FFFu, 0x7FFFFFFFFFFFFFFFULL, 0);  /* unnormal: integer bit clear */
+  check_narrow(0x3FFFu, 0x8000000000000000ULL, 1); /* 1.0 */
+  check_narrow(0xBFFFu, 0x8000000000000000ULL, 1); /* -1.0 */
+  check_narrow(0x4000u, 0xC000000000000000ULL, 1); /* 3.0 */
+  check_narrow(0x0001u, 0x8000000000000000ULL, 1); /* smallest normal exponent */
+  check_narrow(0x7FFEu, 0xFFFFFFFFFFFFFFFFULL, 1); /* largest finite */
+  check_narrow(0x0000u, 0x8000000000000000ULL, 0); /* zero/subnormal exponent */
+  check_narrow(0x7FFFu, 0x8000000000000000ULL, 0); /* infinity */
+  check_narrow(0x7FFFu, 0xC000000000000000ULL, 0); /* NaN */
+  check_narrow(0x3FFFu, 0x7FFFFFFFFFFFFFFFULL, 0); /* unnormal: integer bit clear */
 
   /* A sweep of normals across the exponent range and significand shapes. */
   for (unsigned exponent = 1u; exponent <= 0x7FFEu; exponent += 37u) {
@@ -155,6 +170,9 @@ int main(void) {
 
   printf("x87 binary128<->ext80 exact conversion: %u check(s), %u exact widen, %u exact narrow, "
          "%u failure(s)\n",
-         checks, exact_widen, exact_narrow, failures);
+         checks,
+         exact_widen,
+         exact_narrow,
+         failures);
   return failures != 0u;
 }

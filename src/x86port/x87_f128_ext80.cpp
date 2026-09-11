@@ -34,8 +34,7 @@ extern "C" int x86p_x87_f128_to_ext80_exact(const void *bits, floatx80 *out) {
     return 0;
   }
   out->signExp = sign_exponent;
-  out->signif = kIntegerBit | ((words[1] & kFractionHighMask) << kHighFractionShift) |
-                (words[0] >> kLowFractionBits);
+  out->signif = kIntegerBit | ((words[1] & kFractionHighMask) << kHighFractionShift) | (words[0] >> kLowFractionBits);
   return 1;
 }
 
@@ -45,8 +44,7 @@ extern "C" int x86p_x87_ext80_to_f128_exact(floatx80 value, void *bits) {
     return 0;
   }
   words[0] = value.signif << kLowFractionBits;
-  words[1] = (static_cast<uint64_t>(value.signExp) << 48) |
-             ((value.signif >> kHighFractionShift) & kFractionHighMask);
+  words[1] = (static_cast<uint64_t>(value.signExp) << 48) | ((value.signif >> kHighFractionShift) & kFractionHighMask);
   std::memcpy(bits, words, sizeof words);
   return 1;
 }
