@@ -229,6 +229,13 @@ was 59 samples of the port's own thread against 424 in all emitted guest code.
 `jit_x64_cond.c` is the same split for x64, which lowers nothing inline yet and
 counts its calls so the field is not a silent zero.
 
+The lowering is no longer width-4 only: a narrower operation's operands are
+left-aligned into the top of the word (`lsl` by 32 - 8w) before the compare, so
+the 32-bit NZCV is exactly the narrow operation's, and the shift also discards
+the bits above the width that flags.c masks on read rather than on store. That
+took the synthetic corpus from 32 to 55 of its 249 conditions, still with zero
+divergences.
+
 Evidence is the differential against the interpreter oracle on AArch64 under
 `qemu-aarch64`: 25,155 checks with zero failures over 1,423 generated programs
 and 20,020 translated guest instructions, 823 of the blocks ending in a
