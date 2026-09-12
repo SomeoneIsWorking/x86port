@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -71,7 +71,7 @@ static void test_injected_sink_receives_complete_event(void) {
   CHECK(strcmp(capture.message, "unspecified diagnostic") == 0);
 }
 
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
 static void pipe_sink(const X86pDiagnostic *diagnostic, void *user) {
   int descriptor = *(const int *)user;
   char line[320];
@@ -86,7 +86,7 @@ static void pipe_sink(const X86pDiagnostic *diagnostic, void *user) {
 #endif
 
 static void test_shipping_contract_failure_uses_sink_then_aborts(void) {
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
   int descriptors[2];
   pid_t pid;
   char captured[320] = {0};

@@ -48,6 +48,13 @@ size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
 }
 
+int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi) {
+  (void)storage;
+  (void)lo;
+  (void)hi;
+  return 0;
+}
+
 void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->used = 0u;
 }

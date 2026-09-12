@@ -130,7 +130,7 @@ static void test_inc_dec_preserve_carry(void) {
  * executes is a comment.
  */
 static void test_shift_by_zero_is_refused(void) {
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
   pid_t pid = fork();
   if (pid == 0) {
     X86pFlags f;

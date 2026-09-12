@@ -25,7 +25,7 @@
 
 /* The `long double` wrappers copy bytes into the halves below, so they need
    the host's own little-endian layout as well as the format. */
-#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384 && defined(__BYTE_ORDER__) && \
+#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384 && defined(__BYTE_ORDER__) &&                                        \
     __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define X86P_X87_BINARY128 1
 #endif

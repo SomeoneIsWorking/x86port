@@ -14,6 +14,9 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, char *reason, unsigned 
 void x86p_jit_storage_destroy(X86pJitStorage *storage);
 int x86p_jit_storage_has_room(const X86pJitStorage *storage);
 size_t x86p_jit_storage_used(const X86pJitStorage *storage);
+/* Return one reclaimable block range on hosts that can release translations
+   independently. A zero means the storage requires a whole-cache rewind. */
+int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi);
 void x86p_jit_storage_reset(X86pJitStorage *storage);
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi);
 X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
