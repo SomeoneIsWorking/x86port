@@ -369,10 +369,11 @@ mutation round found the corpus had no access at either edge of the mapping and
 no faulting ALU at all, which is the honest reason those cases exist.
 
 Module lifetime: `jit_wasm_arena.{h,c}` bounds live instantiations, because the
-engine has no unload and a module per block would be a permanent engine object
-per block. It refuses by name at the cap instead of evicting -- the block cache
-holds entry addresses the arena handed out and does not consult it before
-entering one -- and counts cap refusals apart from engine rejections.
+engine has no explicit unload and a module per block needs retained objects and
+indirect-table entries. The arena refuses publication at its cap; the JIT engine
+first invalidates a selected cache entry and releases its module before reusing
+the slot. Other cached translations survive module pressure. The arena counts
+cap refusals apart from engine rejections.
 `test_jit_wasm_arena` drives it through a stub engine with deterministic
 instantiation failures: 32 checks over publish/release accounting,
 the cap, release-all, a rejected module, an unreachable export, an arena with no
@@ -386,8 +387,11 @@ primitives. Imports call the compiled C semantic owners, rather than recorded
 helper answers. Compiling on a browser main thread is explicitly refused.
 
 Emscripten 4.0.16 and Node 24.19.0 executed the product library both in
-ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. All eight
-focused targets pass in both builds. The WebAssembly product-link audit counts
+ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. A two-worker
+test creates, runs, and destroys independent JIT instances on different
+pthreads, matching the browser worker-local module registry. The threaded
+WASM build and all 45 registered tests pass; six host-only oracle tests report
+their unsupported host explicitly as skipped. The WebAssembly product-link audit counts
 570 product symbols and ten oracle symbols with zero forbidden product
 references. The combined native Clang 22.1.8 gate passes all 41 tests; the
 `jit-common` cache/code-memory split passes its three-test gate including
@@ -395,11 +399,12 @@ clang-format and clang-tidy. Emscripten warns that combining pthreads with
 memory growth can slow JavaScript accesses; product performance remains
 unqualified. Recorded synthetic results:
 
-- `test_wasm_runtime`: 6,349 checks, zero failures. The helper chain, warm cache,
+- `test_wasm_runtime`: 6,353 checks, zero failures. The helper chain, warm cache,
   interior-byte invalidation and unsupported-instruction discriminator report
   three translated blocks, 17 entries and one refusal. Two 1,040-block runs
   cross module and cache capacity respectively, release discarded modules,
-  preserve another engine's entries and leave zero live modules after destroy.
+  preserve a recent block through module pressure, preserve another engine's
+  entries, and leave zero live modules after destroy.
   The minimum advertised storage capacity and memory growth are also exercised.
 - `test_wasm_integer`: 236 translated cases, 37 expected faults, 3,072 checks,
   zero divergences against the separately linked interpreter. MUL/IMUL,

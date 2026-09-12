@@ -675,7 +675,13 @@ int main(void) {
   RUN(test_empty_register_is_not_zero);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);
-  RUN(test_f80_round_trip);
+  if (x86p_x87_precision_is_exact()) {
+    RUN(test_f80_round_trip);
+  } else {
+    printf("test f80_round_trip\n  SKIP -- host long double cannot represent "
+           "the x87 80-bit format exactly; the software conversion is "
+           "covered by test_x87_binary128 and test_wasm_x87.\n");
+  }
 #if HAVE_HW_ORACLE
   build_vals();
   if (!x86p_x87_precision_is_exact()) {

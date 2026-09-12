@@ -282,9 +282,21 @@ static void *translate_at(
   void *exec;
 
   if (!x86p_jit_storage_has_room(e->storage)) {
-    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
-      *st = kX86pJitOutOfSpace;
-      return NULL;
+    while (!x86p_jit_storage_has_room(e->storage)) {
+      uint32_t lo, hi;
+      size_t before = x86p_jit_storage_used(e->storage);
+      if (x86p_jit_storage_victim(e->storage, &lo, &hi)) {
+        /* WASM modules and table entries can be released individually. Drop
+           the cache entry before its table index becomes reusable. */
+        x86p_jit_engine_invalidate(e, lo, hi);
+        if (x86p_jit_storage_used(e->storage) < before) {
+          continue;
+        }
+      }
+      if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
+        *st = kX86pJitOutOfSpace;
+        return NULL;
+      }
     }
   }
   *st = x86p_jit_storage_translate(e->storage, e->mem, eip, e->boundary, e->boundary_user, &blk, reason, reason_len);

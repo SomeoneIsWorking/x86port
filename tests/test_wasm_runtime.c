@@ -135,8 +135,22 @@ static void lifetime(const X86pMem *mem, unsigned cache_blocks) {
     check(cpu.reg[kX86pEax] == i, "eviction reused a stale table entry");
     check(live_modules() <= X86P_WASM_MAX_LIVE_MODULES + 1u, "module lifetime exceeded its bound");
   }
+  if (cache_blocks > X86P_WASM_MAX_LIVE_MODULES) {
+    cpu.eip = kGuestBase + (X86P_WASM_MAX_LIVE_MODULES - 1u) * kProgramStride;
+    x86p_jit_engine_stats(engine, &stats);
+    {
+      uint64_t translated = stats.blocks_translated;
+      run(engine, &cpu, 1u);
+      x86p_jit_engine_stats(engine, &stats);
+      check(stats.blocks_translated == translated, "capacity pressure evicted a recent block instead of preserving it");
+    }
+  }
   x86p_jit_engine_stats(engine, &stats);
-  check(stats.cache_flushes > 0u, "capacity pressure did not exercise a flush");
+  if (cache_blocks > X86P_WASM_MAX_LIVE_MODULES) {
+    check(stats.cache_flushes == 0u, "WASM module pressure flushed unrelated translations");
+  } else {
+    check(stats.cache_flushes > 0u, "the deliberately small block cache did not exercise a flush");
+  }
   check(stats.blocks_translated == X86P_WASM_MAX_LIVE_MODULES + 16u, "capacity test failed to translate every block");
   printf("lifetime: cache_capacity=%u translated=%llu flushes=%llu live=%u\n",
          cache_blocks,

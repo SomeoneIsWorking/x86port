@@ -20,6 +20,7 @@ struct X86pJitStorage {
   unsigned char *buffer;
   size_t capacity;
   size_t used;
+  unsigned next_victim;
 };
 
 const char *x86p_jit_storage_mechanism(void) {
@@ -61,6 +62,7 @@ void x86p_jit_storage_reset(X86pJitStorage *storage) {
   x86p_wasm_arena_release_all(&storage->arena);
   memset(storage->blocks, 0, sizeof storage->blocks);
   storage->used = 0u;
+  storage->next_victim = 0u;
 }
 
 void x86p_jit_storage_destroy(X86pJitStorage *storage) {
@@ -79,6 +81,26 @@ int x86p_jit_storage_has_room(const X86pJitStorage *storage) {
 
 size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
+}
+
+int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi) {
+  unsigned scanned;
+  for (scanned = 0u; scanned < X86P_WASM_MAX_LIVE_MODULES; ++scanned) {
+    unsigned token = storage->next_victim;
+    const X86pWasmStoredBlock *block = &storage->blocks[token];
+    uint64_t end = (uint64_t)block->guest + block->guest_len;
+    storage->next_victim = (token + 1u) % X86P_WASM_MAX_LIVE_MODULES;
+    if (!block->bytes) {
+      continue;
+    }
+    if (end > UINT32_MAX) {
+      return 0;
+    }
+    *lo = block->guest;
+    *hi = (uint32_t)end;
+    return 1;
+  }
+  return 0;
 }
 
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi) {

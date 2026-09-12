@@ -7,15 +7,25 @@
 #define F128_SIGN_BIT 0x8000000000000000ull
 #define F128_HI_MANT_MASK 0x0000FFFFFFFFFFFFull
 
-static uint32_t f128_exponent(X86pF128 v) { return (uint32_t)((v.hi >> 48) & F128_EXP_MASK); }
+static uint32_t f128_exponent(X86pF128 v) {
+  return (uint32_t)((v.hi >> 48) & F128_EXP_MASK);
+}
 
-static int f128_mantissa_is_zero(X86pF128 v) { return v.lo == 0u && (v.hi & F128_HI_MANT_MASK) == 0u; }
+static int f128_mantissa_is_zero(X86pF128 v) {
+  return v.lo == 0u && (v.hi & F128_HI_MANT_MASK) == 0u;
+}
 
-int x86p_f128_is_zero(X86pF128 v) { return f128_exponent(v) == 0u && f128_mantissa_is_zero(v); }
+int x86p_f128_is_zero(X86pF128 v) {
+  return f128_exponent(v) == 0u && f128_mantissa_is_zero(v);
+}
 
-int x86p_f128_is_nan(X86pF128 v) { return f128_exponent(v) == F128_EXP_MASK && !f128_mantissa_is_zero(v); }
+int x86p_f128_is_nan(X86pF128 v) {
+  return f128_exponent(v) == F128_EXP_MASK && !f128_mantissa_is_zero(v);
+}
 
-int x86p_f128_is_inf(X86pF128 v) { return f128_exponent(v) == F128_EXP_MASK && f128_mantissa_is_zero(v); }
+int x86p_f128_is_inf(X86pF128 v) {
+  return f128_exponent(v) == F128_EXP_MASK && f128_mantissa_is_zero(v);
+}
 
 /* Assemble from a sign, an UNBIASED exponent and a mantissa already aligned to
    binary128's 112-bit field. */
@@ -36,8 +46,7 @@ static X86pF128 f128_make(uint64_t sign, uint32_t biased_exp, uint64_t mant_hi, 
  * `precision` counts the implicit bit (24 for float, 53 for double), so the
  * stored field is `precision - 1` bits wide.
  */
-static X86pF128 widen(uint64_t sign, uint32_t exp, uint64_t mant, uint32_t precision, uint32_t exp_max,
-                      uint32_t bias) {
+static X86pF128 widen(uint64_t sign, uint32_t exp, uint64_t mant, uint32_t precision, uint32_t exp_max, uint32_t bias) {
   const uint32_t field = precision - 1u;
   const uint32_t shift = 112u - field;
   const uint64_t implicit = (uint64_t)1u << field;
@@ -83,8 +92,7 @@ X86pF128 x86p_f128_from_f32(uint32_t bits) {
 }
 
 X86pF128 x86p_f128_from_f64(uint64_t bits) {
-  return widen(bits & F128_SIGN_BIT, (uint32_t)((bits >> 52) & 0x7FFu), bits & 0xFFFFFFFFFFFFFull, 53u, 0x7FFu,
-               1023u);
+  return widen(bits & F128_SIGN_BIT, (uint32_t)((bits >> 52) & 0x7FFu), bits & 0xFFFFFFFFFFFFFull, 53u, 0x7FFu, 1023u);
 }
 
 int x86p_f128_compare(X86pF128 a, X86pF128 b) {
