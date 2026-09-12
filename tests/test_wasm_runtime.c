@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { kGuestBase = 0x400000, kGuestBytes = 32768, kProgramStride = 16 };
+enum { kGuestBase = 0x400000, kProgramStride = 16, kGuestBytes = (X86P_WASM_MAX_LIVE_MODULES + 16) * kProgramStride };
 static uint8_t guest[kGuestBytes];
 static unsigned checks;
 static unsigned failures;
@@ -27,6 +27,15 @@ EM_JS(unsigned, live_modules, (), {
     count += host.modules.size;
   }
   return count;
+});
+
+EM_JS(int, imports_bound_once_per_host, (), {
+  for (const host of Module.x86pWasmHosts.values()) {
+    if (host.modules.size && host.importBindings != 1) {
+      return 0;
+    }
+  }
+  return 1;
 });
 
 static void program(unsigned offset, uint32_t value) {
@@ -152,6 +161,7 @@ static void lifetime(const X86pMem *mem, unsigned cache_blocks) {
     check(stats.cache_flushes > 0u, "the deliberately small block cache did not exercise a flush");
   }
   check(stats.blocks_translated == X86P_WASM_MAX_LIVE_MODULES + 16u, "capacity test failed to translate every block");
+  check(imports_bound_once_per_host(), "WASM imports were rebound for each translated block");
   printf("lifetime: cache_capacity=%u translated=%llu flushes=%llu live=%u\n",
          cache_blocks,
          (unsigned long long)stats.blocks_translated,

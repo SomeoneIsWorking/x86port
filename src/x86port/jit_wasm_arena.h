@@ -5,21 +5,16 @@
  * block means making bytes executable, and forgetting to reclaim them costs
  * address space that the block cache already accounts for. WebAssembly has no
  * equivalent: handing a module to the engine creates an object that lives for
- * as long as anything can reach it, and there is no unload. A module per
- * translated block therefore costs a PERMANENT engine object per block, and a
- * play session translates tens of thousands of them. That is a memory
- * correctness question, not a tuning one, and it is answered here rather than
- * being noticed later as a browser tab that grows without bound.
+ * as long as anything can reach it. The host clears its table entry and drops
+ * the module reference on release, allowing collection. A play session can
+ * translate millions of blocks, so the number of simultaneously reachable
+ * modules must remain bounded.
  *
  * THE ANSWER IS A CAP AND A REFUSAL, NOT SILENT EVICTION. This object holds a
  * bounded number of live instantiations and REFUSES to publish beyond it,
- * naming the refusal and counting it. Evicting behind the caller's back is the
- * one thing it must not do: the block cache holds entry addresses this arena
- * handed out, it does not consult the arena before entering one, and an
- * evicted module's entry would be a call through a table slot that now holds
- * something else. So the caller releases what it stops using -- exactly as it
- * already discards code memory -- and the cap is what makes a caller that
- * forgets fail loudly instead of slowly.
+ * naming the refusal and counting it. The engine explicitly evicts a cached
+ * translation before releasing its module here. Releasing behind the engine's
+ * back would leave a cache address pointing at an empty or reused table slot.
  *
  * THE ENGINE IS A VTABLE. Instantiation is the one operation in this backend
  * that genuinely needs the wasm host, so it is the one operation behind an
@@ -61,10 +56,9 @@ typedef struct X86pWasmHost {
  * How many modules may be live at once.
  *
  * A number rather than "as many as fit", because the resource being bounded is
- * inside the engine and nothing here can measure it. It is deliberately well
- * under what a browser tolerates: the point of the cap is to catch a caller
- * that never releases, and a cap so high that it is only reached after an hour
- * of play would catch it in the field instead of in a test.
+ * inside the engine and nothing here can measure it. Browser gameplay has not
+ * qualified a larger cap: doubling it raised renderer memory substantially
+ * without producing playable frame times.
  */
 #define X86P_WASM_MAX_LIVE_MODULES 1024u
 

@@ -10,6 +10,8 @@
 
 typedef struct X86pWasmHostState {
   char error[256];
+  const char *names[kX86pWasmImportCount];
+  uintptr_t addresses[kX86pWasmImportCount];
 } X86pWasmHostState;
 
 EM_JS_DEPS(x86p_wasm_host,
@@ -22,7 +24,7 @@ EM_JS(int, host_create, (void *key), {
   if (!Module.x86pWasmHosts) {
     Module.x86pWasmHosts = new Map();
   }
-  Module.x86pWasmHosts.set(key, {modules : new Map(), next : 1});
+  Module.x86pWasmHosts.set(key, {modules : new Map(), next : 1, env : null, importBindings : 0});
   return 1;
 });
 
@@ -38,15 +40,19 @@ EM_JS(int,
        unsigned error_len),
       {
         const host = Module.x86pWasmHosts.get(key);
-        const env = {memory : wasmMemory};
-        for (let i = 0; i < count; ++i) {
-          env[UTF8ToString(HEAPU32[(names >>> 2) + i])] = getWasmTableEntry(HEAPU32[(addresses >>> 2) + i]);
+        if (!host.env) {
+          const env = {memory : wasmMemory};
+          for (let i = 0; i < count; ++i) {
+            env[UTF8ToString(HEAPU32[(names >>> 2) + i])] = getWasmTableEntry(HEAPU32[(addresses >>> 2) + i]);
+          }
+          host.env = env;
+          host.importBindings++;
         }
         let instance;
         try {
           const start = bytes >>> 0;
-          const module = new WebAssembly.Module(HEAPU8.slice(start, start + length));
-          instance = new WebAssembly.Instance(module, {env});
+          const module = new WebAssembly.Module(HEAPU8.subarray(start, start + length));
+          instance = new WebAssembly.Instance(module, {env : host.env});
         } catch (failure) {
           if (!(failure instanceof WebAssembly.CompileError) && !(failure instanceof WebAssembly.LinkError)) {
             throw failure;
@@ -105,16 +111,9 @@ EM_JS(void, host_destroy, (void *key), {
 
 static int instantiate(void *user, const void *bytes, size_t length) {
   X86pWasmHostState *state = user;
-  const char *names[kX86pWasmImportCount];
-  uintptr_t addresses[kX86pWasmImportCount];
-  unsigned i;
-  for (i = 0; i < kX86pWasmImportCount; ++i) {
-    names[i] = x86p_wasm_import_field((X86pWasmImport)i);
-    addresses[i] = (uintptr_t)x86p_wasm_import_address((X86pWasmImport)i);
-  }
   state->error[0] = '\0';
   return host_instantiate(
-      user, bytes, length, names, addresses, kX86pWasmImportCount, state->error, sizeof state->error);
+      user, bytes, length, state->names, state->addresses, kX86pWasmImportCount, state->error, sizeof state->error);
 }
 
 static int resolve(void *user, int module, const char *field) {
@@ -127,6 +126,7 @@ static void release(void *user, int module) {
 
 int x86p_wasm_host_create(X86pWasmHost *host, char *reason, unsigned reason_len) {
   X86pWasmHostState *state;
+  unsigned i;
   if (!host) {
     if (reason && reason_len) {
       snprintf(reason, reason_len, "no WebAssembly host output");
@@ -141,6 +141,10 @@ int x86p_wasm_host_create(X86pWasmHost *host, char *reason, unsigned reason_len)
     }
     free(state);
     return 0;
+  }
+  for (i = 0; i < kX86pWasmImportCount; ++i) {
+    state->names[i] = x86p_wasm_import_field((X86pWasmImport)i);
+    state->addresses[i] = (uintptr_t)x86p_wasm_import_address((X86pWasmImport)i);
   }
   host->instantiate = instantiate;
   host->resolve = resolve;

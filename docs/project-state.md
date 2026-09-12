@@ -368,9 +368,9 @@ Four of the twelve were caught only after cases were ADDED for them -- the first
 mutation round found the corpus had no access at either edge of the mapping and
 no faulting ALU at all, which is the honest reason those cases exist.
 
-Module lifetime: `jit_wasm_arena.{h,c}` bounds live instantiations, because the
-engine has no explicit unload and a module per block needs retained objects and
-indirect-table entries. The arena refuses publication at its cap; the JIT engine
+Module lifetime: `jit_wasm_arena.{h,c}` bounds live instantiations, because a
+module per block retains engine objects and indirect-table entries until the host
+drops them. The arena refuses publication at its 1,024-module cap; the JIT engine
 first invalidates a selected cache entry and releases its module before reusing
 the slot. Other cached translations survive module pressure. The arena counts
 cap refusals apart from engine rejections.
@@ -384,7 +384,10 @@ The Emscripten host now runs generated modules through the shipping dispatcher.
 module publication, cache-ordered reclamation and indirect-table entries.
 The WASM path consumes `jitcommon_cache` without linking native executable-memory
 primitives. Imports call the compiled C semantic owners, rather than recorded
-helper answers. Compiling on a browser main thread is explicitly refused.
+helper answers. The host binds its 45 stable imports once per worker instead of
+rebuilding their JS object for every block, and passes emitted module bytes as
+a synchronous view without a second copy. Compiling on a browser main thread
+is explicitly refused.
 
 Emscripten 4.0.16 and Node 24.19.0 executed the product library both in
 ordinary wasm32 builds and with `-pthread -sPROXY_TO_PTHREAD=1`. A two-worker
@@ -404,7 +407,7 @@ unqualified. Recorded synthetic results:
   three translated blocks, 17 entries and one refusal. Two 1,040-block runs
   cross module and cache capacity respectively, release discarded modules,
   preserve a recent block through module pressure, preserve another engine's
-  entries, and leave zero live modules after destroy.
+  entries, bind imports once per host, and leave zero live modules after destroy.
   The minimum advertised storage capacity and memory growth are also exercised.
 - `test_wasm_integer`: 236 translated cases, 37 expected faults, 3,072 checks,
   zero divergences against the separately linked interpreter. MUL/IMUL,
