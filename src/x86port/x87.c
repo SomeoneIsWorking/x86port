@@ -1,5 +1,7 @@
 /* x87.c -- see x87.h for why ST(i) is a position and not a register. */
 #include "x87.h"
+
+#include "x87_binary128.h"
 #include "x87_softfloat.h"
 
 #include <fenv.h>
@@ -133,6 +135,19 @@ static int phys(const X86pX87 *f, int i) {
 }
 
 static uint8_t classify(long double v) {
+#ifdef X86P_X87_BINARY128
+  /* The same three questions, asked of the fields. On this host each of the
+     comparisons below is a compiler-rt call, and this classifier runs on every
+     write to a register: it was 9.5% of a profiled Android frame. */
+  const X86pF128 bits = x86p_f128_of(v);
+  if (x86p_f128_is_zero(bits)) {
+    return (uint8_t)kX86pX87TagZero;
+  }
+  if (x86p_f128_is_nan(bits) || x86p_f128_is_inf(bits)) {
+    return (uint8_t)kX86pX87TagSpecial;
+  }
+  return (uint8_t)kX86pX87TagValid;
+#else
   if (v == 0.0L) {
     return (uint8_t)kX86pX87TagZero;
   }
@@ -140,6 +155,7 @@ static uint8_t classify(long double v) {
     return (uint8_t)kX86pX87TagSpecial;
   }
   return (uint8_t)kX86pX87TagValid;
+#endif
 }
 
 int x86p_x87_depth(const X86pX87 *f) {
@@ -443,7 +459,13 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
     if ((unsigned)op >= (unsigned)kX86pX87OpCount) {
       return 0;
     }
-    if (op == kX86pX87Div && y == 0.0L && x != 0.0L && !isnan(x)) {
+#ifdef X86P_X87_BINARY128
+    const int divide_by_zero = op == kX86pX87Div && x86p_f128_is_zero(x86p_f128_of(y)) &&
+                               !x86p_f128_is_zero(x86p_f128_of(x)) && !x86p_f128_is_nan(x86p_f128_of(x));
+#else
+    const int divide_by_zero = op == kX86pX87Div && y == 0.0L && x != 0.0L && !isnan(x);
+#endif
+    if (divide_by_zero) {
       /* Divide by zero is a named condition with a defined result -- a signed
          infinity -- not an error to refuse. The guest's own handler is masked
          by default and expects the infinity. */
@@ -476,6 +498,24 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
     return 0;
   }
   f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3);
+#ifdef X86P_X87_BINARY128
+  {
+    const X86pF128 x = x86p_f128_of(a), y = x86p_f128_of(other);
+    int order;
+    if (x86p_f128_is_nan(x) || x86p_f128_is_nan(y)) {
+      f->status |= X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
+      f->status |= X86P_X87_IE;
+      return 1;
+    }
+    order = x86p_f128_compare(x, y);
+    if (order < 0) {
+      f->status |= X86P_X87_C0;
+    } else if (order == 0) {
+      f->status |= X86P_X87_C3;
+    }
+    return 1;
+  }
+#else
   if (isnan(a) || isnan(other)) {
     /* UNORDERED sets all three, which is a distinct outcome from both equal
        and less-than. Guests branch on it, and collapsing it into one of the
@@ -492,20 +532,30 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
     f->status |= X86P_X87_C3;
   }
   return 1;
+#endif
 }
 
 /* ---- formats ------------------------------------------------------------ */
 
 long double x86p_x87_from_f32(uint32_t bits) {
+#ifdef X86P_X87_BINARY128
+  /* Exact, and without __extendsftf2. See x87_binary128.h. */
+  return x86p_f128_value(x86p_f128_from_f32(bits));
+#else
   float v;
   memcpy(&v, &bits, sizeof v);
   return (long double)v;
+#endif
 }
 
 long double x86p_x87_from_f64(uint64_t bits) {
+#ifdef X86P_X87_BINARY128
+  return x86p_f128_value(x86p_f128_from_f64(bits));
+#else
   double v;
   memcpy(&v, &bits, sizeof v);
   return (long double)v;
+#endif
 }
 
 /*

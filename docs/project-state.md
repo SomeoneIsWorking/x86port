@@ -212,6 +212,14 @@ than refusing ordinary value forms. Raw MMX aliasing still requires native
 extended storage; this numerical bridge does not establish complete raw-state
 Windows/ARM64 floating-point conformance.
 
+On binary128 hosts, x87 value admission now classifies zero, NaN, infinity, and
+finite values from their fields and widens f32/f64 inputs directly to binary128
+bits. This removes compiler-rt comparison and widening calls from the hot
+classifier while preserving the existing software arithmetic for operations;
+`test_x87_binary128` covers subnormals, signed zero, infinities, NaNs, and
+ordering against the host reference. The focused and combined Clang gates pass
+with 43/43 tests.
+
 Android API 21 NDK ARM64 static bionic executables now run under QEMU
 AArch64 10.2.2: software x87 passes 3,068 checks, narrow state 341 checks,
 startup 4,357 translated cases with zero precision refusals, and control
