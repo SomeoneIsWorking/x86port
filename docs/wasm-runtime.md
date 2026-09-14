@@ -125,11 +125,27 @@ module holding 32 bodies measured **128 us/block, worse than a fresh one-body
 module at 35 us**, because packing bodies together keeps the body count -- and the
 whole module is compiled at instantiation.
 
-So the lever is **fewer blocks in total**, i.e. longer blocks (traces) rather than
-more compact packaging of the same small ones: at 16 instructions per block the
+So the lever is **fewer blocks in total**, i.e. longer blocks, rather than more
+compact packaging of the same small ones: at 16 instructions per block the
 per-instruction cost falls to ~3.8 us and at 64 to ~2.6 us, a 2.3-3.4x cut, and
 dispatch falls with the block count too. Natively the same change is roughly
 neutral (no floor, only fewer dispatches), so it is a wasm-host win.
+
+**Implemented, and measured: a block continues past a conditional.** A
+conditional already writes the TAKEN path's own exit, so the fall-through can
+carry on in the same body with nothing added -- `x86p_wasm_continue_lower()`
+returns that variant for `jcc`/`jecxz` and NULL for every unconditional exit,
+and `x86p_wasm_jcc_lower()` is now literally the continue form plus the
+fall-through epilogue, so a block that ends at a branch emits the same bytes it
+always did. `block formation:` in the bench reports it directly: a
+5-instruction kernel containing a branch is **5 instructions in one block** where
+it used to be 2, and `formation cost:` measures the same five instructions as
+**1 block in 0.050 ms against 2 blocks in 0.124 ms** -- 2.5x, in the tool, on the
+wasm host.
+
+The native backend is deliberately left alone: it has no per-block floor to
+amortize, so its formation still ends at a branch (the bench reports 2
+instructions for the same kernel there, which is correct rather than stale).
 
 These tests prove runtime translation, calls to real imported helpers, precise
 faults, independent engine ownership, invalidation/remapping, capacity-driven

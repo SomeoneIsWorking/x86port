@@ -59,11 +59,32 @@ typedef struct X86pWasmOpEntry {
   /* Non-zero when the lowered form writes the block's exit itself, so the
      block loop must stop rather than emit a fall-through epilogue after it. */
   int terminates;
+  /*
+   * Non-NULL for instructions that end a block but do not end the run: a
+   * conditional already writes the TAKEN path's exit, so the fall-through can
+   * continue in the same body with no further machinery. Leaving it NULL keeps
+   * the block ending there, which is what every unconditional exit must do.
+   *
+   */
 } X86pWasmOpEntry;
 
 /* The table, indexed by X86pInsnOp. Owned by jit_wasm_lower.c; the per-family
    units contribute their entries through the declarations below. */
 const X86pWasmOpEntry *x86p_wasm_op_entry(uint8_t op);
+
+/*
+ * The lowering that lets a block continue past this instruction, or NULL when
+ * it must end there.
+ *
+ * A conditional writes the TAKEN path's exit itself, so the fall-through can
+ * carry on in the same body with no further machinery; an unconditional exit
+ * has no second path and must stop the block. This is worth expressing because
+ * translation on the wasm host has a floor of ~26 us per block against ~2.2 us
+ * per instruction (docs/wasm-runtime.md), and real code averages 5.15
+ * instructions per block -- so a run that stops at every branch pays that floor
+ * 2-3x more often than it has to.
+ */
+void (*x86p_wasm_continue_lower(uint8_t op))(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 
 /* ---- shared operand helpers (jit_wasm_lower.c) --------------------------- */
 
@@ -150,8 +171,10 @@ int x86p_wasm_jmp_accepts(const X86pInsn *insn);
 void x86p_wasm_jmp_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 int x86p_wasm_jcc_accepts(const X86pInsn *insn);
 void x86p_wasm_jcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
+void x86p_wasm_jcc_continue(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 int x86p_wasm_jecxz_accepts(const X86pInsn *insn);
 void x86p_wasm_jecxz_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
+void x86p_wasm_jecxz_continue(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 int x86p_wasm_call_accepts(const X86pInsn *insn);
 void x86p_wasm_call_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 int x86p_wasm_ret_accepts(const X86pInsn *insn);

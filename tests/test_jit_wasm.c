@@ -173,12 +173,18 @@ static const Case kCases[] = {
     {"shl_helper", {0xC1, 0xE0, 0x03}, 3, 1, .eax = 0x12345678, .expect_exit = kX86pJitExitBlockEnd},
     /* SETE AL, reading the flag state this case set up. */
     {"setcc_helper", {0x0F, 0x94, 0xC0}, 3, 1, .eax = 0x11223344, .expect_exit = kX86pJitExitBlockEnd},
-    /* JE +5: the conditional branch, which ends the block at one address or
-       the other. */
-    {"jcc_helper", {0x74, 0x05}, 2, 0, .expect_exit = kX86pJitExitBlockEnd},
+    /* JE +5: the conditional branch. It no longer ends the block -- the taken
+       path carries its own exit and the fall-through continues -- so the case
+       needs a terminator of its own to stop the run here. */
+    {"jcc_helper", {0x74, 0x05}, 2, 1, .expect_exit = kX86pJitExitBlockEnd},
     /* JECXZ +5 with ECX zero, and again with ECX set. */
-    {"jecxz_taken", {0xE3, 0x05}, 2, 0, .ecx = 0, .expect_exit = kX86pJitExitBlockEnd},
-    {"jecxz_not_taken", {0xE3, 0x05}, 2, 0, .ecx = 1, .expect_exit = kX86pJitExitBlockEnd},
+    {"jecxz_taken", {0xE3, 0x05}, 2, 1, .ecx = 0, .expect_exit = kX86pJitExitBlockEnd},
+    {"jecxz_not_taken", {0xE3, 0x05}, 2, 1, .ecx = 1, .expect_exit = kX86pJitExitBlockEnd},
+    /* The same conditional with real code after it: the block covers all of it,
+       because the taken path carries its own exit and the fall-through just
+       carries on. This is the case that fails if the block stops at the branch
+       again, and the wasm host's per-block floor is why it should not. */
+    {"jcc_continues", {0x74, 0x05, 0x31, 0xDB, 0xC3}, 5, 0, .expect_exit = kX86pJitExitBlockEnd},
     /* PUSH EAX ; POP EBX */
     {"push_pop", {0x50, 0x5B}, 2, 1, .eax = 0xCAFEF00D, .esp = STACK, .expect_exit = kX86pJitExitBlockEnd},
     /* PUSH imm32 */
