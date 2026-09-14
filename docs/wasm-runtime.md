@@ -38,6 +38,29 @@ command-line tests finish after `main`; consuming products do not inherit this
 option. The lifetime test enables memory growth to cover imported-memory
 stability, and Emscripten explicitly warns about its cost with pthreads.
 
+## Throughput has no working measurement yet
+
+The wasm backend has no trustworthy throughput number, and `tools/jit_bench.c`
+is why. Built for Emscripten and run under node (`build/wasm-bench`), it reports
+`jit 0.000 s` at `0.03 ns/insn` and "10127.50x faster than the interpreter" --
+impossible values, because two of its four columns are unchecked:
+
+* the JIT loop discards `x86p_jit_enter`'s exit status, so a block that refuses
+  immediately (`kX86pJitExitUnsupported`, a memory fault, ...) is timed as the
+  fastest possible execution;
+* the native-C column's only sink is an unreachable `0xDEADBEEF` branch, which a
+  wasm build may drop along with the loop;
+* no engine's result is compared with any other's, although the header calls the
+  interpreter the correctness authority.
+
+Recorded as a distrusted instrument (`docs/info/instruments`). Before any
+wasm-vs-native ratio may be quoted, the bench has to fail on any exit other than
+`kX86pJitExitBlockEnd`, sink every engine's result into something observable, and
+require the engines' final states to agree. Until then the only measured
+relationship is negative: a browser run of the title executes 0.74M guest block
+entries/s against 15.5-21.3M/s for the same counters natively (issue #149 in
+`xmen2`).
+
 These tests prove runtime translation, calls to real imported helpers, precise
 faults, independent engine ownership, invalidation/remapping, capacity-driven
 reclamation, sparse memory and software floating point. They do not qualify a
