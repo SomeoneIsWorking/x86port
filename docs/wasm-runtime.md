@@ -103,9 +103,33 @@ in this tool, and no improvement at all in the title's own same-phase block rate
 3.5-13x exactly as designed. Chaining through a taken branch also translated dead
 fall-through that the run then paid for. It was reverted (x86port `eb9028e`).
 
-The per-module part of the cost is charged per module SHAPE, so if it is to be
-amortized it has to be with FEWER, LARGER BLOCKS -- raising instructions per
-block in the boundary policy -- and not by packing small ones together.
+### The cost has a per-BLOCK floor, and that is what is left to attack
+
+Measuring the same tool's two kernel sizes separates the two halves of the
+per-block cost on the wasm host:
+
+| block | measured | per instruction |
+|---|---|---|
+| 4 instructions | 0.035 ms (35 us) | 8.8 us |
+| 64 instructions | 0.165 ms (165 us) | 2.6 us |
+
+Two points fix `cost = F + n*v`: **F ~ 26 us per block, v ~ 2.2 us per
+instruction**. Real code averages 5.15 instructions per block, so **about 70% of
+every translation is the per-block floor** rather than the instructions in it. On
+the native host the same pair is **1.8 us/instruction at both sizes** -- there is
+no floor to amortize.
+
+That also explains why batching lost, and it is the same fact: the floor is per
+BODY (its function, its export, its indirect-table entry), not per module. A
+module holding 32 bodies measured **128 us/block, worse than a fresh one-body
+module at 35 us**, because packing bodies together keeps the body count -- and the
+whole module is compiled at instantiation.
+
+So the lever is **fewer blocks in total**, i.e. longer blocks (traces) rather than
+more compact packaging of the same small ones: at 16 instructions per block the
+per-instruction cost falls to ~3.8 us and at 64 to ~2.6 us, a 2.3-3.4x cut, and
+dispatch falls with the block count too. Natively the same change is roughly
+neutral (no floor, only fewer dispatches), so it is a wasm-host win.
 
 These tests prove runtime translation, calls to real imported helpers, precise
 faults, independent engine ownership, invalidation/remapping, capacity-driven

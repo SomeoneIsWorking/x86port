@@ -71,6 +71,37 @@ static void put_u32(uint8_t *p, uint32_t v) {
   p[3] = (uint8_t)(v >> 24);
 }
 
+/* Where the short kernel's bytes live, clear of the long one. */
+#define SHORT_OFF 0x800u
+
+/*
+ * A SHORT block, the size real code produces.
+ *
+ * Measured block length in a real title is ~5 instructions, against this tool's
+ * 64-instruction kernel -- and if translation cost is charged per block rather
+ * than per instruction, those two are not comparable at all. So both are
+ * measured, and the pair is what answers whether translating longer runs is
+ * worth anything: it is the only lever left once publication was shown to be a
+ * per-block cost (docs/wasm-runtime.md), and a number rather than an opinion.
+ */
+static uint32_t build_short_kernel(void) {
+  uint8_t *p = g_guest + SHORT_OFF;
+  uint32_t n = 0;
+#define ALU_RR_S(op, dst, src)                                                                                         \
+  do {                                                                                                                 \
+    *p++ = (uint8_t)(((op) << 3) | 1u);                                                                                \
+    *p++ = (uint8_t)(0xC0u | ((src) << 3) | (dst));                                                                    \
+    n++;                                                                                                               \
+  } while (0)
+  ALU_RR_S(0, 0, 1); /* add eax, ecx */
+  ALU_RR_S(6, 2, 3); /* xor edx, ebx */
+  ALU_RR_S(5, 1, 6); /* sub ecx, esi */
+  *p++ = 0xC3u;      /* ret -- ends the block the way real code does */
+  n++;
+#undef ALU_RR_S
+  return n;
+}
+
 static uint32_t build_kernel(void) {
   uint8_t *p = g_guest;
   uint32_t n = 0;
@@ -356,6 +387,31 @@ int main(int argc, char **argv) {
     printf("translate cost: emission-only %.3f ms for %zu host byte(s) (best of 5)\n", best * 1e3, emit_blk.host_bytes);
   }
 
+  {
+    X86pJitBlock short_blk;
+    build_short_kernel();
+    double best = 1e30;
+    int k;
+    for (k = 0; k < 5; k++) {
+      double t_short = now_s();
+      st = x86p_jit_storage_translate(
+          storage, &mem, GUEST_BASE + SHORT_OFF, NULL, NULL, &short_blk, reason, sizeof reason);
+      t_short = now_s() - t_short;
+      if (st != kX86pJitOk) {
+        printf("REFUSED: short kernel -> %s\n", x86p_jit_status_name(st));
+        return 1;
+      }
+      if (t_short < best) {
+        best = t_short;
+      }
+      x86p_jit_storage_reset(storage);
+    }
+    printf("translate cost: block of %2u instruction(s) in %.3f ms = %.1f us/instruction\n",
+           short_blk.insns,
+           best * 1e3,
+           best * 1e6 / (double)short_blk.insns);
+  }
+
   t0 = now_s();
   st = x86p_jit_storage_translate(storage, &mem, GUEST_BASE, NULL, NULL, &blk, reason, sizeof reason);
   if (st != kX86pJitOk) {
@@ -369,7 +425,10 @@ int main(int argc, char **argv) {
     printf("REFUSED: the block was translated but not published (entry is NULL)\n");
     return 1;
   }
-  printf("translate cost: emission+publication %.3f ms for the same block\n", (now_s() - t0) * 1e3);
+  printf("translate cost: block of %2u instruction(s) in %.3f ms = %.1f us/instruction\n",
+         blk.insns,
+         (now_s() - t0) * 1e3,
+         (now_s() - t0) * 1e6 / (double)blk.insns);
   printf("kernel: %u guest instruction(s), block translated %u of them into %zu host byte(s) in %.3f ms\n",
          kernel_insns,
          blk.insns,
