@@ -73,19 +73,36 @@ one did not. Measured both ways, the ratio is the same (register-only was 0.39
 vs 1.11; with memory, 0.39 vs 1.05), so neither the emitted body nor the guest
 memory path inside it accounts for that gap.
 
-What is left is NOT a fixed per-entry cost, and an earlier version of this note
-said it was: re-reading a real browser run shows the block rate is
-phase-dependent -- `34,920,857 -> 344,534,636` block entries in 60 s, 5.16M/s,
-while only 40 files were opened. Steady state is therefore a 3-4x gap against the
-recorded native 15.5-21.3M/s, which is what these columns measure; the 20-27x
-figure came from the boot/asset phase, and belongs to the work that phase does
-per guest block (file opens through the multi-path resolver, archive reads, parse
-loops). The engine's per-entry path is still unmeasured here -- this benchmark
-calls `x86p_jit_enter` once per iteration (one `call_indirect`, 64 instructions,
-~67 ns of wasm) while the product also runs a block lookup, boundary and
-override policy, statistics and slice accounting per block, at 5.1 instructions
-per block -- but it is a suspect for the steady-state factor, not an explanation
-of the asset-phase one.
+## Translation, not execution, is what the slow phases cost
+
+Two independent measurements agree, and they replace two earlier readings of this
+note (a fixed per-entry cost, then the asset phase's own work per block):
+
+* the `kernel:` line above is a *timed* translation of the shipping path, on both
+  hosts, for the identical block: **2.040 ms under wasm against 0.209 ms native**.
+  Ten times, roughly **32 us per guest instruction**;
+* a consuming title's heartbeat deltas, one interval: `+34,819` blocks translated
+  and `+1,164,611` blocks executed in 5.1 s, at 5.15 instructions per block. At
+  the measured cost a 5.15-instruction block costs ~165 us to translate, so those
+  translations alone account for the whole interval; natively the same work is
+  ~0.57 s, about 11%.
+
+So the phases that look pathologically slow are **compile-bound**: the browser is
+building WebAssembly modules, and the code it builds runs at the 2.7x measured
+above. The block rates a title reports are therefore a property of how much new
+code it is touching, which is why they range from 0.73M/s in a translation-heavy
+phase to 5.16M/s in a hot loop against 15.5-21.3M/s native.
+
+**The designed-for fix is batching, and the shipping publish does not use it.**
+`jit_wasm_module.h` defines `X86P_WASM_MAX_BODIES 64` with per-body names
+`b0..b63`, has a module that takes several functions, and rejects a caller passing
+more than 64 -- so multiple translated bodies in one module is a supported shape.
+`x86p_jit_storage_translate` publishes one body per module, paying module
+construction and instantiation for a ~5-instruction block. Amortising that across
+bodies, and/or translating larger blocks, attacks the measured 32 us per
+instruction directly. The gates are the wasm test suite and the agreement check
+(this tool runs it on both hosts); a change here is an execution-engine change and
+must keep those green, not a title workaround.
 
 **The wasm backend's own numbers are still missing a denominator.** The only
 measured relationship from a real title remains the negative one: a browser run
