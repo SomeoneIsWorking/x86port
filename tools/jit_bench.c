@@ -253,6 +253,11 @@ static X86pCpu g_cpu; /* alignment now comes from the type itself */
    be dropped as dead -- the failure this instrument actually had. */
 static volatile unsigned long g_sink;
 
+/* Emission-only target, so the module's own construction can be separated from
+   the bytes the emitter writes. Never executed: on a native host these pages
+   are not executable, and the block that is timed is the published one. */
+static uint8_t g_emit_scratch[1u << 17];
+
 static void report_diff(const char *field, const char *a_text, const char *b_text, void *user) {
   (void)user;
   printf("  %s: interpreter %s, jit %s\n", field, a_text, b_text);
@@ -319,6 +324,35 @@ int main(int argc, char **argv) {
   }
   printf("storage mechanism: %s\n", x86p_jit_storage_mechanism());
 
+  /*
+   * Emit once WITHOUT publishing, five times, best of five.
+   *
+   * The storage call below is emission plus publication -- building a
+   * WebAssembly module and instantiating it. On the wasm host that step is more
+   * than half the cost of having a block at all, and the two have different
+   * fixes (batch bodies into one module) versus (emit fewer bytes), so the tool
+   * reports them apart instead of leaving a reader to guess which one it is.
+   */
+  {
+    X86pJitBlock emit_blk;
+    double best = 1e30;
+    int k;
+    for (k = 0; k < 5; k++) {
+      double t_emit = now_s();
+      st =
+          x86p_jit_translate(&mem, GUEST_BASE, g_emit_scratch, sizeof g_emit_scratch, &emit_blk, reason, sizeof reason);
+      t_emit = now_s() - t_emit;
+      if (st != kX86pJitOk) {
+        printf("REFUSED: emission-only translate -> %s (%s)\n", x86p_jit_status_name(st), reason);
+        return 1;
+      }
+      if (t_emit < best) {
+        best = t_emit;
+      }
+    }
+    printf("translate cost: emission-only %.3f ms for %zu host byte(s) (best of 5)\n", best * 1e3, emit_blk.host_bytes);
+  }
+
   t0 = now_s();
   st = x86p_jit_storage_translate(storage, &mem, GUEST_BASE, NULL, NULL, &blk, reason, sizeof reason);
   if (st != kX86pJitOk) {
@@ -332,6 +366,7 @@ int main(int argc, char **argv) {
     printf("REFUSED: the block was translated but not published (entry is NULL)\n");
     return 1;
   }
+  printf("translate cost: emission+publication %.3f ms for the same block\n", (now_s() - t0) * 1e3);
   printf("kernel: %u guest instruction(s), block translated %u of them into %zu host byte(s) in %.3f ms\n",
          kernel_insns,
          blk.insns,
