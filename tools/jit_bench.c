@@ -28,15 +28,16 @@
  * things are going, never as a frame-rate prediction.
  */
 #include "cpu.h"
+#include "cpu_compare.h"
 #include "exec.h"
 #include "flags.h"
+#include "jit_storage.h"
 #include "jit_x64.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <time.h>
 
 #define GUEST_BASE 0x00010000u
@@ -209,6 +210,15 @@ static void seed(X86pCpu *cpu) {
  */
 static X86pCpu g_cpu; /* alignment now comes from the type itself */
 
+/* Every column's result is folded in here and printed, so no engine's work can
+   be dropped as dead -- the failure this instrument actually had. */
+static volatile unsigned long g_sink;
+
+static void report_diff(const char *field, const char *a_text, const char *b_text, void *user) {
+  (void)user;
+  printf("  %s: interpreter %s, jit %s\n", field, a_text, b_text);
+}
+
 /* Repetitions per column. Enough that a single scheduling hiccup cannot be the
    reported number, few enough that the tool stays usable in a loop. */
 #define REPS 5
@@ -219,7 +229,7 @@ int main(int argc, char **argv) {
   X86pJitBlock blk;
   char reason[256];
   X86pJitStatus st;
-  void *code;
+  X86pJitStorage *storage;
   uint32_t kernel_insns;
   unsigned long iters = 200000ul;
   double t0;
@@ -250,16 +260,37 @@ int main(int argc, char **argv) {
   mem.lo = GUEST_BASE;
   mem.size = GUEST_SIZE;
 
-  code = mmap(NULL, CODE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (code == MAP_FAILED) {
-    printf("REFUSED: could not map code memory\n");
+  /*
+   * THROUGH THE STORAGE OWNER, not mmap-and-translate.
+   *
+   * This benchmark used to map its own executable pages and call the raw
+   * translator, which is the native host's half of publication. On the
+   * WebAssembly host that produced a block with a NULL entry: translation
+   * covered every instruction, the module bytes sat in a buffer, and every
+   * timed entry returned `kX86pJitExitUnsupported` in nanoseconds -- the whole
+   * column measuring a refusal, and quickly. `x86p_jit_storage_*` is the
+   * host-neutral pair (pages here, an instantiated module there), and it is
+   * what the engine ships, so the benchmark now measures the same publication
+   * path the product does.
+   */
+  storage = x86p_jit_storage_create(CODE_SIZE, reason, sizeof reason);
+  if (!storage) {
+    printf("REFUSED: storage -> %s\n", reason);
     return 1;
   }
+  printf("storage mechanism: %s\n", x86p_jit_storage_mechanism());
 
   t0 = now_s();
-  st = x86p_jit_translate(&mem, GUEST_BASE, code, CODE_SIZE, &blk, reason, sizeof reason);
+  st = x86p_jit_storage_translate(storage, &mem, GUEST_BASE, NULL, NULL, &blk, reason, sizeof reason);
   if (st != kX86pJitOk) {
     printf("REFUSED: translate -> %s (%s)\n", x86p_jit_status_name(st), reason);
+    return 1;
+  }
+  if (!blk.entry) {
+    /* Published blocks have one. A NULL entry is the difference between the
+       engine having this code and it still being bytes in a buffer, and it is
+       what made every wasm column here report a refusal as speed. */
+    printf("REFUSED: the block was translated but not published (entry is NULL)\n");
     return 1;
   }
   printf("kernel: %u guest instruction(s), block translated %u of them into %zu host byte(s) in %.3f ms\n",
@@ -292,6 +323,46 @@ int main(int argc, char **argv) {
    * is printed beside it so a reader can see when the machine was too busy for
    * the number to mean anything.
    */
+  /*
+   * The columns claim to run the same program, so hold them to it before any
+   * of them is timed: one kernel from the same seed through the interpreter and
+   * through the JIT must leave the same architectural state. The header calls
+   * the interpreter the correctness authority and nothing used to check it.
+   */
+  {
+    X86pCpu interp;
+    seed(&interp);
+    for (i = 0; i < kernel_insns; i++) {
+      if (x86p_step(&interp, &mem, NULL) != kX86pStepOk) {
+        printf("REFUSED: the interpreter could not run the kernel for the agreement check\n");
+        return 1;
+      }
+    }
+    seed(cpup);
+    {
+      X86pJitExit ex = x86p_jit_enter(&blk, cpup);
+      if (ex != kX86pJitExitBlockEnd) {
+        printf("REFUSED: the jit column stopped at %s (exit %d) running the kernel once, "
+               "at guest offset +%u in the block (block covers %u instructions); it "
+               "cannot be timed\n",
+               x86p_jit_exit_name(ex),
+               (int)ex,
+               cpup->eip - GUEST_BASE,
+               blk.insns);
+        return 1;
+      }
+    }
+    /* The project's own predicate, not a second copy: it visits the segment
+       bases, DF, XMM, MXCSR, the lazy-flag tuple AND the six flags it derives,
+       and names any field that differs. */
+    if (x86p_cpu_diff(&interp, cpup, report_diff, NULL) != 0u) {
+      printf("REFUSED: interpreter and jit disagree after one kernel; the jit column would "
+             "be timing a different program\n");
+      return 1;
+    }
+    printf("agreement: interpreter and jit leave identical state after one kernel (eip %08x)\n", cpup->eip);
+  }
+
   for (rep = 0; rep < REPS; rep++) {
     double t;
 
@@ -320,8 +391,28 @@ int main(int argc, char **argv) {
     seed(cpup);
     t0 = now_s();
     for (i = 0; i < iters; i++) {
+      X86pJitExit ex;
       cpup->eip = GUEST_BASE;
-      (void)x86p_jit_enter(&blk, cpup);
+      ex = x86p_jit_enter(&blk, cpup);
+      if (ex != kX86pJitExitBlockEnd) {
+        /*
+         * Refuse, do not time it. A block that stops at its first instruction
+         * -- an unsupported lowering, a fault, a refused entry -- returns in
+         * nanoseconds, and a discarded exit status turns that into the fastest
+         * number the tool can print. Measured: run against the WebAssembly
+         * backend this reported `jit 0.000 s, 0.03 ns/insn` and "10127x faster
+         * than the interpreter", which is not a fast JIT but a refusal nobody
+         * looked at.
+         */
+        printf("REFUSED: the jit column stopped at %s (exit %d) on iteration %lu, "
+               "at guest offset +%u in the block; the columns would compare "
+               "different programs\n",
+               x86p_jit_exit_name(ex),
+               (int)ex,
+               i,
+               cpup->eip - GUEST_BASE);
+        return 1;
+      }
     }
     t = now_s() - t0;
     if (t < t_jit) {
@@ -333,29 +424,32 @@ int main(int argc, char **argv) {
 
     /* ---- native ---- */
     {
-      X86pCpu nc;
-      seed(&nc);
+      seed(cpup);
       t0 = now_s();
       for (i = 0; i < iters; i++) {
-        native_kernel(nc.reg);
+        native_kernel(cpup->reg);
       }
       t = now_s() - t0;
       if (t < t_native) {
         t_native = t;
       }
-      /* Consume the result so the loop cannot be optimised away entirely. */
-      if (nc.reg[0] == 0xDEADBEEFu) {
+      /* Consume the result so the loop cannot be optimised away entirely. A
+         stack local read only here is not enough: a wasm build keeps the last
+         iteration and drops the loop, which is how this column once reported
+         0.08 ns/insn. Writing to the global the other columns use, and sinking
+         it below, keeps the work observable. */
+      g_sink ^= cpup->reg[kX86pEax];
+      if (cpup->reg[kX86pEax] == 0xDEADBEEFu) {
         printf("(unreachable)\n");
       }
     }
 
     /* ---- native with guest flags: the like-for-like control ---- */
     {
-      X86pCpu nc;
-      seed(&nc);
+      seed(cpup);
       t0 = now_s();
       for (i = 0; i < iters; i++) {
-        native_kernel_flags(&nc);
+        native_kernel_flags(cpup);
       }
       t = now_s() - t0;
       if (t < t_native_flags) {
@@ -364,7 +458,8 @@ int main(int argc, char **argv) {
       if (t > w_native_flags) {
         w_native_flags = t;
       }
-      if (nc.reg[0] == 0xDEADBEEFu) {
+      g_sink ^= cpup->reg[kX86pEax];
+      if (cpup->reg[kX86pEax] == 0xDEADBEEFu) {
         printf("(unreachable)\n");
       }
     }
@@ -405,6 +500,6 @@ int main(int argc, char **argv) {
   printf("\nnative+flags is the like-for-like control: the same operations, maintaining\n"
          "the same guest flags. The flag-free\n"
          "column is a floor no correct x86 implementation can reach and is shown only for scale.\n");
-  munmap(code, CODE_SIZE);
+  x86p_jit_storage_destroy(storage);
   return 0;
 }
