@@ -328,10 +328,13 @@ int main(int argc, char **argv) {
    * Emit once WITHOUT publishing, five times, best of five.
    *
    * The storage call below is emission plus publication -- building a
-   * WebAssembly module and instantiating it. On the wasm host that step is more
-   * than half the cost of having a block at all, and the two have different
-   * fixes (batch bodies into one module) versus (emit fewer bytes), so the tool
-   * reports them apart instead of leaving a reader to guess which one it is.
+   * WebAssembly module and instantiating it. They are reported apart because
+   * they are different costs with different fixes, and because assuming which
+   * one dominates has already gone wrong once: on the wasm host publication
+   * looked like 87% of translation, which turned out to be the FIRST module in a
+   * fresh process. Warm, it is about 0.09 ms on top of 0.08 ms of emission, and
+   * a module holding 32 blocks measured 1.37x cheaper per block and 0 in a real
+   * run -- see docs/wasm-runtime.md. Measure the split; do not assume it.
    */
   {
     X86pJitBlock emit_blk;
