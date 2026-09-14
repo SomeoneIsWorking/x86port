@@ -41,6 +41,46 @@ extern "C" {
 int x86p_jit_wasm_publish(
     X86pWasmArena *arena, X86pJitBlock *block, const void *module, size_t len, char *reason, unsigned reason_len);
 
+/*
+ * Translate a RUN of blocks into ONE module, and say how long that module is.
+ *
+ * Instantiation is charged per module and not per byte -- measured, ~0.52 ms for
+ * a 5.6 KB module against 0.0047 ms for a synthetic one of 4 KB, so what is
+ * being paid for is the module's shape (its imports and its table entry), not
+ * the code inside it. A consumer that publishes one body per module therefore
+ * pays that fixed price for every ~5-instruction block it translates, which is
+ * what a translation-heavy phase spends its time on.
+ *
+ * This is the same translation contract as x86p_jit_translate_bounded with two
+ * differences: `blocks` receives up to `max_blocks` of them, and `entry` stays
+ * NULL for every one -- x86p_wasm_arena_publish instantiates the module, and
+ * x86p_wasm_body_name(i) is the export each block's entry comes from.
+ *
+ * The run is the STRAIGHT LINE the translator itself would cut, so batching
+ * changes no boundary: the chain starts at `eip` and continues at each block's
+ * own end while the boundary policy keeps producing blocks and the translator
+ * keeps accepting them. A refusal -- or a block the boundary policy ends -- ends
+ * the run, and the blocks before it are still a valid module.
+ *
+ * The first pass lowers each candidate on its own to learn where it ends, so a
+ * run costs two emissions and one instantiation. That is the price of not
+ * needing to know the count in advance: the module's function and export
+ * sections are written when it opens, and a module that promised bodies it
+ * never wrote is rejected.
+ */
+X86pJitStatus x86p_jit_translate_chain(const X86pMem *mem,
+                                       uint32_t eip,
+                                       void *code,
+                                       size_t code_cap,
+                                       X86pJitBoundaryFn boundary,
+                                       void *boundary_user,
+                                       X86pJitBlock *blocks,
+                                       unsigned max_blocks,
+                                       unsigned *count,
+                                       size_t *module_bytes,
+                                       char *reason,
+                                       unsigned reason_len);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

@@ -168,10 +168,21 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
 }
 
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
-  if (e) {
-    (void)jc_block_invalidate_range(e->cache, lo, hi);
-    x86p_jit_storage_invalidate(e->storage, lo, hi);
+  uint32_t wide_lo = lo;
+  uint32_t wide_hi = hi;
+  if (!e) {
+    return;
   }
+  /*
+   * A published unit may hold several blocks, so the cache entries to drop are
+   * the ones over the RANGE THE STORAGE RELEASED, not over the address written.
+   * Leaving the rest would keep entries whose table slots the release has
+   * already reclaimed: they would be entered once something else took the slot,
+   * which is exactly the failure x86p_jit_engine_invalidate_all explains.
+   */
+  x86p_jit_storage_invalidate_unit(e->storage, lo, hi, &wide_lo, &wide_hi);
+  (void)jc_block_invalidate_range(e->cache, wide_lo, wide_hi);
+  x86p_jit_storage_invalidate(e->storage, wide_lo, wide_hi);
 }
 
 void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
@@ -273,12 +284,17 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
   return 1;
 }
 
-/* Translate the block at `eip`, publish it, and record it. Returns the exec
-   address, or NULL with `st` saying why. When it returns non-NULL and
+/* How many blocks one miss may translate and publish together. */
+#define kChainBlocks 32u
+
+/* Translate the block at `eip`, publish it with the run that follows it, and
+   record every one. Returns the exec address, or NULL with `st` saying why. When it returns non-NULL and
    `out_blk` is non-NULL, `*out_blk` describes the block that was translated. */
 static void *translate_at(
     X86pJitEngine *e, uint32_t eip, X86pJitStatus *st, X86pJitBlock *out_blk, char *reason, unsigned reason_len) {
-  X86pJitBlock blk;
+  X86pJitBlock blks[kChainBlocks];
+  unsigned count = 0u;
+  unsigned i;
   void *exec;
 
   if (!x86p_jit_storage_has_room(e->storage)) {
@@ -299,13 +315,14 @@ static void *translate_at(
       }
     }
   }
-  *st = x86p_jit_storage_translate(e->storage, e->mem, eip, e->boundary, e->boundary_user, &blk, reason, reason_len);
-  if (*st != kX86pJitOk) {
+  *st = x86p_jit_storage_translate_chain(
+      e->storage, e->mem, eip, e->boundary, e->boundary_user, blks, kChainBlocks, &count, reason, reason_len);
+  if (*st != kX86pJitOk || count == 0u) {
     return NULL;
   }
-  exec = blk.entry;
+  exec = blks[0].entry;
 
-  if (!jc_block_insert(e->cache, eip, exec, blk.guest_len)) {
+  if (!jc_block_insert(e->cache, blks[0].guest_eip, exec, blks[0].guest_len)) {
     /* The table is full. Flushing invalidates the block just written, so the
        translation is redone rather than entered -- entering it would be a jump
        into memory the rewind has released. */
@@ -318,11 +335,26 @@ static void *translate_at(
   }
 
   e->stats.blocks_translated++;
-  e->stats.guest_insns_translated += blk.insns;
-  e->stats.conds_translated += blk.conds;
-  e->stats.conds_inline += blk.cond_inline;
+  e->stats.guest_insns_translated += blks[0].insns;
+  e->stats.conds_translated += blks[0].conds;
+  e->stats.conds_inline += blks[0].cond_inline;
+  /*
+   * The rest of the run is already published and in the same module, so record
+   * it now: the next dispatch reaches a cache hit instead of a translation, and
+   * the module that holds it is released as one unit either way.
+   */
+  for (i = 1u; i < count; i++) {
+    if (!jc_block_insert(e->cache, blks[i].guest_eip, blks[i].entry, blks[i].guest_len)) {
+      /* The cache is full. The block being returned is already in it, so stop
+         here rather than flushing: the rest will be translated again if it is
+         reached, which costs time and not correctness. */
+      break;
+    }
+    e->stats.blocks_speculated++;
+    e->stats.insns_speculated += blks[i].insns;
+  }
   if (out_blk) {
-    *out_blk = blk;
+    *out_blk = blks[0];
   }
   return exec;
 }
