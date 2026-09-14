@@ -78,15 +78,21 @@ int x86p_wasm_jcc_accepts(const X86pInsn *insn) {
   return is_relative_immediate(insn);
 }
 
-void x86p_wasm_jcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
-  const uint32_t next = pc + insn->length;
+void x86p_wasm_jcc_continue(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_i32_const(l->e, (int32_t)insn->cond);
   x86p_wasm_state_flags_addr(&l->state);
   x86p_wasm_call_import(l, kX86pWasmImportCond);
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, relative_target(insn, pc), kX86pJitExitBlockEnd);
   x86p_wasm_end(l->e);
-  x86p_wasm_state_exit_imm(&l->state, next, kX86pJitExitBlockEnd);
+}
+
+void x86p_wasm_jcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  /* The taken path alone, then the fall-through's exit: a block that ends here
+     emits exactly what a block that continues past it does, plus that one
+     epilogue. */
+  x86p_wasm_jcc_continue(l, insn, pc);
+  x86p_wasm_state_exit_imm(&l->state, pc + insn->length, kX86pJitExitBlockEnd);
 }
 
 int x86p_wasm_jecxz_accepts(const X86pInsn *insn) {
@@ -99,14 +105,17 @@ int x86p_wasm_jecxz_accepts(const X86pInsn *insn) {
   return insn->address_width == 32 || insn->address_width == 16;
 }
 
-void x86p_wasm_jecxz_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
-  const uint32_t next = pc + insn->length;
+void x86p_wasm_jecxz_continue(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_load_reg(&l->state, kX86pEcx, insn->address_width == 16 ? 2 : 4);
   x86p_wasm_i32_op(l->e, kWasmI32Eqz);
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, relative_target(insn, pc), kX86pJitExitBlockEnd);
   x86p_wasm_end(l->e);
-  x86p_wasm_state_exit_imm(&l->state, next, kX86pJitExitBlockEnd);
+}
+
+void x86p_wasm_jecxz_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  x86p_wasm_jecxz_continue(l, insn, pc);
+  x86p_wasm_state_exit_imm(&l->state, pc + insn->length, kX86pJitExitBlockEnd);
 }
 
 int x86p_wasm_call_accepts(const X86pInsn *insn) {

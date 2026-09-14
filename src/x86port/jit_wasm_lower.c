@@ -196,6 +196,17 @@ static const X86pWasmOpEntry kTable[kX86pInsnOpCount] = {
     [kX86pInsnRet] = {x86p_wasm_ret_accepts, x86p_wasm_ret_lower, 1},
 };
 
+void (*x86p_wasm_continue_lower(uint8_t op))(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  switch (op) {
+  case kX86pInsnJcc:
+    return x86p_wasm_jcc_continue;
+  case kX86pInsnJecxz:
+    return x86p_wasm_jecxz_continue;
+  default:
+    return NULL;
+  }
+}
+
 const X86pWasmOpEntry *x86p_wasm_op_entry(uint8_t op) {
   const X86pWasmOpEntry *entry;
   if (op >= (uint8_t)kX86pInsnOpCount) {
@@ -237,6 +248,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   X86pJitExit exit = kX86pJitExitBlockEnd;
   const char *stopper = NULL;
   int terminated = 0;
+  int keep_going;
+  void (*continuation)(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
   int body;
 
   if (!m || !fetch || !plan || !out) {
@@ -336,9 +349,25 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
       break;
     }
 
-    entry->lower(&l, &insn, pc);
+    /*
+     * A conditional hands the block the rest of its fall-through. Its taken
+     * path already carries its own exit, so the run continues and whatever ends
+     * it later -- the cap, a boundary, an unconditional exit -- closes the body.
+     * `count < MAX` keeps the cap reachable: the loop top would otherwise be
+     * skipped by this continue and the block could grow without bound.
+     */
+    continuation = entry->terminates ? x86p_wasm_continue_lower((uint8_t)insn.op) : NULL;
+    keep_going = continuation != NULL && count < X86P_WASM_MAX_INSNS;
+    if (keep_going) {
+      continuation(&l, &insn, pc);
+    } else {
+      entry->lower(&l, &insn, pc);
+    }
     pc += insn.length;
     count++;
+    if (keep_going) {
+      continue;
+    }
     if (entry->terminates) {
       terminated = 1;
       break;

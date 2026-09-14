@@ -452,6 +452,36 @@ int main(int argc, char **argv) {
     }
     printf("block formation: %u instruction(s) in a block for a 5-instruction kernel containing a branch\n",
            branch_blk.insns);
+    /*
+     * What that formation is worth, in this tool, on this host: the same five
+     * instructions translated as the run it is now, against the two blocks it
+     * used to be (the branch, then the fall-through). Same bytes, same call, so
+     * the difference is the formation and nothing else.
+     */
+    {
+      X86pJitBlock tail_blk;
+      double t_one = now_s();
+      st = x86p_jit_storage_translate(
+          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+      t_one = now_s() - t_one;
+      x86p_jit_storage_reset(storage);
+      double t_split = now_s();
+      st = x86p_jit_storage_translate(
+          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+      st = x86p_jit_storage_translate(
+          storage, &mem, GUEST_BASE + BRANCH_OFF + 2u, NULL, NULL, &tail_blk, reason, sizeof reason);
+      t_split = now_s() - t_split;
+      if (st != kX86pJitOk) {
+        printf("REFUSED: branch tail -> %s\n", x86p_jit_status_name(st));
+        return 1;
+      }
+      /* Both figures measured, neither inferred: one block for the run, then the
+         same run as the two the old branch-ending formation produced. */
+      printf("formation cost: the same %u instructions as 1 block in %.3f ms versus 2 blocks in %.3f ms\n",
+             branch_blk.insns,
+             t_one * 1e3,
+             t_split * 1e3);
+    }
     x86p_jit_storage_reset(storage);
   }
 
