@@ -60,6 +60,17 @@ static double now_s(void) {
  * instruction. Registers are reused densely, which is what real compiled code
  * looks like and what makes register allocation matter.
  */
+/* Offsets inside the guest arena the two memory operations use. */
+#define LOAD_OFF 0x400u
+#define STORE_OFF 0x440u
+
+static void put_u32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16);
+  p[3] = (uint8_t)(v >> 24);
+}
+
 static uint32_t build_kernel(void) {
   uint8_t *p = g_guest;
   uint32_t n = 0;
@@ -77,35 +88,63 @@ static uint32_t build_kernel(void) {
     *p++ = (uint8_t)(0xC0u | ((src) << 3) | (dst));                                                                    \
     n++;                                                                                                               \
   } while (0)
+/* Absolute addressing on purpose: `mov eax, [disp32]` and `mov [disp32], edx`
+   need no base register, so the two memory operations can be added to the
+   register cycle without disturbing which registers it uses. */
+#define MOV_R32_ABS(addr)                                                                                              \
+  do {                                                                                                                 \
+    *p++ = 0xA1u;                                                                                                      \
+    put_u32(p, (addr));                                                                                                \
+    p += 4;                                                                                                            \
+    n++;                                                                                                               \
+  } while (0)
+#define MOV_ABS_R32(addr, src)                                                                                         \
+  do {                                                                                                                 \
+    *p++ = 0x89u;                                                                                                      \
+    *p++ = (uint8_t)(0x05u | ((src) << 3));                                                                            \
+    put_u32(p, (addr));                                                                                                \
+    p += 4;                                                                                                            \
+    n++;                                                                                                               \
+  } while (0)
 
   for (i = 0; i < 8; i++) {
     ALU_RR(0, 0, 1); /* add eax, ecx */
     ALU_RR(6, 2, 3); /* xor edx, ebx */
     ALU_RR(5, 1, 6); /* sub ecx, esi */
     ALU_RR(4, 3, 0); /* and ebx, eax */
-    MOV_RR(6, 2);    /* mov esi, edx */
     ALU_RR(1, 7, 5); /* or  edi, ebp */
     ALU_RR(0, 5, 4); /* add ebp, esp */
-    ALU_RR(6, 4, 7); /* xor esp, edi */
+    /* The two instructions this benchmark could not see. Every register-only
+       kernel here reports the same ~3x for wasm, while the product -- whose
+       blocks load and store guest memory constantly -- is 20-27x slower. A
+       load and a store per iteration is the smallest program that can tell
+       those two apart. Neither writes flags, so the lazy-flag chain is
+       unaffected; the block fills x86port's 64-instruction cap exactly. */
+    MOV_R32_ABS(GUEST_BASE + LOAD_OFF);
+    MOV_ABS_R32(GUEST_BASE + STORE_OFF, kX86pEdx);
   }
 #undef ALU_RR
 #undef MOV_RR
+#undef MOV_R32_ABS
+#undef MOV_ABS_R32
   return n;
 }
 
 /* The same operations in C, with no guest bookkeeping. Kept literally
    parallel to build_kernel above. */
-static void native_kernel(uint32_t *r) {
+static void native_kernel(uint32_t *r, volatile uint32_t *m) {
   int i;
   for (i = 0; i < 8; i++) {
     r[0] += r[1];
     r[2] ^= r[3];
     r[1] -= r[6];
     r[3] &= r[0];
-    r[6] = r[2];
     r[7] |= r[5];
     r[5] += r[4];
-    r[4] ^= r[7];
+    /* volatile so the load is not hoisted out of the loop: the guest performs
+       it every iteration and the comparison has to be the same program. */
+    r[0] = m[LOAD_OFF / 4];
+    m[STORE_OFF / 4] = r[2];
   }
 }
 
@@ -122,7 +161,7 @@ static void native_kernel(uint32_t *r) {
  * Beating a baseline that was handicapped is worse than having no baseline,
  * because it produces a number that sounds like success.
  */
-static void native_kernel_flags(X86pCpu *c) {
+static void native_kernel_flags(X86pCpu *c, volatile uint32_t *m) {
   uint32_t *r = c->reg;
   /*
    * VOLATILE, and the reason is the whole credibility of this column.
@@ -172,14 +211,14 @@ static void native_kernel_flags(X86pCpu *c) {
     f->r = v;                                                                                                          \
     f->w = 4u;                                                                                                         \
   } while (0)
-    OPF(0, 1, a + b, kX86pFlagsAdd, 0);             /* prev Logic */
+    OPF(0, 1, a + b, kX86pFlagsAdd, f->r < f->a);   /* prev Add   */
     OPF(2, 3, a ^ b, kX86pFlagsLogic, f->r < f->a); /* prev Add   */
     OPF(1, 6, a - b, kX86pFlagsSub, 0);             /* prev Logic */
     OPF(3, 0, a & b, kX86pFlagsLogic, f->a < f->b); /* prev Sub   */
-    r[6] = r[2];                                    /* MOV writes no flags */
     OPF(7, 5, a | b, kX86pFlagsLogic, 0);           /* prev Logic */
     OPF(5, 4, a + b, kX86pFlagsAdd, 0);             /* prev Logic */
-    OPF(4, 7, a ^ b, kX86pFlagsLogic, f->r < f->a); /* prev Add   */
+    r[0] = m[LOAD_OFF / 4];                         /* mov eax, [addr]  */
+    m[STORE_OFF / 4] = r[2];                        /* mov [addr], edx  */
 #undef OPF
 #undef OPF_NODST
   }
@@ -427,7 +466,7 @@ int main(int argc, char **argv) {
       seed(cpup);
       t0 = now_s();
       for (i = 0; i < iters; i++) {
-        native_kernel(cpup->reg);
+        native_kernel(cpup->reg, (volatile uint32_t *)mem.host + LOAD_OFF / 4);
       }
       t = now_s() - t0;
       if (t < t_native) {
@@ -449,7 +488,7 @@ int main(int argc, char **argv) {
       seed(cpup);
       t0 = now_s();
       for (i = 0; i < iters; i++) {
-        native_kernel_flags(cpup);
+        native_kernel_flags(cpup, (volatile uint32_t *)mem.host + LOAD_OFF / 4);
       }
       t = now_s() - t0;
       if (t < t_native_flags) {

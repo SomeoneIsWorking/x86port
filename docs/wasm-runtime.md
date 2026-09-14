@@ -54,20 +54,37 @@ the other columns use and fold their result into a printed sink, and one kernel
 is run through the interpreter and the JIT from the same seed and compared with
 `x86p_cpu_diff` -- the project's own predicate -- before anything is timed.
 
-Run under node, the tool now says what is actually true:
+Run under node, the tool now says what is actually true, and then measures:
 
-    kernel: 64 guest instruction(s), block translated 64 of them into 5426 host byte(s)
-    REFUSED: the jit column stopped at unsupported instruction (exit 1) running the kernel once,
-             at guest offset +0 in the block (block covers 64 instructions); it cannot be timed
+    kernel: 64 guest instruction(s), block translated 64 of them into 5673 host byte(s)
+    agreement: interpreter and jit leave identical state after one kernel (eip 000100b8)
 
-**Offset +0 with EIP unchanged is not an instruction the backend could not lower.**
-It is a block with no runnable body at all: module instantiation needs a worker,
-and a plain `node` build has none (this document says so above, which is exactly
-the kind of assumption the version of this tool that printed `0.03 ns/insn` was
-happy to make). Translation covering all 64 instructions is therefore not
-evidence that anything ran, and the bench has to be built the way the product is
-built -- pthreads, proxied main thread -- before it can measure the wasm backend
-at all.
+    column            native x86-64    wasm32 (node)
+    jit               0.39 ns/insn     1.05 ns/insn
+    native+flags      0.79             1.28
+    interpreter       476.07           285.43
+
+**A translated block costs ~2.7x more to run under wasm, and guest memory access
+does not change that.** The kernel now performs two memory operations per eight
+instructions -- 16 of its 64, on absolute addresses inside the guest arena --
+because the register-only version of it could not test the obvious explanation
+for the title's 20-27x: the product's blocks load and store constantly, and this
+one did not. Measured both ways, the ratio is the same (register-only was 0.39
+vs 1.11; with memory, 0.39 vs 1.05), so neither the emitted body nor the guest
+memory path inside it accounts for that gap.
+
+The engine around the entry does, and it is not measured here: this benchmark
+calls `x86p_jit_enter` once per iteration (one `call_indirect` and 64
+instructions, ~67 ns of wasm), while the product's engine runs a block lookup,
+its boundary and native-override policy, its statistics and its slice accounting
+for every block -- and its blocks average 5.1 instructions, so that fixed cost is
+paid 12 times as often per instruction. A per-entry measurement inside the engine
+is the missing instrument.
+
+**The wasm backend's own numbers are still missing a denominator.** The only
+measured relationship from a real title remains the negative one: a browser run
+of `xmen2` executes 0.74M guest block entries/s against 15.5-21.3M/s natively for
+the same counters, with zero refusals (issue #149 there).
 
 So the wasm backend still has no measured throughput ratio. The only trustworthy
 relationship remains the negative one: a browser run of the `xmen2` title
