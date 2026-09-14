@@ -50,7 +50,7 @@ although the header calls the interpreter the correctness authority.
 
 All three are fixed. The timed loop now refuses on any exit other than
 `kX86pJitExitBlockEnd`, the two native columns run on the cache-aligned global
-the other columns use and fold their result into a printed sink, and one kernel
+the other columns use and fold their result into a volatile sink, and one kernel
 is run through the interpreter and the JIT from the same seed and compared with
 `x86p_cpu_diff` -- the project's own predicate -- before anything is timed.
 
