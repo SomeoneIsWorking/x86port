@@ -38,28 +38,43 @@ command-line tests finish after `main`; consuming products do not inherit this
 option. The lifetime test enables memory growth to cover imported-memory
 stability, and Emscripten explicitly warns about its cost with pthreads.
 
-## Throughput has no working measurement yet
+## The benchmark refuses rather than lying, and that is the honest answer
 
-The wasm backend has no trustworthy throughput number, and `tools/jit_bench.c`
-is why. Built for Emscripten and run under node (`build/wasm-bench`), it reports
-`jit 0.000 s` at `0.03 ns/insn` and "10127.50x faster than the interpreter" --
-impossible values, because two of its four columns are unchecked:
+`tools/jit_bench.c` had three defects that made a wasm run report nonsense
+(`jit 0.000 s`, `0.03 ns/insn`, "10127x faster than the interpreter"): the JIT
+loop discarded `x86p_jit_enter`'s exit status, so a block that stopped at its
+first instruction was timed as the fastest possible execution; the native-C
+column's only sink was an unreachable `0xDEADBEEF` branch a wasm build drops
+along with the loop; and no engine's result was compared with any other's,
+although the header calls the interpreter the correctness authority.
 
-* the JIT loop discards `x86p_jit_enter`'s exit status, so a block that refuses
-  immediately (`kX86pJitExitUnsupported`, a memory fault, ...) is timed as the
-  fastest possible execution;
-* the native-C column's only sink is an unreachable `0xDEADBEEF` branch, which a
-  wasm build may drop along with the loop;
-* no engine's result is compared with any other's, although the header calls the
-  interpreter the correctness authority.
+All three are fixed. The timed loop now refuses on any exit other than
+`kX86pJitExitBlockEnd`, the two native columns run on the cache-aligned global
+the other columns use and fold their result into a printed sink, and one kernel
+is run through the interpreter and the JIT from the same seed and compared with
+`x86p_cpu_diff` -- the project's own predicate -- before anything is timed.
 
-Recorded as a distrusted instrument (`docs/info/instruments`). Before any
-wasm-vs-native ratio may be quoted, the bench has to fail on any exit other than
-`kX86pJitExitBlockEnd`, sink every engine's result into something observable, and
-require the engines' final states to agree. Until then the only measured
-relationship is negative: a browser run of the title executes 0.74M guest block
-entries/s against 15.5-21.3M/s for the same counters natively (issue #149 in
-`xmen2`).
+Run under node, the tool now says what is actually true:
+
+    kernel: 64 guest instruction(s), block translated 64 of them into 5426 host byte(s)
+    REFUSED: the jit column stopped at unsupported instruction (exit 1) running the kernel once,
+             at guest offset +0 in the block (block covers 64 instructions); it cannot be timed
+
+**Offset +0 with EIP unchanged is not an instruction the backend could not lower.**
+It is a block with no runnable body at all: module instantiation needs a worker,
+and a plain `node` build has none (this document says so above, which is exactly
+the kind of assumption the version of this tool that printed `0.03 ns/insn` was
+happy to make). Translation covering all 64 instructions is therefore not
+evidence that anything ran, and the bench has to be built the way the product is
+built -- pthreads, proxied main thread -- before it can measure the wasm backend
+at all.
+
+So the wasm backend still has no measured throughput ratio. The only trustworthy
+relationship remains the negative one: a browser run of the `xmen2` title
+executes 0.74M guest block entries/s against 15.5-21.3M/s natively for the same
+counters, with zero refusals (issue #149 there). Diagnostics: the product's
+engine treats a non-Intercept/non-Budget run status as a refusal and links no
+interpreter, so a slow run cannot be interpretation in disguise.
 
 These tests prove runtime translation, calls to real imported helpers, precise
 faults, independent engine ownership, invalidation/remapping, capacity-driven
