@@ -73,48 +73,39 @@ one did not. Measured both ways, the ratio is the same (register-only was 0.39
 vs 1.11; with memory, 0.39 vs 1.05), so neither the emitted body nor the guest
 memory path inside it accounts for that gap.
 
-## Translation, not execution, is what the slow phases cost
+## Translation is what the slow phases cost
 
-Two independent measurements agree, and they replace two earlier readings of this
-note (a fixed per-entry cost, then the asset phase's own work per block):
+Two independent measurements agree, and they replace three earlier readings of
+this note (a fixed per-entry cost, then the asset phase's own work per block,
+then "publication is 87% of translation"):
 
-* the `kernel:` line above is a *timed* translation of the shipping path, on both
-  hosts, for the identical block: **2.040 ms under wasm against 0.209 ms native**.
-  Ten times, roughly **32 us per guest instruction**;
-* a consuming title's heartbeat deltas, one interval: `+34,819` blocks translated
-  and `+1,164,611` blocks executed in 5.1 s, at 5.15 instructions per block. At
-  the measured cost a 5.15-instruction block costs ~165 us to translate, so those
-  translations alone account for the whole interval; natively the same work is
-  ~0.57 s, about 11%.
+* a consuming title's heartbeat deltas in a translation-heavy phase: a few
+  thousand to ~22,000 misses per second, each costing ~0.1-0.2 ms. That alone
+  accounts for the interval; natively the same translations cost about a tenth as
+  much. The phase is **compile-bound**, and the code it produces runs at the 2.7x
+  measured above;
+* the `translate cost:` lines this tool prints, which separate the two halves:
+  emission **0.081 ms** per block under wasm (against 0.130 ms natively -- the
+  emitter is fine), and publication **~0.094 ms warm** on top.
 
-So the phases that look pathologically slow are **compile-bound**: the browser is
-building WebAssembly modules, and the code it builds runs at the 2.7x measured
-above. The block rates a title reports are therefore a property of how much new
-code it is touching, which is why they range from 0.73M/s in a translation-heavy
-phase to 5.16M/s in a hot loop against 15.5-21.3M/s native.
+The 0.52 ms publication figure quoted in an earlier version of this note came
+from the FIRST module in a fresh process and is cold-compile noise; warm
+publication is the ~0.09 ms above. That matters, because it means the cost is
+**per block, not per module**, and there is very little for module-level
+amortization to win.
 
-**The designed-for fix is batching, and the shipping publish does not use it.**
-`jit_wasm_module.h` defines `X86P_WASM_MAX_BODIES 64` with per-body names
-`b0..b63`, has a module that takes several functions, and rejects a caller passing
-more than 64 -- so multiple translated bodies in one module is a supported shape.
-`x86p_jit_storage_translate` publishes one body per module, paying module
-construction and instantiation for a ~5-instruction block. Amortising that across
-bodies, and/or translating larger blocks, attacks the measured 32 us per
-instruction directly. The gates are the wasm test suite and the agreement check
-(this tool runs it on both hosts); a change here is an execution-engine change and
-must keep those green, not a title workaround.
+**Measured, not argued: batching a run of blocks into one module does not pay.**
+It was implemented (`x86p_jit_translate_chain`, one module per run, entries from
+`b0..bN`, invalidation widened to the unit), gated green, and measured: a chain of
+32 blocks cost **0.128 ms/block** against **0.175 ms/block** one at a time -- 1.37x
+in this tool, and no improvement at all in the title's own same-phase block rate
+(0.32-0.43M/s batched against 0.47-0.72M/s unbatched), even though misses fell
+3.5-13x exactly as designed. Chaining through a taken branch also translated dead
+fall-through that the run then paid for. It was reverted (x86port `eb9028e`).
 
-**The wasm backend's own numbers are still missing a denominator.** The only
-measured relationship from a real title remains the negative one: a browser run
-of `xmen2` executes 0.74M guest block entries/s against 15.5-21.3M/s natively for
-the same counters, with zero refusals (issue #149 there).
-
-So the wasm backend still has no measured throughput ratio. The only trustworthy
-relationship remains the negative one: a browser run of the `xmen2` title
-executes 0.74M guest block entries/s against 15.5-21.3M/s natively for the same
-counters, with zero refusals (issue #149 there). Diagnostics: the product's
-engine treats a non-Intercept/non-Budget run status as a refusal and links no
-interpreter, so a slow run cannot be interpretation in disguise.
+The per-module part of the cost is charged per module SHAPE, so if it is to be
+amortized it has to be with FEWER, LARGER BLOCKS -- raising instructions per
+block in the boundary policy -- and not by packing small ones together.
 
 These tests prove runtime translation, calls to real imported helpers, precise
 faults, independent engine ownership, invalidation/remapping, capacity-driven
