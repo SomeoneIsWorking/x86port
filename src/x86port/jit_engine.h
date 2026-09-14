@@ -71,17 +71,6 @@ typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
   uint64_t blocks_translated;
   uint64_t guest_insns_translated; /* summed at TRANSLATION, where it is known */
-  /*
-   * Blocks translated AHEAD of the miss that asked for them, and their guest
-   * instructions. On a wasm host publication costs a fixed price per module
-   * whatever the module's size, so a miss publishes the run that follows the
-   * block it was asked for: those extra blocks are this count, not
-   * blocks_translated, because they were not what anything entered -- and
-   * keeping them apart is what lets a caller tell work it needed from work it
-   * merely took. A backend that publishes one block per module reports zero.
-   */
-  uint64_t blocks_speculated;
-  uint64_t insns_speculated;
   /* Jcc and SETcc emitted, and how many of those the backend lowered to the
      host's own condition codes instead of a call to x86p_cond. Summed at
      translation for the same reason as the instruction count, so these are a

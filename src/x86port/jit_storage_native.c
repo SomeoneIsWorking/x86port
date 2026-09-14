@@ -59,58 +59,11 @@ void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->used = 0u;
 }
 
-int x86p_jit_storage_unit_range(X86pJitStorage *storage, uint32_t address, uint32_t *lo, uint32_t *hi) {
-  (void)storage;
-  (void)address;
-  (void)lo;
-  (void)hi;
-  /* One block per unit here, so the caller's own range is already exact. */
-  return 0;
-}
-
-int x86p_jit_storage_invalidate_unit(
-    X86pJitStorage *storage, uint32_t lo, uint32_t hi, uint32_t *lo_out, uint32_t *hi_out) {
-  (void)storage;
-  (void)lo;
-  (void)hi;
-  (void)lo_out;
-  (void)hi_out;
-  return 0;
-}
-
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi) {
   /* Native code is reclaimed in bulk when its region fills. */
   (void)storage;
   (void)lo;
   (void)hi;
-}
-
-X86pJitStatus x86p_jit_storage_translate_chain(X86pJitStorage *storage,
-                                               const X86pMem *mem,
-                                               uint32_t eip,
-                                               X86pJitBoundaryFn boundary,
-                                               void *boundary_user,
-                                               X86pJitBlock *blocks,
-                                               unsigned max_blocks,
-                                               unsigned *count,
-                                               char *reason,
-                                               unsigned reason_len) {
-  X86pJitStatus status;
-  (void)max_blocks;
-  if (!blocks || !count || max_blocks == 0u) {
-    if (reason && reason_len) {
-      snprintf(reason, reason_len, "no room for a block");
-    }
-    return kX86pJitOutOfSpace;
-  }
-  *count = 0u;
-  /* Machine code is published per block and the price does not depend on how
-     many blocks a run holds, so there is nothing here to batch. */
-  status = x86p_jit_storage_translate(storage, mem, eip, boundary, boundary_user, blocks, reason, reason_len);
-  if (status == kX86pJitOk) {
-    *count = 1u;
-  }
-  return status;
 }
 
 X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
