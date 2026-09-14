@@ -73,13 +73,19 @@ one did not. Measured both ways, the ratio is the same (register-only was 0.39
 vs 1.11; with memory, 0.39 vs 1.05), so neither the emitted body nor the guest
 memory path inside it accounts for that gap.
 
-The engine around the entry does, and it is not measured here: this benchmark
-calls `x86p_jit_enter` once per iteration (one `call_indirect` and 64
-instructions, ~67 ns of wasm), while the product's engine runs a block lookup,
-its boundary and native-override policy, its statistics and its slice accounting
-for every block -- and its blocks average 5.1 instructions, so that fixed cost is
-paid 12 times as often per instruction. A per-entry measurement inside the engine
-is the missing instrument.
+What is left is NOT a fixed per-entry cost, and an earlier version of this note
+said it was: re-reading a real browser run shows the block rate is
+phase-dependent -- `34,920,857 -> 344,534,636` block entries in 60 s, 5.16M/s,
+while only 40 files were opened. Steady state is therefore a 3-4x gap against the
+recorded native 15.5-21.3M/s, which is what these columns measure; the 20-27x
+figure came from the boot/asset phase, and belongs to the work that phase does
+per guest block (file opens through the multi-path resolver, archive reads, parse
+loops). The engine's per-entry path is still unmeasured here -- this benchmark
+calls `x86p_jit_enter` once per iteration (one `call_indirect`, 64 instructions,
+~67 ns of wasm) while the product also runs a block lookup, boundary and
+override policy, statistics and slice accounting per block, at 5.1 instructions
+per block -- but it is a suspect for the steady-state factor, not an explanation
+of the asset-phase one.
 
 **The wasm backend's own numbers are still missing a denominator.** The only
 measured relationship from a real title remains the negative one: a browser run
