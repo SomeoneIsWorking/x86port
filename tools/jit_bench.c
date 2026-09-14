@@ -74,6 +74,9 @@ static void put_u32(uint8_t *p, uint32_t v) {
 /* Where the short kernel's bytes live, clear of the long one. */
 #define SHORT_OFF 0x800u
 
+/* The branch-containing kernel, clear of both. */
+#define BRANCH_OFF 0x900u
+
 /*
  * A SHORT block, the size real code produces.
  *
@@ -99,6 +102,31 @@ static uint32_t build_short_kernel(void) {
   *p++ = 0xC3u;      /* ret -- ends the block the way real code does */
   n++;
 #undef ALU_RR_S
+  return n;
+}
+
+/*
+ * A block that CONTAINS a branch.
+ *
+ * Whether block formation stops at the first branch is the difference between a
+ * ~5-instruction block and the 2.3-3.4x that longer runs are worth
+ * (docs/wasm-runtime.md). This asks the translator directly: a conditional the
+ * block could follow, or a wall it stops at.
+ */
+static uint32_t build_branch_kernel(void) {
+  uint8_t *p = g_guest + BRANCH_OFF;
+  uint32_t n = 0;
+  p[0] = 0x03;
+  p[1] = 0xC1; /* add eax, ecx */
+  p[2] = 0x74;
+  p[3] = 0x03; /* jz rel8 +3 */
+  p[4] = 0x31;
+  p[5] = 0xD3; /* xor edx, ebx */
+  p[6] = 0x2B;
+  p[7] = 0xCE; /* sub ecx, esi */
+  p[8] = 0xC3; /* ret */
+  p += 9;
+  n = 5; /* the five instructions written above */
   return n;
 }
 
@@ -410,6 +438,21 @@ int main(int argc, char **argv) {
            short_blk.insns,
            best * 1e3,
            best * 1e6 / (double)short_blk.insns);
+  }
+
+  {
+    X86pJitBlock branch_blk;
+    build_branch_kernel();
+    x86p_jit_storage_reset(storage);
+    st = x86p_jit_storage_translate(
+        storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+    if (st != kX86pJitOk) {
+      printf("REFUSED: branch kernel -> %s\n", x86p_jit_status_name(st));
+      return 1;
+    }
+    printf("block formation: %u instruction(s) in a block for a 5-instruction kernel containing a branch\n",
+           branch_blk.insns);
+    x86p_jit_storage_reset(storage);
   }
 
   t0 = now_s();
