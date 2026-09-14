@@ -102,6 +102,115 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   return kX86pJitOk;
 }
 
+X86pJitStatus x86p_jit_translate_chain(const X86pMem *mem,
+                                       uint32_t eip,
+                                       void *code,
+                                       size_t code_cap,
+                                       X86pJitBoundaryFn boundary,
+                                       void *boundary_user,
+                                       X86pJitBlock *blocks,
+                                       unsigned max_blocks,
+                                       unsigned *count,
+                                       size_t *module_bytes,
+                                       char *reason,
+                                       unsigned reason_len) {
+  X86pWasmModule module;
+  X86pWasmPlan plan;
+  unsigned run = 0u;
+  unsigned i;
+  uint32_t next = eip;
+  size_t length;
+
+  if (!mem || !code || !blocks || !count || max_blocks == 0u) {
+    say(reason, reason_len, "null argument or no room for a block");
+    return kX86pJitOutOfSpace;
+  }
+  if (max_blocks > X86P_WASM_MAX_BODIES) {
+    max_blocks = X86P_WASM_MAX_BODIES;
+  }
+  *count = 0u;
+
+  plan_from_mem(mem, &plan);
+
+  /*
+   * Pass one: where does each block END. The module's function and export
+   * sections are written when it opens, so the count has to be known before
+   * anything is lowered into it -- a module that promised bodies it never wrote
+   * is one the engine rejects, with a message about a section length rather
+   * than about the lowering that stopped.
+   */
+  for (i = 0u; i < max_blocks; i++) {
+    X86pJitStatus probed =
+        x86p_jit_translate_bounded(mem, next, code, code_cap, boundary, boundary_user, &blocks[i], reason, reason_len);
+    if (probed != kX86pJitOk) {
+      if (i == 0u) {
+        return probed;
+      }
+      break;
+    }
+    run = i + 1u;
+    /* Every field but `entry` is what the caller wants, and the probe leaves
+       `entry` NULL. The bodies themselves are rebuilt below inside the one
+       module; lowering is a pure function of the guest bytes, so the two agree. */
+    next = blocks[i].guest_eip + blocks[i].guest_len;
+    if (blocks[i].stopper) {
+      break;
+    }
+  }
+  if (run == 0u) {
+    say(reason, reason_len, "no block at %08X", eip);
+    return kX86pJitOutOfSpace;
+  }
+
+  /*
+   * Pass two: one module, `run` bodies, in the same order.
+   *
+   * AND ONE BLOCK IF THAT DOES NOT FIT. Batching must never cost a caller the
+   * block it asked for: a storage sized for exactly one module has room for one
+   * block and must still be able to translate it, so a run that will not fit
+   * falls back to the first block, which pass one has already lowered into this
+   * same buffer. Without that, a small storage would stop running anything and
+   * the failure would look like a capacity limit rather than one batching
+   * introduced.
+   */
+  for (i = 0u; i < 2u; i++) {
+    unsigned attempt = (i == 0u) ? run : 1u;
+    unsigned placed_count = 0u;
+    int complete = 1;
+    x86p_wasm_module_init(&module, code, code_cap, attempt);
+    while (placed_count < attempt) {
+      /* The probe's block is kept, not replaced: it already carries the extent,
+         the instruction count and the branch accounting the caller asked for,
+         and this pass only places the same body inside the shared module. */
+      X86pJitBlock placed;
+      X86pJitStatus status = x86p_wasm_lower_block(
+          &module, mem, &plan, blocks[placed_count].guest_eip, boundary, boundary_user, &placed, reason, reason_len);
+      if (status != kX86pJitOk) {
+        complete = 0;
+        break;
+      }
+      blocks[placed_count].entry = NULL;
+      placed_count++;
+    }
+    if (complete) {
+      length = x86p_wasm_module_finish(&module);
+      if (length != 0u) {
+        if (module_bytes) {
+          *module_bytes = length;
+        }
+        *count = attempt;
+        return kX86pJitOk;
+      }
+    }
+    if (attempt == 1u) {
+      say(reason, reason_len, "the block at %08X could not be closed in a module of its own", eip);
+      return kX86pJitOutOfSpace;
+    }
+  }
+  say(reason, reason_len, "no module could be built for the block at %08X", eip);
+  return kX86pJitOutOfSpace;
+}
+
 X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  uint32_t eip,
                                  void *code,
