@@ -70,6 +70,10 @@ static void stub_release(void *user, int module) {
   s->last_released = module;
 }
 
+/* Small enough that the cap case runs in no time, large enough that the free
+   list is exercised across several slots rather than one. */
+enum { kTestCapacity = 64u };
+
 static void bind(X86pWasmArena *arena, Stub *stub, X86pWasmHost *host) {
   memset(stub, 0, sizeof *stub);
   memset(host, 0, sizeof *host);
@@ -77,7 +81,8 @@ static void bind(X86pWasmArena *arena, Stub *stub, X86pWasmHost *host) {
   host->resolve = stub_resolve;
   host->release = stub_release;
   host->user = stub;
-  x86p_wasm_arena_init(arena, host);
+  check("the arena took its capacity", x86p_wasm_arena_init(arena, host, kTestCapacity), 1);
+  check("and reports it", x86p_wasm_arena_capacity(arena), kTestCapacity);
 }
 
 /* ---- cases --------------------------------------------------------------- */
@@ -115,6 +120,7 @@ static void test_publish_and_release(void) {
   /* Releasing twice is a caller being careful, not an error. */
   x86p_wasm_arena_release(&arena, token);
   check("a second release does nothing", stub.releases, 1);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_cap_refuses_rather_than_evicting(void) {
@@ -126,13 +132,13 @@ static void test_cap_refuses_rather_than_evicting(void) {
   char reason[256];
   bind(&arena, &stub, &host);
 
-  for (i = 0; i < X86P_WASM_MAX_LIVE_MODULES; i++) {
+  for (i = 0; i < kTestCapacity; i++) {
     if (x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) < 0) {
       break;
     }
   }
-  check("the cap is reached exactly", i, X86P_WASM_MAX_LIVE_MODULES);
-  check("every slot is live", x86p_wasm_arena_live(&arena), X86P_WASM_MAX_LIVE_MODULES);
+  check("the cap is reached exactly", i, kTestCapacity);
+  check("every slot is live", x86p_wasm_arena_live(&arena), kTestCapacity);
 
   reason[0] = '\0';
   token = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
@@ -146,13 +152,14 @@ static void test_cap_refuses_rather_than_evicting(void) {
    * slot that now belongs to something else.
    */
   check("nothing was evicted", stub.releases, 0);
-  check("the engine was not asked again", stub.instantiations, (int)X86P_WASM_MAX_LIVE_MODULES);
+  check("the engine was not asked again", stub.instantiations, (int)kTestCapacity);
 
   /* Releasing one makes room for exactly one. */
   x86p_wasm_arena_release(&arena, 0);
   check(
       "publishing succeeds again", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason), 0);
-  check("still at the cap", x86p_wasm_arena_live(&arena), X86P_WASM_MAX_LIVE_MODULES);
+  check("still at the cap", x86p_wasm_arena_live(&arena), kTestCapacity);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_release_all(void) {
@@ -168,6 +175,7 @@ static void test_release_all(void) {
   check("nothing live", x86p_wasm_arena_live(&arena), 0);
   check("the engine released all five", stub.releases, 5);
   check("the engine holds none", stub.live, 0);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_engine_failure_is_not_a_refusal(void) {
@@ -190,6 +198,7 @@ static void test_engine_failure_is_not_a_refusal(void) {
   check("counted as a failure", x86p_wasm_arena_failures(&arena), 1);
   check("not counted as a refusal", x86p_wasm_arena_refusals(&arena), 0);
   check("nothing live", x86p_wasm_arena_live(&arena), 0);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_unreachable_export_is_released(void) {
@@ -202,6 +211,7 @@ static void test_unreachable_export_is_released(void) {
   token = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, NULL, 0);
   check("published", token >= 0, 1);
   check("the null table slot is not an entry", x86p_wasm_arena_entry(&arena, token, "b0") == NULL, 1);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_no_engine_refuses(void) {
@@ -212,13 +222,14 @@ static void test_no_engine_refuses(void) {
    * appear to work until the first block runs, and the refusal must SAY that
    * is what happened.
    */
-  x86p_wasm_arena_init(&arena, NULL);
+  check("an arena with no host still takes a capacity", x86p_wasm_arena_init(&arena, NULL, kTestCapacity), 1);
   reason[0] = '\0';
   check("publishing without an engine is refused",
         x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
         -1);
   check("the refusal says something", reason[0] != '\0', 1);
   check("counted", x86p_wasm_arena_refusals(&arena), 1);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 static void test_partial_host_is_no_host(void) {
@@ -233,9 +244,30 @@ static void test_partial_host_is_no_host(void) {
   host.instantiate = stub_instantiate;
   host.resolve = stub_resolve;
   host.user = &stub;
-  x86p_wasm_arena_init(&arena, &host);
+  check("the arena took its capacity", x86p_wasm_arena_init(&arena, &host, kTestCapacity), 1);
   check("a host that cannot release is refused", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, NULL, 0), -1);
   check("the engine was never asked", stub.instantiations, 0);
+  x86p_wasm_arena_dispose(&arena);
+}
+
+static void test_zero_capacity_is_refused(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  memset(&stub, 0, sizeof stub);
+  memset(&host, 0, sizeof host);
+  host.instantiate = stub_instantiate;
+  host.resolve = stub_resolve;
+  host.release = stub_release;
+  host.user = &stub;
+  /* A capacity of zero is not "unbounded", it is a caller mistake, and an
+     arena that accepted it would refuse every publication later with a message
+     about slots rather than about the number it was given. */
+  check("a zero capacity is refused", x86p_wasm_arena_init(&arena, &host, 0u), 0);
+  check("and it holds nothing", x86p_wasm_arena_capacity(&arena), 0);
+  check("so publishing is refused", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, NULL, 0), -1);
+  check("the engine was never asked", stub.instantiations, 0);
+  x86p_wasm_arena_dispose(&arena);
 }
 
 int main(void) {
@@ -246,6 +278,7 @@ int main(void) {
   test_unreachable_export_is_released();
   test_no_engine_refuses();
   test_partial_host_is_no_host();
+  test_zero_capacity_is_refused();
   printf("test_jit_wasm_arena: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

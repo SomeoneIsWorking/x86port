@@ -6,6 +6,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void say(char *buf, unsigned len, const char *fmt, ...) {
@@ -22,14 +23,45 @@ static int host_is_usable(const X86pWasmHost *h) {
   return h && h->instantiate && h->resolve && h->release;
 }
 
-void x86p_wasm_arena_init(X86pWasmArena *a, const X86pWasmHost *host) {
+int x86p_wasm_arena_init(X86pWasmArena *a, const X86pWasmHost *host, unsigned capacity) {
+  unsigned i;
   if (!a) {
-    return;
+    return 0;
   }
   memset(a, 0, sizeof *a);
   if (host_is_usable(host)) {
     a->host = *host;
   }
+  if (capacity == 0u) {
+    return 0;
+  }
+  a->slot = calloc(capacity, sizeof *a->slot);
+  if (!a->slot) {
+    return 0;
+  }
+  a->capacity = capacity;
+  /* Thread the free list through the slots, lowest index first, so a fresh
+     arena hands out slot 0 before slot 1 and the tests can say which. */
+  for (i = 0; i < capacity; i++) {
+    a->slot[i].next_free = (i + 1u < capacity) ? (i + 2u) : 0u;
+  }
+  a->free_head = 1u;
+  return 1;
+}
+
+void x86p_wasm_arena_dispose(X86pWasmArena *a) {
+  if (!a) {
+    return;
+  }
+  x86p_wasm_arena_release_all(a);
+  free(a->slot);
+  a->slot = NULL;
+  a->capacity = 0u;
+  a->free_head = 0u;
+}
+
+unsigned x86p_wasm_arena_capacity(const X86pWasmArena *a) {
+  return a ? a->capacity : 0u;
 }
 
 int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, char *reason, unsigned reason_len) {
@@ -51,26 +83,22 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
     say(reason, reason_len, "empty module");
     return -1;
   }
-  if (a->live >= X86P_WASM_MAX_LIVE_MODULES) {
+  if (a->free_head == 0u) {
     a->refusals++;
     say(reason,
         reason_len,
         "all %u module slots are live; the caller has published %u and released %u",
-        (unsigned)X86P_WASM_MAX_LIVE_MODULES,
+        a->capacity,
         a->published,
         a->released);
     return -1;
   }
-  for (i = 0; i < (unsigned)X86P_WASM_MAX_LIVE_MODULES; i++) {
-    if (!a->slot[i].live) {
-      break;
-    }
-  }
-  if (i == (unsigned)X86P_WASM_MAX_LIVE_MODULES) {
-    /* `live` disagreed with the slots. That is a defect in this file, and it
-       must not be papered over by overwriting a live slot. */
+  i = a->free_head - 1u;
+  if (i >= a->capacity || a->slot[i].live) {
+    /* The free list disagreed with the slots. That is a defect in this file,
+       and it must not be papered over by overwriting a live slot. */
     a->refusals++;
-    say(reason, reason_len, "internal: %u live modules but no free slot", a->live);
+    say(reason, reason_len, "internal: free list names slot %u of %u, which is not free", i, a->capacity);
     return -1;
   }
   module = a->host.instantiate(a->host.user, bytes, len);
@@ -79,8 +107,10 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
     say(reason, reason_len, "the engine rejected a %zu-byte module", len);
     return -1;
   }
+  a->free_head = a->slot[i].next_free;
   a->slot[i].live = 1;
   a->slot[i].module = module;
+  a->slot[i].next_free = 0u;
   a->live++;
   a->published++;
   return (int)i;
@@ -88,7 +118,7 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
 
 void *x86p_wasm_arena_entry(X86pWasmArena *a, int token, const char *field) {
   int callable;
-  if (!a || token < 0 || (unsigned)token >= X86P_WASM_MAX_LIVE_MODULES || !field) {
+  if (!a || token < 0 || (unsigned)token >= a->capacity || !field) {
     return NULL;
   }
   if (!a->slot[token].live || !host_is_usable(&a->host)) {
@@ -104,7 +134,7 @@ void *x86p_wasm_arena_entry(X86pWasmArena *a, int token, const char *field) {
 }
 
 void x86p_wasm_arena_release(X86pWasmArena *a, int token) {
-  if (!a || token < 0 || (unsigned)token >= X86P_WASM_MAX_LIVE_MODULES) {
+  if (!a || token < 0 || (unsigned)token >= a->capacity) {
     return;
   }
   if (!a->slot[token].live) {
@@ -115,6 +145,8 @@ void x86p_wasm_arena_release(X86pWasmArena *a, int token) {
   }
   a->slot[token].live = 0;
   a->slot[token].module = 0;
+  a->slot[token].next_free = a->free_head;
+  a->free_head = (unsigned)token + 1u;
   a->live--;
   a->released++;
 }
@@ -124,7 +156,7 @@ void x86p_wasm_arena_release_all(X86pWasmArena *a) {
   if (!a) {
     return;
   }
-  for (i = 0; i < (unsigned)X86P_WASM_MAX_LIVE_MODULES; i++) {
+  for (i = 0; i < a->capacity; i++) {
     x86p_wasm_arena_release(a, (int)i);
   }
 }

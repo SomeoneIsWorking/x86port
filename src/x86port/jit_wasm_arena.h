@@ -53,23 +53,43 @@ typedef struct X86pWasmHost {
 } X86pWasmHost;
 
 /*
- * How many modules may be live at once.
+ * HOW MANY MODULES MAY BE LIVE AT ONCE IS THE CALLER'S TO CHOOSE.
  *
- * A number rather than "as many as fit", because the resource being bounded is
- * inside the engine and nothing here can measure it. Browser gameplay has not
- * qualified a larger cap: doubling it raised renderer memory substantially
- * without producing playable frame times.
+ * It used to be a fixed 1024 here, which quietly made the cap disagree with
+ * the block cache the engine was given: a consumer asking for 8192 cached
+ * blocks got 8192 cache entries and room for 1024 translations, so seven
+ * eighths of its cache could never hold anything and every translation past
+ * the thousandth evicted a block the program was still running. Measured in
+ * the browser on X-Men Legends II's Dead Zone route, that cost 7,244
+ * retranslations per second -- 42.7% of the busy worker's samples inside
+ * `new WebAssembly.Module`/`Instance` and the host glue, plus 9.8% in the
+ * cache and storage invalidation those evictions drive.
+ *
+ * So the cap is a parameter, and the engine passes the same number it sized
+ * its cache with. The resource being bounded is still inside the WebAssembly
+ * engine and still cannot be measured from here; what changed is that a
+ * caller who knows its budget can now say so. Measured in Chrome 128, a live
+ * module shaped like a translated block -- 1,569 bytes, a shared memory and
+ * twelve function imports -- costs about 3.2 KB of renderer memory and 13.7
+ * us to compile and instantiate.
  */
-#define X86P_WASM_MAX_LIVE_MODULES 1024u
 
 typedef struct X86pWasmArenaSlot {
   int live;
-  int module; /* the engine's handle from instantiate() */
+  int module;         /* the engine's handle from instantiate() */
+  unsigned next_free; /* index + 1 of the next free slot, 0 when this is last */
 } X86pWasmArenaSlot;
 
 typedef struct X86pWasmArena {
   X86pWasmHost host;
-  X86pWasmArenaSlot slot[X86P_WASM_MAX_LIVE_MODULES];
+  X86pWasmArenaSlot *slot; /* `capacity` entries, owned */
+  unsigned capacity;
+  /*
+   * A free list, not a scan. Publication used to walk the slots from zero to
+   * find a hole, which is O(capacity) per translated block and gets worse
+   * exactly as the cap is raised to stop the retranslation it was hiding.
+   */
+  unsigned free_head; /* index + 1 of the first free slot, 0 when full */
   unsigned live;
   unsigned published; /* modules successfully instantiated over the arena's life */
   unsigned released;  /* modules handed back to the engine */
@@ -77,10 +97,22 @@ typedef struct X86pWasmArena {
   unsigned failures;  /* publications the engine itself rejected */
 } X86pWasmArena;
 
-/* Bind an arena to an engine. A NULL or incomplete host leaves the arena
-   refusing every publication, which is what a build with no engine glue must
-   do rather than appear to work until the first block runs. */
-void x86p_wasm_arena_init(X86pWasmArena *a, const X86pWasmHost *host);
+/*
+ * Bind an arena to an engine, with room for `capacity` live modules.
+ *
+ * Returns 0 when the slots could not be allocated, which leaves the arena
+ * refusing every publication rather than holding a capacity it does not have.
+ * A NULL or incomplete host also leaves it refusing -- what a build with no
+ * engine glue must do rather than appear to work until the first block runs.
+ */
+int x86p_wasm_arena_init(X86pWasmArena *a, const X86pWasmHost *host, unsigned capacity);
+
+/* Release every live module and free the slots. The arena is unusable
+   afterwards until it is initialised again. */
+void x86p_wasm_arena_dispose(X86pWasmArena *a);
+
+/* How many modules this arena may hold at once. */
+unsigned x86p_wasm_arena_capacity(const X86pWasmArena *a);
 
 /*
  * Instantiate a module and return a token for it, or -1 with `reason` set.

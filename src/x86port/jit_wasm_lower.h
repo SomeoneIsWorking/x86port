@@ -54,6 +54,16 @@ extern "C" {
 #define X86P_WASM_MODULE_OVERHEAD_BYTES (512u + 48u * (unsigned)kX86pWasmImportCount)
 #define X86P_WASM_MIN_MODULE_BYTES                                                                                     \
   (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES + X86P_WASM_EXIT_BYTES)
+/*
+ * The largest a single lowered module can be, which is what a caller has to
+ * size a scratch buffer to. A block holds at most X86P_WASM_MAX_INSNS guest
+ * instructions, so the worst case is that many at their worst case plus the
+ * framing -- not the caller's whole live-code budget, which bounds a different
+ * resource entirely.
+ */
+#define X86P_WASM_MAX_MODULE_BYTES                                                                                     \
+  ((size_t)X86P_WASM_MAX_INSNS * X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES +                   \
+   X86P_WASM_EXIT_BYTES)
 
 /*
  * Lower the basic block at `eip` into the module's next function body.

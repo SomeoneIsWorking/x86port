@@ -8,7 +8,11 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { kGuestBase = 0x400000, kProgramStride = 16, kGuestBytes = (X86P_WASM_MAX_LIVE_MODULES + 16) * kProgramStride };
+/* The largest live-block cap any case below asks for. Deliberately past the
+   1024 that used to be compiled in, so a build that regressed to a fixed cap
+   fails here rather than in a browser. */
+enum { kMaxCapacity = 2048u };
+enum { kGuestBase = 0x400000, kProgramStride = 16, kGuestBytes = (kMaxCapacity + 16) * kProgramStride };
 static uint8_t guest[kGuestBytes];
 static unsigned checks;
 static unsigned failures;
@@ -122,8 +126,13 @@ static void helpers_and_invalidation(const X86pMem *mem) {
   check(live_modules() == 0u, "destroy retained generated modules or table entries");
 }
 
-static void lifetime(const X86pMem *mem, unsigned cache_blocks) {
-  X86pJitEngine *engine = create(mem, 16u * 1024u * 1024u, cache_blocks);
+/*
+ * `capacity` is now ONE number: the engine sizes its block cache and its live
+ * module arena together, because a cache larger than the storage behind it can
+ * only hold entries whose code has already been evicted.
+ */
+static void lifetime(const X86pMem *mem, unsigned capacity) {
+  X86pJitEngine *engine = create(mem, 16u * 1024u * 1024u, capacity);
   X86pJitEngine *other = create(mem, 65536u, 128u);
   X86pCpu cpu;
   X86pJitEngineStats stats;
@@ -137,33 +146,47 @@ static void lifetime(const X86pMem *mem, unsigned cache_blocks) {
   program(0u, 37u);
   cpu.eip = kGuestBase;
   run(other, &cpu, 1u);
-  for (i = 0; i < X86P_WASM_MAX_LIVE_MODULES + 16u; ++i) {
+  for (i = 0; i < capacity + 16u; ++i) {
     program(i * kProgramStride, i);
     cpu.eip = kGuestBase + i * kProgramStride;
     run(engine, &cpu, 1u);
     check(cpu.reg[kX86pEax] == i, "eviction reused a stale table entry");
-    check(live_modules() <= X86P_WASM_MAX_LIVE_MODULES + 1u, "module lifetime exceeded its bound");
+    check(live_modules() <= capacity + 1u, "module lifetime exceeded its bound");
   }
-  if (cache_blocks > X86P_WASM_MAX_LIVE_MODULES) {
-    cpu.eip = kGuestBase + (X86P_WASM_MAX_LIVE_MODULES - 1u) * kProgramStride;
+  /*
+   * BOTH ANSWERS, at whatever cap the caller chose. Round-robin eviction over
+   * `capacity` slots after `capacity + 16` translations leaves blocks 16
+   * through capacity+15 live, so:
+   *   - the most recent block must be entered without retranslating, and
+   *   - block 0 must NOT be, because it was evicted.
+   * A test that only asserted the first would pass just as happily on an
+   * engine that retranslated everything, which is exactly the defect a fixed
+   * 1024-module cap produced for every consumer asking for a larger cache.
+   */
+  {
+    uint64_t translated;
     x86p_jit_engine_stats(engine, &stats);
-    {
-      uint64_t translated = stats.blocks_translated;
-      run(engine, &cpu, 1u);
-      x86p_jit_engine_stats(engine, &stats);
-      check(stats.blocks_translated == translated, "capacity pressure evicted a recent block instead of preserving it");
-    }
+    translated = stats.blocks_translated;
+    cpu.eip = kGuestBase + (capacity + 15u) * kProgramStride;
+    run(engine, &cpu, 1u);
+    x86p_jit_engine_stats(engine, &stats);
+    check(cpu.reg[kX86pEax] == capacity + 15u, "a retained block returned another block's result");
+    check(stats.blocks_translated == translated, "capacity pressure evicted the newest block instead of preserving it");
+
+    cpu.eip = kGuestBase;
+    run(engine, &cpu, 1u);
+    x86p_jit_engine_stats(engine, &stats);
+    check(cpu.reg[kX86pEax] == 0u, "re-entering an evicted block returned another block's result");
+    check(stats.blocks_translated == translated + 1u, "an evicted block was entered without being retranslated");
   }
-  x86p_jit_engine_stats(engine, &stats);
-  if (cache_blocks > X86P_WASM_MAX_LIVE_MODULES) {
-    check(stats.cache_flushes == 0u, "WASM module pressure flushed unrelated translations");
-  } else {
-    check(stats.cache_flushes > 0u, "the deliberately small block cache did not exercise a flush");
-  }
-  check(stats.blocks_translated == X86P_WASM_MAX_LIVE_MODULES + 16u, "capacity test failed to translate every block");
+  /* This host releases modules one at a time, so ordinary capacity pressure
+     never needs the whole-space rewind. A flush here would mean unrelated
+     translations were thrown away to make room for one block. */
+  check(stats.cache_flushes == 0u, "WASM module pressure flushed unrelated translations");
+  check(stats.blocks_translated == capacity + 17u, "capacity test failed to translate every block");
   check(imports_bound_once_per_host(), "WASM imports were rebound for each translated block");
-  printf("lifetime: cache_capacity=%u translated=%llu flushes=%llu live=%u\n",
-         cache_blocks,
+  printf("lifetime: capacity=%u translated=%llu flushes=%llu live=%u\n",
+         capacity,
          (unsigned long long)stats.blocks_translated,
          (unsigned long long)stats.cache_flushes,
          live_modules());
@@ -217,7 +240,7 @@ static void smallest_storage(const X86pMem *mem) {
 int main(void) {
   X86pMem mem = {.host = guest, .lo = kGuestBase, .size = sizeof guest};
   helpers_and_invalidation(&mem);
-  lifetime(&mem, 8192u);
+  lifetime(&mem, kMaxCapacity);
   lifetime(&mem, 16u);
   smallest_storage(&mem);
   invalid_module();

@@ -18,8 +18,13 @@ size_t x86p_jit_storage_min_capacity(void) {
   return X86P_JIT_MIN_BLOCK_BYTES;
 }
 
-X86pJitStorage *x86p_jit_storage_create(size_t capacity, char *reason, unsigned reason_len) {
-  X86pJitStorage *storage = calloc(1u, sizeof *storage);
+X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char *reason, unsigned reason_len) {
+  X86pJitStorage *storage;
+  /* Machine-code blocks share one region and are reclaimed in bulk, so the
+     block count is bounded by the bytes and there is no second resource to
+     size. Named here rather than silently ignored. */
+  (void)max_blocks;
+  storage = calloc(1u, sizeof *storage);
   if (!storage) {
     if (reason && reason_len) {
       snprintf(reason, reason_len, "out of memory creating JIT storage");

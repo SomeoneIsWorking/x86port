@@ -10,7 +10,16 @@ typedef struct X86pJitStorage X86pJitStorage;
 
 const char *x86p_jit_storage_mechanism(void);
 size_t x86p_jit_storage_min_capacity(void);
-X86pJitStorage *x86p_jit_storage_create(size_t capacity, char *reason, unsigned reason_len);
+/*
+ * `capacity` bounds the BYTES of live translated code; `max_blocks` bounds how
+ * many translations may be live at once. On a machine-code host the second is
+ * implied by the first, because blocks share one region and are reclaimed in
+ * bulk. On the WebAssembly host they are separate resources -- each block is
+ * its own module with its own fixed cost in the engine -- and leaving the
+ * block cap implicit is what let a caller's cache be eight times larger than
+ * the storage behind it.
+ */
+X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char *reason, unsigned reason_len);
 void x86p_jit_storage_destroy(X86pJitStorage *storage);
 int x86p_jit_storage_has_room(const X86pJitStorage *storage);
 size_t x86p_jit_storage_used(const X86pJitStorage *storage);
