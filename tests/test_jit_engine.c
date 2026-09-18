@@ -306,8 +306,20 @@ static void test_a_full_code_region_flushes_and_keeps_going(void) {
 
   x86p_jit_engine_stats(eng, &st);
   CHECK(st.cache_flushes > 0u);
-  printf("    %llu flush(es), %llu block(s) translated for %llu entered\n",
+  /*
+   * Arena pressure is the engine's own reclaim and must never be reported as
+   * the embedder invalidating anything. Nothing here told the engine that
+   * guest memory changed, so the embedder's counters must be flat while the
+   * eviction counters are not -- the combined figure would name the wrong
+   * owner, which on a real browser run it did: 500 embedder calls arrived
+   * beside 106,000 evictions.
+   */
+  CHECK(st.invalidations == 0u);
+  CHECK(st.invalidation_blocks_dropped == 0u);
+  printf("    %llu flush(es), %llu eviction(s) dropping %llu block(s), %llu translated for %llu entered\n",
          (unsigned long long)st.cache_flushes,
+         (unsigned long long)st.evictions,
+         (unsigned long long)st.eviction_blocks_dropped,
          (unsigned long long)st.blocks_translated,
          (unsigned long long)st.blocks_entered);
 
