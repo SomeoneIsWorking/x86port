@@ -89,6 +89,13 @@ typedef struct X86pJitEngineStats {
   uint64_t invalidations;
   uint64_t invalidation_bytes;
   uint64_t invalidation_blocks_dropped;
+  /* The engine reclaiming its own code region, which is a different fact and
+     is never counted above. An eviction says the arena is too small for the
+     working set: every block it drops is one the run is about to translate
+     again. `cache_flushes` below counts the whole-arena reset that happens
+     when even evicting a victim will not free room. */
+  uint64_t evictions;
+  uint64_t eviction_blocks_dropped;
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
 } X86pJitEngineStats;

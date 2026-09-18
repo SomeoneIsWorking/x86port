@@ -170,6 +170,12 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   free(e);
 }
 
+static size_t drop_range(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
+  const size_t dropped = jc_block_invalidate_range(e->cache, lo, hi);
+  x86p_jit_storage_invalidate(e->storage, lo, hi);
+  return dropped;
+}
+
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
   if (e) {
     /*
@@ -180,11 +186,16 @@ void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
      * the embedder did not need to send, where few calls dropping thousands is
      * the guest genuinely replacing code. Dropping only the effect would make
      * a pure-overhead notification storm invisible.
+     *
+     * The engine's OWN reclaim does not come through here -- see
+     * `evict_for_room`. Counting both as one number reads as an embedder
+     * notifying tens of thousands of times a second, which is a false
+     * accusation: measured on a browser run, 500 embedder calls arrived beside
+     * 106,000 evictions and the combined figure named the wrong owner.
      */
     e->stats.invalidations++;
     e->stats.invalidation_bytes += (uint64_t)(hi - lo);
-    e->stats.invalidation_blocks_dropped += (uint64_t)jc_block_invalidate_range(e->cache, lo, hi);
-    x86p_jit_storage_invalidate(e->storage, lo, hi);
+    e->stats.invalidation_blocks_dropped += (uint64_t)drop_range(e, lo, hi);
   }
 }
 
@@ -307,6 +318,38 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
   return 1;
 }
 
+/*
+ * Make room in the code region for one more translation.
+ *
+ * This is the engine reclaiming its OWN arena, not the embedder reporting that
+ * guest memory changed, and the two are counted apart because they say
+ * opposite things about what to do. An embedder notification dropping code
+ * means the guest replaced it. An eviction dropping code means the arena is
+ * too small for the working set, and every eviction is a block the run is
+ * about to pay to translate again.
+ *
+ * Returns zero only when even a full flush cannot free space.
+ */
+static int evict_for_room(X86pJitEngine *e, char *reason, unsigned reason_len) {
+  while (!x86p_jit_storage_has_room(e->storage)) {
+    uint32_t lo, hi;
+    const size_t before = x86p_jit_storage_used(e->storage);
+    if (x86p_jit_storage_victim(e->storage, &lo, &hi)) {
+      /* WASM modules and table entries can be released individually. Drop
+         the cache entry before its table index becomes reusable. */
+      e->stats.evictions++;
+      e->stats.eviction_blocks_dropped += (uint64_t)drop_range(e, lo, hi);
+      if (x86p_jit_storage_used(e->storage) < before) {
+        continue;
+      }
+    }
+    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 /* Translate the block at `eip`, publish it, and record it. Returns the exec
    address, or NULL with `st` saying why. When it returns non-NULL and
    `out_blk` is non-NULL, `*out_blk` describes the block that was translated. */
@@ -315,23 +358,9 @@ static void *translate_at(
   X86pJitBlock blk;
   void *exec;
 
-  if (!x86p_jit_storage_has_room(e->storage)) {
-    while (!x86p_jit_storage_has_room(e->storage)) {
-      uint32_t lo, hi;
-      size_t before = x86p_jit_storage_used(e->storage);
-      if (x86p_jit_storage_victim(e->storage, &lo, &hi)) {
-        /* WASM modules and table entries can be released individually. Drop
-           the cache entry before its table index becomes reusable. */
-        x86p_jit_engine_invalidate(e, lo, hi);
-        if (x86p_jit_storage_used(e->storage) < before) {
-          continue;
-        }
-      }
-      if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
-        *st = kX86pJitOutOfSpace;
-        return NULL;
-      }
-    }
+  if (!evict_for_room(e, reason, reason_len)) {
+    *st = kX86pJitOutOfSpace;
+    return NULL;
   }
   *st = x86p_jit_storage_translate(e->storage, e->mem, eip, e->boundary, e->boundary_user, &blk, reason, reason_len);
   if (*st != kX86pJitOk) {

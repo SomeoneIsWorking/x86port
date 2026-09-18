@@ -185,10 +185,25 @@ static void lifetime(const X86pMem *mem, unsigned capacity) {
   check(stats.cache_flushes == 0u, "WASM module pressure flushed unrelated translations");
   check(stats.blocks_translated == capacity + 17u, "capacity test failed to translate every block");
   check(imports_bound_once_per_host(), "WASM imports were rebound for each translated block");
-  printf("lifetime: capacity=%u translated=%llu flushes=%llu live=%u\n",
+  /*
+   * The eviction counters, proven where they actually fire. The native storage
+   * has no victim and flushes instead, so the engine test can only ever watch
+   * these stay at zero -- and a counter that has only been seen at zero is not
+   * an instrument. Here the arena really does evict, and the count has to move
+   * WITHOUT the embedder's invalidation counters moving: nothing in this test
+   * told the engine that guest memory changed, and reporting the engine's own
+   * reclaim as an embedder notification is how a browser run came to accuse
+   * the wrong owner of 106,000 invalidations.
+   */
+  check(stats.evictions > 0u, "capacity pressure evicted nothing, so the eviction counter proves nothing");
+  check(stats.eviction_blocks_dropped >= stats.evictions, "an eviction freed a slot without dropping its block");
+  check(stats.invalidations == 0u, "the engine's own reclaim was counted as an embedder invalidation");
+  printf("lifetime: capacity=%u translated=%llu flushes=%llu evictions=%llu dropping=%llu live=%u\n",
          capacity,
          (unsigned long long)stats.blocks_translated,
          (unsigned long long)stats.cache_flushes,
+         (unsigned long long)stats.evictions,
+         (unsigned long long)stats.eviction_blocks_dropped,
          live_modules());
   x86p_jit_engine_destroy(engine);
   check(live_modules() == 1u, "destroy affected another engine's module");
