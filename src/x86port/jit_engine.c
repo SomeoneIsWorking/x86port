@@ -200,6 +200,26 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   out->code_bytes_used = x86p_jit_storage_used(e->storage);
 }
 
+void x86p_jit_engine_stats_add(X86pJitEngineStats *sum, const X86pJitEngineStats *item) {
+  size_t i;
+  uint64_t *dst;
+  const uint64_t *src;
+  if (!sum || !item) {
+    return;
+  }
+  dst = (uint64_t *)sum;
+  src = (const uint64_t *)item;
+  /*
+   * Every field is a uint64_t total, so summing them as an array keeps a field
+   * added later from being silently left out -- which is exactly what a
+   * hand-written member list does, without failing to build.
+   */
+  _Static_assert(sizeof *sum % sizeof(uint64_t) == 0, "X86pJitEngineStats is counters only");
+  for (i = 0; i < sizeof *sum / sizeof(uint64_t); i++) {
+    dst[i] += src[i];
+  }
+}
+
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user) {
   if (e) {
     e->intercept = fn;

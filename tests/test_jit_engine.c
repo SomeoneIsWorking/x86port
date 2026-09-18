@@ -855,6 +855,45 @@ static void test_inline_dispatch_that_never_advances_still_ends_the_slice(void) 
  * hundred times must outweigh a block entered once, which is exactly what
  * x86p_jit_engine_stats cannot show.
  */
+/*
+ * Summing per-thread engine stats must carry EVERY field.
+ *
+ * A consumer that runs an engine per guest thread writes one total, and the
+ * obvious way to write it is a list of members -- which keeps building, and
+ * silently reports zero, for every field added after it was written. This
+ * fills the struct with distinct non-zero values through the same whole-object
+ * view the summation uses, so a field that the addition skips is caught here
+ * rather than as a heartbeat that reads zero on a real run.
+ */
+static void test_summing_stats_leaves_no_field_behind(void) {
+  X86pJitEngineStats item;
+  X86pJitEngineStats sum;
+  unsigned char *raw = (unsigned char *)&item;
+  size_t fields = sizeof item / sizeof(uint64_t);
+  size_t i;
+  size_t moved = 0;
+
+  for (i = 0; i < sizeof item; i++) {
+    raw[i] = (unsigned char)(i + 1u);
+  }
+  memset(&sum, 0, sizeof sum);
+  x86p_jit_engine_stats_add(&sum, &item);
+  x86p_jit_engine_stats_add(&sum, &item);
+
+  for (i = 0; i < fields; i++) {
+    uint64_t one;
+    uint64_t two;
+    memcpy(&one, (const unsigned char *)&item + i * sizeof one, sizeof one);
+    memcpy(&two, (const unsigned char *)&sum + i * sizeof two, sizeof two);
+    if (one != 0u && two == one * 2u) {
+      moved++;
+    }
+  }
+  CHECK(fields > 0u);
+  CHECK(moved == fields);
+  printf("    %zu of %zu stat field(s) summed\n", moved, fields);
+}
+
 static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
   X86pMem mem = guest_mem();
   X86pCpu cpu;
@@ -917,6 +956,7 @@ int main(void) {
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
+  RUN(test_summing_stats_leaves_no_field_behind);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;

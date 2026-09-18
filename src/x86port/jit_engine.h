@@ -142,6 +142,15 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
 void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out);
 
 /*
+ * Add `item` into `sum`, field by field, for an embedder that runs an engine
+ * per guest thread and wants one total. It lives here because the struct does:
+ * a consumer that writes its own summation loop silently reports zero for
+ * every field added afterwards, which is how an invalidation counter would
+ * arrive already broken.
+ */
+void x86p_jit_engine_stats_add(X86pJitEngineStats *sum, const X86pJitEngineStats *item);
+
+/*
  * An interception predicate called before a block is looked up or executed.
  * Returns non-zero if the current EIP must not be executed by the JIT (e.g. it
  * is a host thunk, native override, setjmp frame, or return sentinel).
