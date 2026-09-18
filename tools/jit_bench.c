@@ -43,6 +43,9 @@
 #define GUEST_BASE 0x00010000u
 #define GUEST_SIZE 4096u
 #define CODE_SIZE 65536u
+/* Enough live blocks that the benchmark measures translation rather than the
+   eviction it would otherwise provoke in its own inner loop. */
+#define CODE_BLOCKS 4096u
 
 static uint8_t g_guest[GUEST_SIZE];
 
@@ -376,7 +379,7 @@ int main(int argc, char **argv) {
    * what the engine ships, so the benchmark now measures the same publication
    * path the product does.
    */
-  storage = x86p_jit_storage_create(CODE_SIZE, reason, sizeof reason);
+  storage = x86p_jit_storage_create(CODE_SIZE, CODE_BLOCKS, reason, sizeof reason);
   if (!storage) {
     printf("REFUSED: storage -> %s\n", reason);
     return 1;

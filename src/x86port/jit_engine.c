@@ -140,7 +140,10 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
   e->mem = mem;
 
   why[0] = '\0';
-  e->storage = x86p_jit_storage_create(code_bytes, why, (unsigned)sizeof why);
+  /* ONE number for both: the storage holds exactly as many translations as the
+     cache can name. When they disagreed, the larger one was a lie -- a cache
+     entry whose code had already been evicted is a miss with extra steps. */
+  e->storage = x86p_jit_storage_create(code_bytes, cache_blocks, why, (unsigned)sizeof why);
   if (!e->storage) {
     say(reason, reason_len, "code memory (%s): %s", x86p_jit_storage_mechanism(), why);
     free(e);
