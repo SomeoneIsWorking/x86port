@@ -80,6 +80,15 @@ typedef struct X86pJitEngineStats {
   uint64_t conds_translated;
   uint64_t conds_inline;
   uint64_t translate_refusals; /* translations that hit an unmodelled entry */
+  /* Invalidation, asked and achieved. `invalidations` counts calls to
+     x86p_jit_engine_invalidate and `invalidation_bytes` the guest range they
+     named; `invalidation_blocks_dropped` counts the cached blocks those calls
+     actually forgot. The pair is the discriminator: calls without drops are an
+     embedder notifying about memory that held no code, and drops without a
+     matching climb in blocks_translated mean the dropped code was cold. */
+  uint64_t invalidations;
+  uint64_t invalidation_bytes;
+  uint64_t invalidation_blocks_dropped;
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
 } X86pJitEngineStats;
