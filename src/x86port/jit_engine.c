@@ -172,7 +172,18 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
 
 void x86p_jit_engine_invalidate(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
   if (e) {
-    (void)jc_block_invalidate_range(e->cache, lo, hi);
+    /*
+     * Count the ASK and the EFFECT separately. An embedder that notifies on
+     * every guest page operation and an embedder whose guest rewrites its own
+     * code produce the same `blocks_translated` climb, and only these two
+     * numbers tell them apart: many calls dropping nothing is a notification
+     * the embedder did not need to send, where few calls dropping thousands is
+     * the guest genuinely replacing code. Dropping only the effect would make
+     * a pure-overhead notification storm invisible.
+     */
+    e->stats.invalidations++;
+    e->stats.invalidation_bytes += (uint64_t)(hi - lo);
+    e->stats.invalidation_blocks_dropped += (uint64_t)jc_block_invalidate_range(e->cache, lo, hi);
     x86p_jit_storage_invalidate(e->storage, lo, hi);
   }
 }

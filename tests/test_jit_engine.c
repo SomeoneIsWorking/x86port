@@ -364,9 +364,32 @@ static void test_invalidation_drops_a_stale_translation(void) {
   g_guest[1] = 0x02u;
   x86p_jit_engine_invalidate(eng, GUEST_BASE, GUEST_BASE + 8u);
 
+  {
+    X86pJitEngineStats stats;
+    x86p_jit_engine_stats(eng, &stats);
+    CHECK(stats.invalidations == 1u);
+    CHECK(stats.invalidation_bytes == 8u);
+    CHECK(stats.invalidation_blocks_dropped == 2u); /* the MOV and the spin it jumps to */
+  }
+
   seed(&cpu);
   CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 64u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
   CHECK(cpu.reg[kX86pEax] == 2u);
+
+  /*
+   * The negative, which is the reading that matters to an embedder: an
+   * invalidation naming memory that held no code is still an invalidation, and
+   * it must be visible AS one that dropped nothing. Without this a notification
+   * storm over data pages is indistinguishable from real self-modifying code.
+   */
+  {
+    X86pJitEngineStats stats;
+    x86p_jit_engine_invalidate(eng, GUEST_BASE + 0x1000u, GUEST_BASE + 0x2000u);
+    x86p_jit_engine_stats(eng, &stats);
+    CHECK(stats.invalidations == 2u);
+    CHECK(stats.invalidation_bytes == 8u + 0x1000u);
+    CHECK(stats.invalidation_blocks_dropped == 2u); /* still the first call's two */
+  }
 
   x86p_jit_engine_destroy(eng);
 }
