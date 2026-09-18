@@ -74,7 +74,8 @@ int main(void) {
    * exactly what the emitted guard's second load is for.
    */
   check(!x86p_mem_write(&memory, kLo + kPage - 2u, 4, 0u), "a write straddling into a read-only page is refused");
-  check(!x86p_mem_read(&memory, kLo + 2u * kPage - 1u, 2, &value), "a read straddling into an unmapped page is refused");
+  check(!x86p_mem_read(&memory, kLo + 2u * kPage - 1u, 2, &value),
+        "a read straddling into an unmapped page is refused");
   perms[1] = kX86pMemRead | kX86pMemWrite;
   check(x86p_mem_write(&memory, kLo + kPage - 2u, 4, 0x89abcdefu), "the same straddling write succeeds once permitted");
   check(x86p_mem_read(&memory, kLo + kPage - 2u, 4, &value) && value == 0x89abcdefu, "and reads back whole");
@@ -85,6 +86,27 @@ int main(void) {
   check(x86p_mem_read_bytes(&memory, kLo + kPage - 4u, scratch, 8u),
         "a bulk read crossing two permitted pages succeeds");
 
+  /*
+   * The bulk COPY and FILL behind REP MOVS/STOS need the whole range resolved
+   * to one host pointer. A span that stopped at every page boundary refused
+   * every request longer than a page, so these are what keeps a table-backed
+   * mapping from silently losing them to element-at-a-time work.
+   */
+  {
+    uint8_t *resolved = NULL;
+    perms[2] = kX86pMemRead | kX86pMemWrite;
+    check(x86p_mem_resolve(&memory, kLo + kPage - 4u, 2u * kPage, &resolved) && resolved == bytes + kPage - 4u,
+          "a range spanning three permitted pages resolves whole");
+    check(x86p_mem_fill(&memory, kLo + kPage - 4u, (const uint8_t[]){0x5a}, 1u, 2u * kPage),
+          "and the bulk fill takes it");
+    check(bytes[kPage - 4u] == 0x5a && bytes[3u * kPage - 5u] == 0x5a && bytes[3u * kPage - 4u] != 0x5a,
+          "filling exactly the requested bytes and no more");
+    check(x86p_mem_copy_disjoint(&memory, kLo, kLo + 2u * kPage, kPage), "and the bulk copy takes a whole page");
+    perms[2] = 0u;
+    check(!x86p_mem_resolve(&memory, kLo + kPage - 4u, 2u * kPage, &resolved),
+          "the same range stops refusing to resolve only because a page in the middle lost access");
+  }
+
   /* And with no table, permissions are the host's business again: the same
      write that was refused above is allowed, which proves these checks are
      measuring the table and not something else. */
@@ -92,7 +114,7 @@ int main(void) {
   memory.page_shift = 0u;
   check(x86p_mem_write(&memory, kLo + 2u * kPage, 1, 1u), "with no table, an unmapped page is writable again");
 
-  printf("memory page permissions: %s -- %u check(s), %u failure(s)\n", failures ? "FAILED" : "PASSED", checks,
-         failures);
+  printf(
+      "memory page permissions: %s -- %u check(s), %u failure(s)\n", failures ? "FAILED" : "PASSED", checks, failures);
   return failures != 0;
 }
