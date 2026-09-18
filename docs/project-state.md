@@ -417,6 +417,14 @@ unqualified. Recorded synthetic results:
   Guest addresses map to separately owned host allocations, including scalar
   accesses crossing allocation boundaries, precise holes and remapping after
   explicit invalidation. `test_memory_sparse` passes 933 checks on both hosts.
+- `test_wasm_perms`: nine checks through `x86p_jit_engine_run`, so the emitted
+  guard answers rather than the helpers. A store straddling into a read-only
+  page, a load straddling into a write-only page and an access straddling into
+  an unmapped page each fault with the CPU byte-for-byte unchanged and neither
+  page written; restoring the byte lets the SAME translated block through with
+  no invalidation; an address past the window still faults on bounds.
+  `test_memory_perms` passes 18 checks on the helpers, and clearing the table
+  restores host-enforced permissions so the checks are measuring the table.
 - `test_wasm_integer_tail`: 307 translated entries, 47 fault/refusal cases,
   3,961 checks. Double shifts, bit/BCD operations, conditional moves, flag
   transfers, PUSHAD/POPAD/ENTER and trap/protection exits retain CPU/memory

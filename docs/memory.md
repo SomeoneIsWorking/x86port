@@ -5,6 +5,20 @@
 host base remains a valid identity mapping; configured size determines whether
 it exists. Desktop JIT backends admit this contiguous mode only.
 
+A contiguous mapping may also set `perms`, a borrowed byte per guest page, and
+`page_shift` for the page size. It exists for a host with no VM of its own: the
+desktop leaves it null and lets the host enforce permissions, while a browser
+gets exact permissions without the sparse mode's per-access binary search. Zero
+means unmapped and refuses even the `access == 0` query that asks only whether
+backing exists; otherwise the byte is the `kX86pMemRead`/`kX86pMemWrite` set
+that page grants. A span answer stops at the page end, because the next page's
+byte may differ and reporting past it would offer bytes the mapping has not
+agreed to -- the span walkers loop precisely so a permission change mid-range is
+a shorter answer rather than a wrong one. Generated code loads the byte on every
+access, so changing a permission needs no invalidation; only moving the table
+does. `test_memory_perms` checks the helpers and `test_wasm_perms` checks the
+emitted guard.
+
 For wasm32, `memory_sparse.h` provides `X86pSparseMem`. Create one owner and put
 it in `X86pMem.sparse`; the contiguous fields are then ignored. Register actual
 allocations with `x86p_sparse_map(owner, guest, host, size)`, which grants read

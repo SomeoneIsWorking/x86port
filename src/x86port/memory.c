@@ -30,6 +30,27 @@ static uint32_t backing_span(const X86pMem *m, uint32_t addr, uint32_t max, unsi
   if (addr > UINT32_MAX - (room - 1u)) {
     room = UINT32_MAX - addr + 1u;
   }
+  if (m->perms) {
+    /*
+     * Exact permissions without a host VM. The span STOPS at the end of the
+     * page, because the next page's byte may differ and returning past it
+     * would report bytes this mapping has not agreed to -- the callers above
+     * loop over spans precisely so a permission change mid-range is a shorter
+     * answer rather than a wrong one.
+     *
+     * A zero byte is an unmapped page, so `!have` refuses even the access == 0
+     * query, which asks whether backing exists at all.
+     */
+    const uint32_t page_size = 1u << m->page_shift;
+    const unsigned have = m->perms[offset >> m->page_shift];
+    const uint32_t to_page_end = page_size - (offset & (page_size - 1u));
+    if (!have || (have & access) != access) {
+      return 0;
+    }
+    if (room > to_page_end) {
+      room = to_page_end;
+    }
+  }
   if (out) {
     /* Identity mappings may have a null base.
      * NOLINTNEXTLINE(performance-no-int-to-ptr) */
