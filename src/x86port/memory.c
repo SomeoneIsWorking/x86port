@@ -32,23 +32,37 @@ static uint32_t backing_span(const X86pMem *m, uint32_t addr, uint32_t max, unsi
   }
   if (m->perms) {
     /*
-     * Exact permissions without a host VM. The span STOPS at the end of the
-     * page, because the next page's byte may differ and returning past it
-     * would report bytes this mapping has not agreed to -- the callers above
-     * loop over spans precisely so a permission change mid-range is a shorter
-     * answer rather than a wrong one.
+     * Exact permissions without a host VM. The span STOPS where the permission
+     * changes, because returning past that point would report bytes this
+     * mapping has not agreed to -- the callers above loop over spans precisely
+     * so a change mid-range is a shorter answer rather than a wrong one.
+     *
+     * It does NOT stop at every page boundary. `x86p_mem_resolve` demands the
+     * whole range in one span, and a one-page ceiling refused every multi-page
+     * request, silently turning the bulk copy and fill behind REP MOVS/STOS
+     * into element-at-a-time work on exactly the mappings that have a table.
      *
      * A zero byte is an unmapped page, so `!have` refuses even the access == 0
      * query, which asks whether backing exists at all.
      */
     const uint32_t page_size = 1u << m->page_shift;
-    const unsigned have = m->perms[offset >> m->page_shift];
-    const uint32_t to_page_end = page_size - (offset & (page_size - 1u));
-    if (!have || (have & access) != access) {
+    uint32_t page = offset >> m->page_shift;
+    uint32_t granted = page_size - (offset & (page_size - 1u));
+    const unsigned first = m->perms[page];
+    if (!first || (first & access) != access) {
       return 0;
     }
-    if (room > to_page_end) {
-      room = to_page_end;
+    while (granted < room) {
+      /* In range: granted < room means offset + granted is still inside the
+         mapping, so the page holding it has an entry. */
+      const unsigned have = m->perms[++page];
+      if (!have || (have & access) != access) {
+        break;
+      }
+      granted += page_size;
+    }
+    if (room > granted) {
+      room = granted;
     }
   }
   if (out) {

@@ -98,8 +98,7 @@ int main(void) {
   snapshot = cpu;
   check(run(engine, &cpu) == kX86pRunMemoryFault && !memcmp(&cpu, &snapshot, sizeof cpu),
         "generated store straddling into a read-only page faults before any CPU commit");
-  check(g_bytes[DATA + kPage - 2u] == 0x10 && g_bytes[DATA + kPage] == 0x54,
-        "the faulted store wrote neither page");
+  check(g_bytes[DATA + kPage - 2u] == 0x10 && g_bytes[DATA + kPage] == 0x54, "the faulted store wrote neither page");
 
   /* Write-only on that page refuses the LOAD instead, so a guard that treated
      the two permissions alike cannot pass either. */
@@ -134,8 +133,7 @@ int main(void) {
   cpu.eip = kCode;
   cpu.reg[kX86pEbx] = DATA + 16u;
   cpu.reg[kX86pEax] = 0x11223344u;
-  check(run(engine, &cpu) == kX86pRunBudget && cpu.reg[kX86pEdx] == 0x11223344u,
-        "a single-page access is unaffected");
+  check(run(engine, &cpu) == kX86pRunBudget && cpu.reg[kX86pEdx] == 0x11223344u, "a single-page access is unaffected");
 
   /* And an address past the window still faults on the bounds check, which the
      permission table must not have replaced. */
@@ -146,7 +144,9 @@ int main(void) {
         "an address past the window still faults on bounds, not permissions");
 
   x86p_jit_engine_destroy(engine);
-  printf("WebAssembly page permissions: %s -- %u check(s), %u failure(s)\n", failures ? "FAILED" : "PASSED", checks,
+  printf("WebAssembly page permissions: %s -- %u check(s), %u failure(s)\n",
+         failures ? "FAILED" : "PASSED",
+         checks,
          failures);
   return failures != 0;
 }
