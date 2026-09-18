@@ -11,6 +11,14 @@ the existing architectural fault order. A cross-host module builder supplies an
 engine-side `X86pWasmPlan.memory_context` for semantic memory imports; the
 in-process backend otherwise uses its live `X86pMem` address.
 
+When a contiguous mapping carries the page permission table described in
+[memory.md](memory.md), the emitted access is a bounds compare, one or two
+permission loads and a direct wasm load or store -- no call and no search. The
+second load is for an access straddling a page boundary, which a one-page check
+would let through. `test_wasm_perms` proves this against the emitted guard
+rather than against the helpers: agreement between two reimplementations of the
+rule would say nothing about the code the translator writes.
+
 Provision the selected SDK under `build/deps/emsdk` or set `EMSDK` to an
 existing SDK checkout. Activate 4.0.16 with the SDK's own installer. No game
 files are needed for these synthetic checks.
@@ -19,16 +27,16 @@ The maintainer commands run from this repository with the SDK activated:
 
 ```sh
 emcmake uv run --frozen cmake -S . -B build/wasm -G Ninja -DCMAKE_BUILD_TYPE=Release
-uv run --frozen cmake --build build/wasm --target test_wasm_runtime test_wasm_sparse test_wasm_integer test_wasm_integer_tail test_wasm_x87 test_wasm_simd test_memory_sparse test_x87_software
-uv run --frozen ctest --test-dir build/wasm --timeout 30 -R '^(test_wasm_runtime|test_wasm_sparse|test_wasm_integer|test_wasm_integer_tail|test_wasm_x87|test_wasm_simd|test_memory_sparse|test_x87_software)$' --output-on-failure
+uv run --frozen cmake --build build/wasm --target test_wasm_runtime test_wasm_sparse test_wasm_perms test_wasm_integer test_wasm_integer_tail test_wasm_x87 test_wasm_simd test_memory_sparse test_memory_perms test_x87_software
+uv run --frozen ctest --test-dir build/wasm --timeout 30 -R '^(test_wasm_runtime|test_wasm_sparse|test_wasm_perms|test_wasm_integer|test_wasm_integer_tail|test_wasm_x87|test_wasm_simd|test_memory_sparse|test_memory_perms|test_x87_software)$' --output-on-failure
 ```
 
 Qualify the shared-memory worker route separately:
 
 ```sh
 emcmake uv run --frozen cmake -S . -B build/wasm-threaded -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-pthread -DCMAKE_CXX_FLAGS=-pthread '-DCMAKE_EXE_LINKER_FLAGS=-pthread -sPROXY_TO_PTHREAD=1'
-uv run --frozen cmake --build build/wasm-threaded --target test_wasm_runtime test_wasm_sparse test_wasm_integer test_wasm_integer_tail test_wasm_x87 test_wasm_simd test_memory_sparse test_x87_software
-uv run --frozen ctest --test-dir build/wasm-threaded --timeout 30 -R '^(test_wasm_runtime|test_wasm_sparse|test_wasm_integer|test_wasm_integer_tail|test_wasm_x87|test_wasm_simd|test_memory_sparse|test_x87_software)$' --output-on-failure
+uv run --frozen cmake --build build/wasm-threaded --target test_wasm_runtime test_wasm_sparse test_wasm_perms test_wasm_integer test_wasm_integer_tail test_wasm_x87 test_wasm_simd test_memory_sparse test_memory_perms test_x87_software
+uv run --frozen ctest --test-dir build/wasm-threaded --timeout 30 -R '^(test_wasm_runtime|test_wasm_sparse|test_wasm_perms|test_wasm_integer|test_wasm_integer_tail|test_wasm_x87|test_wasm_simd|test_memory_sparse|test_memory_perms|test_x87_software)$' --output-on-failure
 ```
 
 Configure and build sequentially when build trees share a FetchContent source

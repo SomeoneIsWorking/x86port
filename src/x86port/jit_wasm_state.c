@@ -174,6 +174,45 @@ void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o) {
   }
 }
 
+/*
+ * Exact page permissions, inline, for a host with no VM to enforce them.
+ *
+ * kX86pWasmLocalAddr holds the OFFSET from `lo` by the time this runs, and the
+ * bounds check above has already proved offset <= size - w, so neither page
+ * index can leave the table and `offset + w - 1` cannot overflow.
+ *
+ * An access of width w can straddle two pages, so both are read. They are
+ * ANDed rather than branched on separately: the question is whether EVERY byte
+ * is permitted, one branch answers it, and a second branch would cost more
+ * than the second load. The table's base rides in the load's own offset
+ * immediate, so the whole check is a shift and a load per page.
+ */
+static void x86p_wasm_state_guard_perms(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access) {
+  if (!s->plan.perms) {
+    return;
+  }
+  x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_i32_const(s->e, (int32_t)s->plan.page_shift);
+  x86p_wasm_i32_op(s->e, kWasmI32ShrU);
+  x86p_wasm_i32_load8_u(s->e, 0u, s->plan.perms);
+  if (w > 1) {
+    x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(s->e, w - 1);
+    x86p_wasm_i32_op(s->e, kWasmI32Add);
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.page_shift);
+    x86p_wasm_i32_op(s->e, kWasmI32ShrU);
+    x86p_wasm_i32_load8_u(s->e, 0u, s->plan.perms);
+    x86p_wasm_i32_op(s->e, kWasmI32And);
+  }
+  x86p_wasm_i32_const(s->e, (int32_t)access);
+  x86p_wasm_i32_op(s->e, kWasmI32And);
+  x86p_wasm_i32_const(s->e, (int32_t)access);
+  x86p_wasm_i32_op(s->e, kWasmI32Ne);
+  x86p_wasm_if(s->e, kWasmVoid);
+  x86p_wasm_state_exit_imm(s, insn_eip, kX86pJitExitMemoryFault);
+  x86p_wasm_end(s->e);
+}
+
 void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access) {
   if (s->plan.memory_context) {
     x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
@@ -212,6 +251,8 @@ void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsi
   x86p_wasm_if(s->e, kWasmVoid);
   x86p_wasm_state_exit_imm(s, insn_eip, kX86pJitExitMemoryFault);
   x86p_wasm_end(s->e);
+
+  x86p_wasm_state_guard_perms(s, insn_eip, w, access);
 
   x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_i32_const(s->e, (int32_t)s->plan.base);

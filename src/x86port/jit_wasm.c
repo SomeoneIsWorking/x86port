@@ -48,6 +48,8 @@ static void plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan) {
   plan->lo = mem->lo;
   plan->size = mem->size;
   plan->memory_context = mem->sparse ? (uint32_t)(uintptr_t)mem : 0u;
+  plan->perms = mem->sparse ? 0u : (uint32_t)(uintptr_t)mem->perms;
+  plan->page_shift = mem->page_shift;
 }
 
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,

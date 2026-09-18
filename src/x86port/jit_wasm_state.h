@@ -55,6 +55,12 @@ typedef struct X86pWasmPlan {
   uint32_t lo;             /* first guest address covered */
   uint32_t size;           /* bytes covered from `lo` */
   uint32_t memory_context; /* nonzero: X86pMem offset for checked sparse imports */
+  /* nonzero: byte-per-page permission table at this linear-memory offset,
+     indexed from `lo` by `page_shift`. See X86pMem::perms -- the guard loads
+     from it on every access, so a permission change needs no flush; only
+     MOVING the table does. */
+  uint32_t perms;
+  uint32_t page_shift;
 } X86pWasmPlan;
 
 typedef struct X86pWasmState {

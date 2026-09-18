@@ -148,6 +148,26 @@ typedef struct X86pMem {
   uint32_t lo;
   uint32_t size;
   X86pSparseMem *sparse; /* NULL selects the contiguous desktop fast path */
+  /*
+   * Optional exact permissions for the CONTIGUOUS mode: one byte per page,
+   * indexed from `lo`, holding kX86pMemRead|kX86pMemWrite. Zero means the page
+   * is not mapped at all, so "unmapped" and "no permission" are one check.
+   *
+   * It exists for a host with no VM of its own to enforce them. On a desktop
+   * the arena is mprotected and this stays NULL, which is the historical
+   * behaviour: permissions are the host's business. In WebAssembly there is no
+   * mprotect, and without this a contiguous window would answer yes to every
+   * access -- so the choice would be between exact permissions and the sparse
+   * mode's per-access binary search. This is how a consumer gets both.
+   *
+   * `page_shift` is read only when `perms` is non-NULL and must be at least 1.
+   * The table must cover ceil(size / 2^page_shift) bytes. Its ADDRESS is baked
+   * into translated blocks, so it must not move while any block is live; its
+   * CONTENTS are read on every access and may change freely, which is why a
+   * permission change needs no invalidation.
+   */
+  const uint8_t *perms;
+  uint32_t page_shift;
 } X86pMem;
 
 /* Resolve an entire nonempty guest span to contiguous host bytes, or return 0
