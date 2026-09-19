@@ -54,6 +54,8 @@ int x86p_ext80_is_normal(X86pExt80 v);
    because an operand that is zero has a trivial answer a wider rule could give
    and a subnormal or a NaN does not. */
 int x86p_ext80_is_zero(X86pExt80 v);
+/* What both rules below actually accept as an operand. */
+int x86p_ext80_is_normal_or_zero(X86pExt80 v);
 int x86p_ext80_control_is_ordinary(uint16_t control);
 
 /*

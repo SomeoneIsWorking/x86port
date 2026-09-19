@@ -145,18 +145,19 @@ typedef long double X86pX87Reg;
  */
 typedef struct X86pX87OpCensus {
   uint64_t total[X86P_X87_OPS];
-  uint64_t ordinary[X86P_X87_OPS];
+  /* What one of the rules in x87_ext80_arith.h actually TAKES, asked by
+     calling it rather than by repeating its preconditions here. */
+  uint64_t taken[X86P_X87_OPS];
   /*
-   * WHY the rest were not ordinary, because the three answers want three
-   * different pieces of work and a single refusal count cannot choose between
-   * them: a control word the rule does not handle is a property of the guest's
-   * mode and no wider rule helps; a zero operand has a trivial answer a wider
-   * rule could give without any arithmetic at all; a subnormal, unnormal,
-   * infinity or NaN is where the softfloat earns its place. Each operation is
-   * counted in exactly one of the four columns.
+   * WHY the rest were not, because the two answers want different work: a
+   * control word the rules do not handle is a property of the guest's mode and
+   * no wider rule helps, while a subnormal, unnormal, infinity or NaN is where
+   * the softfloat earns its place. What is left -- the total less both refusal
+   * columns, less `taken` -- is an operand shape the rules are written for that
+   * no rule answered: an operation with no rule at all, an exponent leaving the
+   * normal range, an exact cancellation.
    */
   uint64_t refused_control[X86P_X87_OPS];
-  uint64_t refused_zero[X86P_X87_OPS];
   uint64_t refused_other[X86P_X87_OPS];
   int ordinary_measured;
 } X86pX87OpCensus;
