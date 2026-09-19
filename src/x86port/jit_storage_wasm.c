@@ -70,6 +70,7 @@ struct X86pJitStorage {
   int cannot_compact;
   unsigned compactions;         /* batches that became one module */
   unsigned compaction_refusals; /* batches left as they were, with a reason */
+  char compaction_why[256];     /* what the last refusal said */
   size_t byte_budget;           /* how many bytes of LIVE module may be held at once */
   size_t used;
   unsigned next_victim; /* the module eviction looks at next */
@@ -304,6 +305,7 @@ share_a_module(X86pJitStorage *storage, const X86pMem *mem, X86pJitBoundaryFn bo
                          why,
                          sizeof why)) {
     storage->compaction_refusals++;
+    snprintf(storage->compaction_why, sizeof storage->compaction_why, "%s", why[0] ? why : "no reason given");
     if (!x86p_wasm_arena_can_adopt(&storage->arena)) {
       storage->cannot_compact = 1;
     }
@@ -463,6 +465,10 @@ unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
 
 unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage) {
   return storage ? storage->pending_count : 0u;
+}
+
+const char *x86p_jit_storage_compaction_refusal_reason(const X86pJitStorage *storage) {
+  return storage ? storage->compaction_why : "";
 }
 
 int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage) {

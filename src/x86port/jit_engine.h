@@ -370,6 +370,10 @@ const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e);
    and "it worked through the same mechanism as the user's machine" are
    different claims. */
 const char *x86p_jit_engine_mechanism(void);
+/* What the last refused module gathering in THIS engine said, or "" when none
+   was refused. It is a string rather than a counter, so it is asked for by
+   engine instead of summed with the others. */
+const char *x86p_jit_engine_compaction_refusal_reason(const X86pJitEngine *e);
 
 #ifdef __cplusplus
 } /* extern "C" */

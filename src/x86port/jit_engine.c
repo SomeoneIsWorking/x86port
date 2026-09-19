@@ -115,6 +115,10 @@ const char *x86p_jit_engine_mechanism(void) {
   return x86p_jit_storage_mechanism();
 }
 
+const char *x86p_jit_engine_compaction_refusal_reason(const X86pJitEngine *e) {
+  return e ? x86p_jit_storage_compaction_refusal_reason(e->storage) : "";
+}
+
 X86pJitEngine *
 x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_blocks, char *reason, unsigned reason_len) {
   X86pJitEngine *e;

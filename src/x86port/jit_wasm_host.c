@@ -73,7 +73,15 @@ EM_JS(int,
                            " module(s) held by this host]",
                        error,
                        error_len);
-          return -1;
+          // WHOSE fault it was. A module the engine will not compile, link or
+          // accept the shape of is this side's defect and says nothing about
+          // how many modules the engine holds; anything else -- out of memory,
+          // a range error -- is the engine declining to take another one.
+          // Telling them apart is what keeps one bad module from teaching the
+          // arena a ceiling that does not exist.
+          const mine = failure instanceof WebAssembly.CompileError || failure instanceof WebAssembly.LinkError ||
+                       failure instanceof TypeError;
+          return mine ? -2 : -1;
         }
         const id = host.next++;
         host.modules.set(id, {instance, entries : new Map()});

@@ -107,28 +107,44 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
   module = a->host.instantiate(a->host.user, bytes, len, detail, sizeof detail);
   if (module < 0) {
     a->failures++;
-    /* The engine would not take one more than this. Remember it, so the next
-       attempt finds the arena full and the caller evicts instead of asking
-       again for something that cannot be given. */
-    if (a->ceiling == 0u || a->live < a->ceiling) {
+    /* A ceiling is learned only from a refusal that was about the ENGINE. A
+       module it would not compile says nothing about how many modules it will
+       hold, and treating the two alike capped one run at 2,363 modules -- the
+       live count when a single malformed module was refused -- after which it
+       evicted live code for four minutes to stay under a limit that was never
+       there. */
+    if (module == kX86pWasmRefusedByEngine && (a->ceiling == 0u || a->live < a->ceiling)) {
       a->ceiling = a->live;
       a->headroom = a->ceiling / kX86pWasmCeilingHeadroomDivisor;
     }
     /* With the denominators: an engine that refuses the fortieth module and
        one that refuses the eight-thousandth are different problems, and the
        refusal is the only place that number is ever seen. */
-    say(reason,
-        reason_len,
-        "the engine rejected a %zu-byte module: %s (%u live of %u slot(s); %u published and %u released so far; "
-        "the arena will work at no more than %u of a %u ceiling from here)",
-        len,
-        detail[0] ? detail : "no reason given",
-        a->live,
-        a->capacity,
-        a->published,
-        a->released,
-        a->ceiling - a->headroom,
-        a->ceiling);
+    if (a->ceiling == 0u) {
+      say(reason,
+          reason_len,
+          "the engine rejected a %zu-byte MODULE: %s (%u live of %u slot(s); %u published and %u released so far; "
+          "this says nothing about how many modules the engine will hold, so no ceiling is learned from it)",
+          len,
+          detail[0] ? detail : "no reason given",
+          a->live,
+          a->capacity,
+          a->published,
+          a->released);
+    } else {
+      say(reason,
+          reason_len,
+          "the ENGINE rejected a %zu-byte module: %s (%u live of %u slot(s); %u published and %u released so far; "
+          "the arena will work at no more than %u of a %u ceiling from here)",
+          len,
+          detail[0] ? detail : "no reason given",
+          a->live,
+          a->capacity,
+          a->published,
+          a->released,
+          a->ceiling - a->headroom,
+          a->ceiling);
+    }
     return -1;
   }
   a->free_head = a->slot[i].next_free;

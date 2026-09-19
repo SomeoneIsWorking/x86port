@@ -102,6 +102,11 @@ unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage) {
   return 0u;
 }
 
+const char *x86p_jit_storage_compaction_refusal_reason(const X86pJitStorage *storage) {
+  (void)storage;
+  return "";
+}
+
 int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage) {
   (void)storage;
   return 0;
