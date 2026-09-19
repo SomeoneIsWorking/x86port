@@ -64,7 +64,7 @@ EM_JS(int,
           // reporting it as "running guest code" for another seven minutes.
           // The name is kept because an out-of-memory and a bad module need
           // different fixes.
-          stringToUTF8(`${failure.name} : $ { failure.message }`, error, error_len);
+          stringToUTF8(failure.name + ": " + failure.message, error, error_len);
           return -1;
         }
         const id = host.next++;
