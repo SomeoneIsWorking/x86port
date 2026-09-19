@@ -385,6 +385,10 @@ static void *translate_at(
   e->stats.conds_translated += blk.conds;
   e->stats.conds_inline += blk.cond_inline;
   e->stats.conds_unknown_kind += blk.cond_unknown_kind;
+  e->stats.exits += blk.exits;
+  e->stats.exits_static += blk.exits_static;
+  e->stats.exits_backward += blk.exits_backward;
+  e->stats.exits_self += blk.exits_self;
   if (out_blk) {
     *out_blk = blk;
   }

@@ -83,6 +83,28 @@ typedef struct X86pJitEngineStats {
      X86pJitBlock::cond_unknown_kind: the remainder, conds_translated minus
      conds_inline minus this, is the count that a new derivation would win. */
   uint64_t conds_unknown_kind;
+
+  /*
+   * The exit census, over the blocks this engine translated. X86pWasmExitCensus
+   * defines each; these are the same four counts summed as blocks are cached.
+   *
+   * THIS POPULATION IS THE ONE THAT DECIDES BLOCK CHAINING, and it is not the
+   * one an offline corpus walk produces. Where a block starts is decided by
+   * whoever cut it: a tool that walks each function linearly from its first
+   * byte puts a loop head in the middle of a block, while this engine
+   * translates from the address it was asked to dispatch to -- so a loop head
+   * that is branched to becomes a block ENTRY here and its backedge is an
+   * exits_self. The offline number is a floor for this one, not an estimate of
+   * it.
+   *
+   * Filled by the WebAssembly backend only; a consumer reporting them must say
+   * so rather than print a zero that reads like a census.
+   */
+  uint64_t exits;
+  uint64_t exits_static;
+  uint64_t exits_backward;
+  uint64_t exits_self;
+
   uint64_t translate_refusals; /* translations that hit an unmodelled entry */
   /* Invalidation, asked and achieved. `invalidations` counts calls to
      x86p_jit_engine_invalidate and `invalidation_bytes` the guest range they
