@@ -553,25 +553,47 @@ static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
   const X86pExt80 ex = census_ext80_of_reg(x);
   const X86pExt80 ey = census_ext80_of_reg(y);
   const unsigned i = (unsigned)op;
+  X86pExt80 ignored;
+  uint16_t ignored_flags = 0u;
   f->op_census->ordinary_measured = 1;
   f->op_census->total[i]++;
   if (!x86p_ext80_control_is_ordinary(f->control)) {
     f->op_census->refused_control[i]++;
     return;
   }
-  if (x86p_ext80_is_normal(ex) && x86p_ext80_is_normal(ey)) {
-    f->op_census->ordinary[i]++;
+  if (!x86p_ext80_is_normal_or_zero(ex) || !x86p_ext80_is_normal_or_zero(ey)) {
+    f->op_census->refused_other[i]++;
     return;
   }
-  /* A zero is separated from everything else only when it is the ONLY reason:
-     a zero against a NaN is the NaN's case, not the zero's. */
-  if ((x86p_ext80_is_zero(ex) || x86p_ext80_is_zero(ey)) && (x86p_ext80_is_zero(ex) || x86p_ext80_is_normal(ex)) &&
-      (x86p_ext80_is_zero(ey) || x86p_ext80_is_normal(ey))) {
-    f->op_census->refused_zero[i]++;
+  /*
+   * Everything from here is an operand shape the rules are written for, and
+   * whether one TAKES it is asked by calling it rather than by repeating its
+   * preconditions -- a second copy of those is how a census comes to report
+   * headroom that does not exist.
+   *
+   * The gap between this count and the eligible ones (the total less the two
+   * refusal columns) is the work not done: an operation with no rule at all,
+   * an exponent that leaves the normal range, an exact cancellation.
+   */
+  switch (op) {
+  case kX86pX87Mul:
+    if (x86p_ext80_mul_ordinary(f->control, ex, ey, &ignored, &ignored_flags)) {
+      f->op_census->taken[i]++;
+    }
+    return;
+  case kX86pX87Add:
+  case kX86pX87Sub:
+    if (x86p_ext80_add_ordinary(f->control, ex, ey, op == kX86pX87Sub, &ignored, &ignored_flags)) {
+      f->op_census->taken[i]++;
+    }
+    return;
+  case kX86pX87Div:
+  case kX86pX87OpCount:
+  default:
     return;
   }
-  f->op_census->refused_other[i]++;
 }
+
 #else
 static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
   /* The register file is the host's own long double here, so the encoding the

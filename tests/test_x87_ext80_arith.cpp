@@ -223,8 +223,15 @@ void table() {
                0u,
                "1.125 * 1.125");
 
+  /* A zero operand, whose answer is a zero of the combined sign and raises
+     nothing. Written out rather than left to the sweep because the SIGN is the
+     whole content of the case. */
+  expect_taken(ext80(0u, 0u), ext80(one, half), ext80(0u, 0u), 0u, "0 * 1");
+  expect_taken(ext80(0x8000u, 0u), ext80(one, half), ext80(0x8000u, 0u), 0u, "-0 * 1");
+  expect_taken(ext80(0x8000u, 0u), ext80((uint16_t)(one | 0x8000u), half), ext80(0u, 0u), 0u, "-0 * -1");
+  expect_taken(ext80(0u, 0u), ext80(0x8000u, 0u), ext80(0x8000u, 0u), 0u, "0 * -0");
+
   /* Operands with no ordinary answer. */
-  expect_refused(X86P_X87_CW_INIT, ext80(0u, 0u), ext80(one, half), "zero");
   expect_refused(X86P_X87_CW_INIT, ext80(0x7FFFu, half), ext80(one, half), "infinity");
   expect_refused(X86P_X87_CW_INIT, ext80(0x7FFFu, 0xC000000000000000ull), ext80(one, half), "NaN");
   expect_refused(X86P_X87_CW_INIT, ext80(0u, 1u), ext80(one, half), "subnormal");
@@ -310,6 +317,23 @@ int main() {
         const uint16_t ea = (uint16_t)(0x4000u + ((signs & 1u) << 15));
         const uint16_t eb = (uint16_t)(0x4000u - (unsigned)(next(&state) % 2u) + (((signs >> 1) & 1u) << 15));
         differ(op, ext80(ea, sa), ext80(eb, sb), "cancellation sweep");
+      }
+      /*
+       * ZEROS, which are 44.6% of what the game's route actually performs --
+       * more than half of everything the rules refused before they took them.
+       * Both signs of zero on both sides, against normals and against each
+       * other, because a zero's sign is the whole difference between the
+       * cases: (+0) + (-0) is +0 and (-0) + (-0) is not.
+       */
+      for (i = 0; i < 100000; i++) {
+        const uint64_t pick = next(&state);
+        const uint64_t sa = next(&state) | (1ull << 63);
+        const uint64_t sb = next(&state) | (1ull << 63);
+        const uint16_t ea = (uint16_t)(0x3F00u + (next(&state) & 0xFFu) + ((pick & 1u) << 15));
+        const uint16_t eb = (uint16_t)(0x3F00u + (next(&state) & 0xFFu) + (((pick >> 1) & 1u) << 15));
+        const X86pExt80 a = (pick & 4u) ? ext80((uint16_t)((pick & 8u) << 12), 0u) : ext80(ea, sa);
+        const X86pExt80 b = (pick & 16u) ? ext80((uint16_t)((pick & 32u) << 10), 0u) : ext80(eb, sb);
+        differ(op, a, b, "zero sweep");
       }
       /* Binary32-derived operands: what a game supplies, and a population
          whose results mostly do not round at all. */

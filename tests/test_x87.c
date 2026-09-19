@@ -195,42 +195,44 @@ static void test_the_op_census_counts_what_a_run_performs(void) {
   CHECK_EQ_U(census.total[kX86pX87Div], 1);
 
   if (census.ordinary_measured) {
-    /* Four normals at the default control word: every one of them reachable. */
-    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
-    CHECK_EQ_U(census.ordinary[kX86pX87Add], 2);
+    /* Four normals at the default control word: every one of them taken. */
+    CHECK_EQ_U(census.taken[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.taken[kX86pX87Add], 2);
+    /* A divide has no rule, so it is eligible and not taken -- which is the
+       gap the census exists to show, and it must not read as a refusal. */
+    CHECK_EQ_U(census.taken[kX86pX87Div], 0);
+    CHECK_EQ_U(census.refused_control[kX86pX87Div], 0);
+    CHECK_EQ_U(census.refused_other[kX86pX87Div], 0);
 
-    /* Round-toward-negative is not the ordinary case: counted, no headroom,
-       and the refusal named as the control word's rather than an operand's. */
+    /* Round-toward-negative is not the ordinary case: counted, not taken, and
+       the refusal named as the control word's rather than an operand's. */
     f.control = (uint16_t)((f.control & ~(uint16_t)X86P_X87_RC_MASK) | (uint16_t)X86P_X87_RC_DOWN);
     CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 3.0L, 0));
     CHECK_EQ_U(census.total[kX86pX87Mul], 2);
-    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.taken[kX86pX87Mul], 1);
     CHECK_EQ_U(census.refused_control[kX86pX87Mul], 1);
-    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 0);
 
-    /* A zero operand is not a normal -- and it is the separable case, so it
-       must not land in the column that means "the softfloat earns its place". */
+    /* A zero operand IS taken -- it was 44.6% of the game's route and the
+       rules were extended for it, so a reading that fell back would show up
+       here first. */
     f.control = (uint16_t)(f.control & ~(uint16_t)X86P_X87_RC_MASK);
     CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 0.0L, 0));
     CHECK_EQ_U(census.total[kX86pX87Mul], 3);
-    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
-    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.taken[kX86pX87Mul], 2);
     CHECK_EQ_U(census.refused_other[kX86pX87Mul], 0);
 
-    /* An infinity is not separable that way, and lands in the last column. */
+    /* An infinity is where the softfloat earns its place. */
     CHECK(x86p_x87_push(&f, 1.0L));
     CHECK(x86p_x87_arith(&f, kX86pX87Div, 0, 0.0L, 0)); /* 1/0 -> +inf in ST(0) */
     CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 2.0L, 0));
     CHECK_EQ_U(census.refused_other[kX86pX87Mul], 1);
-    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 1);
 
-    /* Every operation is in exactly one column. */
+    /* No operation escapes the accounting: taken plus both refusals can never
+       exceed the total, and what is left is the named gap. */
     {
       unsigned op;
       for (op = 0; op < X86P_X87_OPS; op++) {
-        CHECK_EQ_U(census.ordinary[op] + census.refused_control[op] + census.refused_zero[op] +
-                       census.refused_other[op],
-                   census.total[op]);
+        CHECK(census.taken[op] + census.refused_control[op] + census.refused_other[op] <= census.total[op]);
       }
     }
   } else {
