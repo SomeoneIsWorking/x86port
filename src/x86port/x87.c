@@ -2,6 +2,7 @@
 #include "x87.h"
 
 #include "x87_binary128.h"
+#include "x87_exact_f64.h"
 #include "x87_ext80_narrow.h"
 #include "x87_ext80_widen.h"
 #include "x87_softfloat.h"
@@ -535,6 +536,29 @@ static int reg_is_nan(X86pX87Reg v) {
 }
 #endif
 
+#if X86P_X87_BINARY128
+/*
+ * The storage holds ten bytes of architectural state in a sixteen-byte object,
+ * and the six between them are padding this file never reads.
+ *
+ * Something else does. The register file is compared as memory -- the WASM
+ * differential does one memcmp of the whole X86pX87, which is what lets it
+ * catch a tag, a TOP or a control word that the value comparison would miss --
+ * so a register whose padding was never written makes two runs that agree
+ * about every number differ anyway. Leaving it uninitialised failed FLD32 and
+ * FLD64 there, five cases each, while the conversion itself was right to the
+ * bit. Zeroing first is what the softfloat wrapper this replaces did, and the
+ * two stores that follow leave one 16-byte zero behind.
+ */
+static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
+  X86pX87Reg out;
+  memset(&out, 0, sizeof out);
+  out.signif = wide.signif;
+  out.sign_exp = wide.sign_exp;
+  return out;
+}
+#endif
+
 int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse) {
   X86pX87Reg a, r;
   if (!f || !x86p_x87_get_raw(f, dst, &a)) {
@@ -566,12 +590,28 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
     }
 #if X86P_X87_BINARY128
     {
-      /* Straight into the softfloat in the format it takes, and straight back
-         out. Nothing here widens to binary128: that round trip was 38% of this
-         path, measured by tests/bench_x87_arith.cpp. */
-      uint16_t status = 0;
-      r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
-      f->status |= status;
+      /* The operations whose true result binary64 holds exactly are answered
+         there, by the host's own floating point, in the format it has a
+         register for. x87_exact_f64.h holds what "exactly" means and why
+         every other case must not come here; a refusal falls through to the
+         softfloat below, so this decides speed and never an answer. */
+      X86pExt80 ex;
+      X86pExt80 ey;
+      X86pExt80 er;
+      ex.signif = x.signif;
+      ex.sign_exp = x.sign_exp;
+      ey.signif = y.signif;
+      ey.sign_exp = y.sign_exp;
+      if (!divide_by_zero && x86p_x87_exact_f64_arith(f->control, op, ex, ey, &er)) {
+        r = reg_of_ext80(er);
+      } else {
+        /* Straight into the softfloat in the format it takes, and straight
+           back out. Nothing here widens to binary128: that round trip was 38%
+           of this path, measured by tests/bench_x87_arith.cpp. */
+        uint16_t status = 0;
+        r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
+        f->status |= status;
+      }
     }
 #elif defined(X86P_X87_HOST_FPU)
     /* One rounding, at the guest's precision, on the unit that defines it. */
@@ -655,26 +695,6 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
  * x87's own answer over every subnormal and a sweep of both spaces.
  */
 #if X86P_X87_BINARY128
-/*
- * The storage holds ten bytes of architectural state in a sixteen-byte object,
- * and the six between them are padding this file never reads.
- *
- * Something else does. The register file is compared as memory -- the WASM
- * differential does one memcmp of the whole X86pX87, which is what lets it
- * catch a tag, a TOP or a control word that the value comparison would miss --
- * so a register whose padding was never written makes two runs that agree
- * about every number differ anyway. Leaving it uninitialised failed FLD32 and
- * FLD64 there, five cases each, while the conversion itself was right to the
- * bit. Zeroing first is what the softfloat wrapper this replaces did, and the
- * two stores that follow leave one 16-byte zero behind.
- */
-static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
-  X86pX87Reg out;
-  memset(&out, 0, sizeof out);
-  out.signif = wide.signif;
-  out.sign_exp = wide.sign_exp;
-  return out;
-}
 #endif
 
 X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits) {
