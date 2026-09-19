@@ -950,6 +950,100 @@ static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
 }
 
 /*
+ * The watch answers "how did the run get HERE", which the profile cannot.
+ *
+ * Both answers are asserted from one guest program: entered by falling out of
+ * the block before it, the previous address is that block; entered as the
+ * FIRST block of a run, there is no previous one and the watch says so rather
+ * than reporting 0 as if it were an address. The bound is asserted too,
+ * because the address this exists for is entered millions of times a second
+ * and a watch that reported them all would be the stall.
+ */
+typedef struct {
+  unsigned calls;
+  uint32_t addr[8];
+  uint32_t previous[8];
+  int have_previous[8];
+  uint32_t eax[8];
+} WatchLog;
+
+static void watch_note(void *user, uint32_t addr, uint32_t previous, int have_previous, X86pCpu *cpu) {
+  WatchLog *w = (WatchLog *)user;
+  if (w->calls < 8u) {
+    w->addr[w->calls] = addr;
+    w->previous[w->calls] = previous;
+    w->have_previous[w->calls] = have_previous;
+    w->eax[w->calls] = cpu->reg[kX86pEax];
+  }
+  w->calls++;
+}
+
+static void test_the_entry_watch_names_the_block_that_sent_the_run_there(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  WatchLog w;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0x40; /* INC EAX */
+  g_guest[1] = 0xEB; /* JMP $ -- the spin, as the title's own boot has */
+  g_guest[2] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+
+  /* Off: the spin runs and reports nothing. */
+  memset(&w, 0, sizeof w);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(w.calls == 0u);
+
+  /* Armed for three, on a block entered about two hundred times. */
+  x86p_jit_engine_set_entry_watch(eng, GUEST_BASE + 1u, 3u, watch_note, &w);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 0u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(w.calls == 3u);
+  CHECK(w.addr[0] == GUEST_BASE + 1u);
+  CHECK(w.have_previous[0] == 1);
+  CHECK(w.previous[0] == GUEST_BASE);      /* the INC, which fell into the spin */
+  CHECK(w.eax[0] == 1u);                   /* and the register file is live */
+  CHECK(w.previous[1] == GUEST_BASE + 1u); /* thereafter, itself */
+
+  /* Disarmed by a zero count, with the callback still passed. */
+  x86p_jit_engine_set_entry_watch(eng, GUEST_BASE + 1u, 0u, watch_note, &w);
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 50u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(w.calls == 3u);
+  x86p_jit_engine_destroy(eng);
+
+  /* Entered as the first block of a run: no previous block, and it says so. */
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  memset(&w, 0, sizeof w);
+  x86p_jit_engine_set_entry_watch(eng, GUEST_BASE + 1u, 2u, watch_note, &w);
+  seed(&cpu);
+  cpu.eip = GUEST_BASE + 1u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 50u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(w.calls == 2u);
+  CHECK(w.have_previous[0] == 0);
+  CHECK(w.previous[0] == 0u);
+  CHECK(w.have_previous[1] == 1);
+  printf("    watch: %u report(s), first previous 0x%08x\n", w.calls, w.previous[1]);
+  x86p_jit_engine_destroy(eng);
+}
+
+/*
  * blocks_reentered sizes the cheapest block-chaining fix there is -- lowering a
  * block that exits to its own entry as a host loop -- so it is measured per
  * ENTRY rather than per translation, and it has to be able to say "almost
@@ -1095,6 +1189,7 @@ int main(void) {
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
   RUN(test_summing_stats_leaves_no_field_behind);
+  RUN(test_the_entry_watch_names_the_block_that_sent_the_run_there);
   RUN(test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not);
   RUN(test_a_backend_that_records_no_successors_reads_as_unrecorded);
 
