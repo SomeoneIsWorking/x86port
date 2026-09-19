@@ -38,6 +38,7 @@
 #define X86PORT_X87_H
 
 #include "flags.h"
+#include "x87_binary128.h"
 #include "x87_transcendental.h"
 #include <stdint.h>
 
@@ -94,8 +95,37 @@ typedef enum X86pX87Tag {
   kX86pX87TagEmpty = 3 /* the encoding's own numbering; FFREE writes it */
 } X86pX87Tag;
 
+/*
+ * WHAT A REGISTER IS MADE OF, which is not the same question on every host.
+ *
+ * On a host whose `long double` is the x87 format -- x86 and x86-64 -- that
+ * type IS the register, and everything below is an identity.
+ *
+ * On a binary128 host, notably WebAssembly, it is not. WebAssembly has no
+ * register wider than 64 bits, so every pass, return and copy of a binary128
+ * is memory traffic, and the arithmetic is ext80 software anyway, so the file
+ * converted into and out of a format nothing computes in. Measured by
+ * tests/bench_x87_arith.cpp: 38% of the arithmetic path, against 38% for the
+ * arithmetic itself. There the storage is the guest's own encoding, which is
+ * also the format the softfloat takes, so the conversion is a field copy.
+ *
+ * The two halves are the architectural ones: `signif` is the explicit 64-bit
+ * significand, `sign_exp` the sign bit and the 15-bit exponent. Storing them
+ * is MORE faithful than binary128, not less -- an unnormal or a pseudo-NaN
+ * round-trips, which is why the WASM backend no longer has to refuse raw
+ * 80-bit loads and stores.
+ */
+#if X86P_X87_BINARY128
+typedef struct X86pX87Reg {
+  uint64_t signif;
+  uint16_t sign_exp;
+} X86pX87Reg;
+#else
+typedef long double X86pX87Reg;
+#endif
+
 typedef struct X86pX87 {
-  long double reg[X86P_X87_REGS]; /* PHYSICAL registers; ST(i) is reg[(top+i)&7] */
+  X86pX87Reg reg[X86P_X87_REGS]; /* PHYSICAL registers; ST(i) is reg[(top+i)&7] */
   uint8_t tag[X86P_X87_REGS];
   uint8_t top;
   uint16_t control;
@@ -192,6 +222,42 @@ typedef enum X86pX87Op {
 } X86pX87Op;
 
 int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse);
+
+/*
+ * THE SAME OPERATIONS IN THE STORAGE TYPE, which on a binary128 host is where
+ * the work actually gets done.
+ *
+ * These are not a second implementation. On every host the `long double`
+ * entry points above are thin wrappers that convert their argument and call
+ * these, so there is one stack discipline, one tag classifier and one
+ * arithmetic path. What the raw forms let a caller avoid is converting a value
+ * into a format that is then immediately converted back -- which is what the
+ * WASM backend was doing on every x87 instruction.
+ *
+ * On a native ext80 host X86pX87Reg IS long double and the conversions below
+ * are identities, so these cost exactly what the wrappers cost.
+ */
+int x86p_x87_get_raw(const X86pX87 *f, int i, X86pX87Reg *out);
+int x86p_x87_set_raw(X86pX87 *f, int i, X86pX87Reg v);
+int x86p_x87_push_raw(X86pX87 *f, X86pX87Reg v);
+int x86p_x87_pop_raw(X86pX87 *f, X86pX87Reg *out);
+int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse);
+
+/* The edge conversions. On a native ext80 host both are the identity. */
+X86pX87Reg x86p_x87_reg_from_long_double(long double v);
+long double x86p_x87_reg_to_long_double(X86pX87Reg v);
+
+/* The guest's ten bytes, which on a binary128 host the storage already is --
+   so an 80-bit load or store becomes a copy with nothing to round. */
+X86pX87Reg x86p_x87_reg_from_f80(const uint8_t bytes[10]);
+void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]);
+
+/* Guest memory bits straight to and from the storage type, with no detour
+   through the host's widest float. */
+X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits);
+X86pX87Reg x86p_x87_reg_from_f64_bits(uint64_t bits);
+uint64_t x86p_x87_reg_to_f32_bits(const X86pX87 *f, X86pX87Reg v);
+uint64_t x86p_x87_reg_to_f64_bits(const X86pX87 *f, X86pX87Reg v);
 
 /*
  * What an x87 INSTRUCTION does, as the decoder classifies it. Distinct from

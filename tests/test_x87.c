@@ -98,10 +98,12 @@ static void test_st_is_a_position_not_a_register(void) {
   CHECK(x86p_x87_get(&f, 2, &v) && v == 1.0L);
 
   /* And the physical layout is what the positions say it is -- checked
-     directly, because a get/set pair that are wrong the same way agree. */
-  CHECK(f.reg[5] == 3.0L);
-  CHECK(f.reg[6] == 2.0L);
-  CHECK(f.reg[7] == 1.0L);
+     directly, because a get/set pair that are wrong the same way agree. The
+     storage type is the host's, so this reads it through the one edge
+     conversion rather than assuming which host it is. */
+  CHECK(x86p_x87_reg_to_long_double(f.reg[5]) == 3.0L);
+  CHECK(x86p_x87_reg_to_long_double(f.reg[6]) == 2.0L);
+  CHECK(x86p_x87_reg_to_long_double(f.reg[7]) == 1.0L);
 
   CHECK(x86p_x87_pop(&f, &v) && v == 3.0L);
   CHECK_EQ_U(f.top, 6);
@@ -125,7 +127,7 @@ static void test_top_appears_in_the_status_word(void) {
 
 static void test_clear_exceptions_preserves_unrelated_state(void) {
   X86pX87 f;
-  long double registers[X86P_X87_REGS];
+  X86pX87Reg registers[X86P_X87_REGS];
   uint8_t tags[X86P_X87_REGS];
   uint8_t top;
   uint16_t control;
@@ -151,7 +153,7 @@ static void test_clear_exceptions_preserves_unrelated_state(void) {
   CHECK_EQ_U(f.control, control);
   CHECK(memcmp(f.tag, tags, sizeof tags) == 0);
   for (i = 0; i < X86P_X87_REGS; i++) {
-    CHECK(f.reg[i] == registers[i]);
+    CHECK(x86p_x87_reg_to_long_double(f.reg[i]) == x86p_x87_reg_to_long_double(registers[i]));
   }
 }
 

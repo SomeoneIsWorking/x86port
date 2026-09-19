@@ -18,6 +18,93 @@ static int same_value(long double a, long double b) {
 
 #endif
 
+/*
+ * THE NEW CONVERSIONS AGAINST THE OLD ONES, which are independent code.
+ *
+ * The first version of this test compared x86p_x87_arith against
+ * x86p_x87_arith_raw and found nothing, because it could not: the long double
+ * entry point is a WRAPPER over the raw one, so the two share every line that
+ * could be wrong. Deliberately breaking the raw divide-by-zero detector left
+ * it passing, which is how that was caught.
+ *
+ * What is genuinely independent is the pair of conversions. x86p_x87_to_f80
+ * and x86p_x87_from_f80 were written before the storage type existed and go
+ * through binary128; the new edge goes through the exact field reassembly, and
+ * the new f32/f64 helpers go straight to ext80 through softfloat. Those are
+ * three separate implementations of the same mapping, so disagreement is a
+ * real defect and agreement is evidence.
+ *
+ * Every comparison is over the ten architectural bytes, never over a
+ * `long double` object: on x86-64 that object is ten significant bytes inside
+ * sixteen, and memcmp over the whole of it compares six bytes of padding. The
+ * first version of this did exactly that and reported 30 failures on a host
+ * where the two sides are literally the same function.
+ *
+ * That last point is also this check's limit, and it is worth stating: on a
+ * native ext80 host most of these comparisons ARE identities, so they are a
+ * regression guard there and nothing more. The host that discriminates is the
+ * binary128 one, where the three implementations genuinely differ -- breaking
+ * x86p_x87_software_widen_f32 there fails eight of them.
+ */
+static int f80_bytes_differ(long double a, long double b) {
+  uint8_t x[10], y[10];
+  x86p_x87_to_f80(a, x);
+  x86p_x87_to_f80(b, y);
+  return memcmp(x, y, sizeof x) != 0;
+}
+static unsigned conversions_agree(void) {
+  static const long double values[] = {
+      0.0L, -0.0L, 1.0L, -1.0L, 1.5L, -2.25L, 3.0L, 0.125L, 1e30L, -1e-30L, 0x1p63L, 0x1p-63L, 0x1p1000L, 0x1p-1000L};
+  static const uint32_t f32_bits[] = {
+      0x00000000u, 0x80000000u, 0x3F800000u, 0xBF800000u, 0x7F7FFFFFu, 0x00800000u, 0x00000001u, 0x40490FDBu};
+  static const uint64_t f64_bits[] = {0x0000000000000000u,
+                                      0x8000000000000000u,
+                                      0x3FF0000000000000u,
+                                      0xBFF0000000000000u,
+                                      0x7FEFFFFFFFFFFFFFu,
+                                      0x0010000000000000u,
+                                      0x0000000000000001u,
+                                      0x400921FB54442D18u};
+  unsigned failed = 0;
+  unsigned checks = 0;
+
+  for (unsigned i = 0; i < sizeof values / sizeof *values; i++) {
+    uint8_t through_storage[10], directly[10];
+    x86p_x87_reg_to_f80(x86p_x87_reg_from_long_double(values[i]), through_storage);
+    x86p_x87_to_f80(values[i], directly);
+    checks++;
+    if (memcmp(through_storage, directly, sizeof directly) != 0) {
+      failed++;
+    }
+    /* And back, so an error that cancels itself in one direction shows. */
+    checks++;
+    if (f80_bytes_differ(x86p_x87_reg_to_long_double(x86p_x87_reg_from_f80(directly)), x86p_x87_from_f80(directly))) {
+      failed++;
+    }
+  }
+
+  for (unsigned i = 0; i < sizeof f32_bits / sizeof *f32_bits; i++) {
+    const long double direct = x86p_x87_reg_to_long_double(x86p_x87_reg_from_f32_bits(f32_bits[i]));
+    const long double established = x86p_x87_from_f32(f32_bits[i]);
+    checks++;
+    if (f80_bytes_differ(direct, established)) {
+      failed++;
+    }
+  }
+
+  for (unsigned i = 0; i < sizeof f64_bits / sizeof *f64_bits; i++) {
+    const long double direct = x86p_x87_reg_to_long_double(x86p_x87_reg_from_f64_bits(f64_bits[i]));
+    const long double established = x86p_x87_from_f64(f64_bits[i]);
+    checks++;
+    if (f80_bytes_differ(direct, established)) {
+      failed++;
+    }
+  }
+
+  printf("%u storage-conversion agreement checks, %u failures\n", checks, failed);
+  return failed;
+}
+
 static unsigned arithmetic_checks(unsigned *checks, unsigned *oracle_cases) {
   unsigned failed = 0;
 #if (defined(__x86_64__) || defined(__i386__)) && LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
@@ -321,5 +408,6 @@ int main(void) {
     }
   }
   printf("%u software math checks, %u independent x87 comparisons, %u failures\n", checks, oracle_cases, failed);
+  failed += conversions_agree();
   return failed ? 1 : 0;
 }

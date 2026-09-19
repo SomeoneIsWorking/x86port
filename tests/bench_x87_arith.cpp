@@ -16,6 +16,9 @@
  *   A. through x86p_x87_arith, the real path, storage as it is today.
  *   B. the same operands and the same extF80_* calls, with the values already
  *      in ext80 -- what the path would cost with the storage changed.
+ *   D. through the register file again, but with the RAW entry points, which
+ *      is the path a JIT backend takes once the storage IS the guest format.
+ *      This is the one the change is for; A is what it looked like before.
  *   C. x86p_x87_software_arith, which is what A calls on this host: the same
  *      conversions and the same arithmetic, without the register file's tags,
  *      stack and status word.
@@ -46,9 +49,9 @@
  * x86p_x87_arith does not go through softfloat at all, so there is nothing to
  * compare and the benchmark says so and stops.
  */
+#include "softfloat.h"
 #include "x87.h"
 #include "x87_f128_ext80.h"
-#include "softfloat.h"
 #include "x87_softfloat.h"
 
 #include <cstdint>
@@ -57,7 +60,9 @@
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
-static double now_ms() { return emscripten_get_now(); }
+static double now_ms() {
+  return emscripten_get_now();
+}
 #else
 #include <chrono>
 static double now_ms() {
@@ -192,11 +197,39 @@ double run_software_arith(const long double *values, long double *sink) {
   return now_ms() - start;
 }
 
+/* The same work through the raw entry points: no host float type appears
+   anywhere in the loop, which is the state a JIT backend can actually reach
+   because its values come from guest memory and go back to it. */
+double run_raw(const long double *values, long double *sink) {
+  X86pX87 f;
+  X86pX87Reg raw[kValues];
+  long double total = 0.0L;
+  for (int i = 0; i < kValues; i++) {
+    raw[i] = x86p_x87_reg_from_long_double(values[i]);
+  }
+  x86p_x87_reset(&f);
+  {
+    const double start = now_ms();
+    for (long n = 0; n < kIterations; n++) {
+      const X86pX87Reg *v = raw + (n % (kValues / 2)) * 2;
+      X86pX87Reg r;
+      x86p_x87_push_raw(&f, v[0]);
+      x86p_x87_arith_raw(&f, kX86pX87Mul, 0, v[1], 0);
+      x86p_x87_arith_raw(&f, kX86pX87Add, 0, v[0], 0);
+      x86p_x87_arith_raw(&f, kX86pX87Sub, 0, v[1], 0);
+      x86p_x87_pop_raw(&f, &r);
+      total += x86p_x87_reg_to_long_double(r);
+    }
+    *sink = total;
+    return now_ms() - start;
+  }
+}
+
 } // namespace
 
 int main() {
   long double values[kValues];
-  long double sink_a = 0.0L, sink_b = 0.0L, sink_c = 0.0L;
+  long double sink_a = 0.0L, sink_b = 0.0L, sink_c = 0.0L, sink_d = 0.0L;
   fill(values);
 
   /* Warm all three arms before timing any, so none pays another's cold start
@@ -206,26 +239,29 @@ int main() {
     return 0;
   }
   (void)run_software_arith(values, &sink_c);
+  (void)run_raw(values, &sink_d);
 
   {
     const double a = run_through_register_file(values, &sink_a);
     const double b = run_in_ext80(values, &sink_b);
     const double c = run_software_arith(values, &sink_c);
+    const double d = run_raw(values, &sink_d);
     std::printf("x87 arith over %ld iterations of 3 operations:\n", kIterations);
     std::printf("  A  through the register file (long double storage): %8.1f ms\n", a);
     std::printf("  C  x86p_x87_software_arith, no register file      : %8.1f ms\n", c);
+    std::printf("  D  through the register file, RAW entry points    : %8.1f ms\n", d);
     std::printf("  B  operands already in ext80                      : %8.1f ms\n", b);
     std::printf("\n");
     std::printf("  register file's own work      A-C: %8.1f ms  (%4.1f%% of A)\n", a - c, 100.0 * (a - c) / a);
     std::printf("  conversion into/out of storage C-B: %8.1f ms  (%4.1f%% of A)\n", c - b, 100.0 * (c - b) / a);
     std::printf("  arithmetic itself              B  : %8.1f ms  (%4.1f%% of A)\n", b, 100.0 * b / a);
     std::printf("\n");
-    std::printf("  a storage change removes C-B, so this path gets %5.2fx faster\n", a / (a - (c - b)));
-    std::printf("  removing the register file too would be           %5.2fx\n", a / b);
+    std::printf("  the raw path against the long double one   A/D: %5.2fx\n", a / d);
+    std::printf("  what is left between the raw path and bare ext80: %8.1f ms\n", d - b);
     /* Every arm must have computed the same thing, or the comparison is
        between different amounts of work. */
-    if (sink_a != sink_b || sink_a != sink_c) {
-      std::printf("FAIL: the arms disagree (A %.17Lg, B %.17Lg, C %.17Lg)\n", sink_a, sink_b, sink_c);
+    if (sink_a != sink_b || sink_a != sink_c || sink_a != sink_d) {
+      std::printf("FAIL: the arms disagree (A %.17Lg, B %.17Lg, C %.17Lg, D %.17Lg)\n", sink_a, sink_b, sink_c, sink_d);
       return 1;
     }
     std::printf("  all three arms agree on %.17Lg\n", sink_a);
