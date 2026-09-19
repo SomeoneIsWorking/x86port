@@ -43,12 +43,14 @@ static uint32_t flag_offset(size_t field) {
   return (uint32_t)(offsetof(X86pCpu, flags) + field);
 }
 
-void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan) {
+void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry) {
   if (!s) {
     return;
   }
   memset(s, 0, sizeof *s);
   s->e = e;
+  s->entry = entry;
+  s->pc = entry;
   if (plan) {
     s->plan = *plan;
   }
@@ -411,6 +413,21 @@ void x86p_wasm_state_store_df(X86pWasmState *s, int value) {
 }
 
 void x86p_wasm_state_exit_imm(X86pWasmState *s, uint32_t eip, X86pJitExit exit) {
+  if (exit == kX86pJitExitBlockEnd) {
+    s->exits.total++;
+    s->exits.to_immediate++;
+    /* `<= pc` and not `< pc`: a one-instruction loop branches to itself, and
+       the instruction at pc is the branch that is being lowered right now. */
+    if (eip <= s->pc) {
+      s->exits.backward++;
+      if (eip >= s->entry) {
+        s->exits.within_block++;
+        if (eip == s->entry) {
+          s->exits.to_entry++;
+        }
+      }
+    }
+  }
   x86p_wasm_state_cpu(s);
   x86p_wasm_i32_const(s->e, (int32_t)eip);
   x86p_wasm_i32_store(s->e, ALIGN_NONE, (uint32_t)offsetof(X86pCpu, eip));
@@ -419,6 +436,10 @@ void x86p_wasm_state_exit_imm(X86pWasmState *s, uint32_t eip, X86pJitExit exit) 
 }
 
 void x86p_wasm_state_exit_local(X86pWasmState *s, X86pWasmLocal eip, X86pJitExit exit) {
+  if (exit == kX86pJitExitBlockEnd) {
+    s->exits.total++;
+    s->exits.computed++;
+  }
   x86p_wasm_state_cpu(s);
   x86p_wasm_local_get(s->e, (uint32_t)eip);
   x86p_wasm_i32_store(s->e, ALIGN_NONE, (uint32_t)offsetof(X86pCpu, eip));

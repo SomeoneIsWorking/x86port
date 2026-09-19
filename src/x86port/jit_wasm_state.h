@@ -63,12 +63,77 @@ typedef struct X86pWasmPlan {
   uint32_t page_shift;
 } X86pWasmPlan;
 
+/*
+ * Where a block's exits go, counted as they are emitted.
+ *
+ * COUNTED HERE BECAUSE HERE IS WHERE IT IS KNOWN. A conditional branch does not
+ * end a block in this backend: x86p_wasm_jcc_continue emits the taken exit
+ * inline and the run carries on past it. So a block has as many exits as it has
+ * branches, and the guest loop backedge that block chaining would collapse is
+ * almost never the last of them.
+ *
+ * A census that walks a block's bytes and classifies its TERMINATOR therefore
+ * sees none of them. Measured, that walk found ONE branch back to a block's own
+ * entry in 113,272 blocks of a real title, over code that is known to contain a
+ * skinning loop paying a dispatch per bone. A near-zero over a population that
+ * cannot be near-zero is what says a classifier is looking at the wrong thing.
+ *
+ * ONLY kX86pJitExitBlockEnd IS A SUCCESSOR. An unsupported instruction and a
+ * memory fault also write an EIP and return, and neither is an address the run
+ * continues from; counting them would inflate exactly the number that decides
+ * whether chaining is worth building.
+ */
+typedef struct X86pWasmExitCensus {
+  unsigned total;
+  unsigned to_immediate; /* the successor is a constant in the emitted code */
+
+  /*
+   * THREE NESTED SUBSETS OF to_immediate, RANKING THREE DIFFERENT FIXES.
+   *
+   * `backward` is an exit to an address at or before the branch emitting it: a
+   * guest loop backedge, wherever its head ended up. It is the size of the
+   * prize -- every one of these pays a dispatch per iteration.
+   *
+   * `within_block` is the subset whose head is inside this block's own lowered
+   * code. A backend can reach those without any other block existing, but only
+   * by knowing the backedge before it emits the body, because WebAssembly has
+   * no jump and a `loop` has to be opened ahead of its target.
+   *
+   * `to_entry` is the strict case, the block's own first address, and the only
+   * one a single-pass lowering can take: open a `loop` around the whole body
+   * and branch to it.
+   *
+   * WHICH ONE A GUEST LOOP FALLS INTO IS DECIDED BY WHERE THE BLOCK STARTED,
+   * NOT BY THE GUEST. The running engine translates from the address it was
+   * asked to dispatch to, so a loop head that is branched to becomes a block
+   * entry and its backedge is a to_entry. An offline walk that splits a
+   * function linearly from its first byte puts that same head mid-block, and a
+   * head above a CALL puts it in an earlier block still. Measured over one
+   * title's 16,451 functions walked that way: 36,113 backward of 167,287 exits,
+   * of which 2,694 within_block and 69 to_entry. Only the first of those three
+   * is a property of the guest; reporting either of the others alone makes a
+   * binary full of loops look as though it had none.
+   */
+  unsigned backward;
+  unsigned within_block;
+  unsigned to_entry;
+
+  unsigned computed; /* the successor is a register or a memory word */
+} X86pWasmExitCensus;
+
 typedef struct X86pWasmState {
   X86pWasmEmit *e;
   X86pWasmPlan plan;
+  uint32_t entry; /* the block's own guest address, to recognise a loop */
+  uint32_t pc;    /* the instruction being lowered: everything up to here exists */
+  X86pWasmExitCensus exits;
 } X86pWasmState;
 
-void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan);
+/* `entry` is the guest address the block being lowered starts at. It is a
+   parameter rather than a later setter because a state that never received it
+   reports every self-loop as an exit to somewhere else, and reports it as a
+   zero that reads like an answer. */
+void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry);
 
 /* Push the X86pCpu address. */
 void x86p_wasm_state_cpu(X86pWasmState *s);
