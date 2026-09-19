@@ -400,10 +400,18 @@ static void forget_evicted(void *user, uint32_t lo, uint32_t hi) {
 }
 
 static int evict_for_room(X86pJitEngine *e, char *reason, unsigned reason_len) {
-  while (!x86p_jit_storage_has_room(e->storage)) {
+  X86pJitStorageRoom room;
+  while ((room = x86p_jit_storage_room(e->storage)) != kX86pJitStorageRoom) {
     const size_t before = x86p_jit_storage_used(e->storage);
     if (x86p_jit_storage_evict(e->storage, forget_evicted, e) > 0u) {
       e->stats.evictions++;
+      if (room == kX86pJitStorageOutOfBytes) {
+        e->stats.evictions_out_of_bytes++;
+      } else if (room == kX86pJitStorageOutOfSlots) {
+        e->stats.evictions_out_of_slots++;
+      } else {
+        e->stats.evictions_at_engine_limit++;
+      }
       if (x86p_jit_storage_used(e->storage) < before) {
         continue;
       }

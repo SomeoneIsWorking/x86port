@@ -47,8 +47,15 @@ void x86p_jit_storage_destroy(X86pJitStorage *storage) {
   }
 }
 
+X86pJitStorageRoom x86p_jit_storage_room(const X86pJitStorage *storage) {
+  /* One region, one limit: bytes. There is no module slot and no engine object
+     to run out of here. */
+  return storage->code.size - storage->used >= X86P_JIT_MIN_BLOCK_BYTES ? kX86pJitStorageRoom
+                                                                        : kX86pJitStorageOutOfBytes;
+}
+
 int x86p_jit_storage_has_room(const X86pJitStorage *storage) {
-  return storage->code.size - storage->used >= X86P_JIT_MIN_BLOCK_BYTES;
+  return x86p_jit_storage_room(storage) == kX86pJitStorageRoom;
 }
 
 size_t x86p_jit_storage_used(const X86pJitStorage *storage) {

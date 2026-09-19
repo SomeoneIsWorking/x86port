@@ -162,12 +162,23 @@ void x86p_jit_storage_destroy(X86pJitStorage *storage) {
   }
 }
 
+X86pJitStorageRoom x86p_jit_storage_room(const X86pJitStorage *storage) {
+  if (storage->used > storage->byte_budget || storage->byte_budget - storage->used < X86P_WASM_MIN_MODULE_BYTES) {
+    return kX86pJitStorageOutOfBytes;
+  }
+  if (x86p_wasm_arena_live(&storage->arena) >= storage->capacity_blocks) {
+    return kX86pJitStorageOutOfSlots;
+  }
+  /* ... and below whatever ceiling the engine has actually shown us, which may
+     be far under the capacity this storage was created with. */
+  if (!x86p_wasm_arena_has_room(&storage->arena)) {
+    return kX86pJitStorageAtEngineLimit;
+  }
+  return kX86pJitStorageRoom;
+}
+
 int x86p_jit_storage_has_room(const X86pJitStorage *storage) {
-  return storage->byte_budget - storage->used >= X86P_WASM_MIN_MODULE_BYTES &&
-         x86p_wasm_arena_live(&storage->arena) < storage->capacity_blocks &&
-         /* ... and below whatever ceiling the engine has actually shown us,
-            which may be far under the capacity this storage was created with. */
-         x86p_wasm_arena_has_room(&storage->arena);
+  return x86p_jit_storage_room(storage) == kX86pJitStorageRoom;
 }
 
 size_t x86p_jit_storage_used(const X86pJitStorage *storage) {

@@ -21,6 +21,21 @@ size_t x86p_jit_storage_min_capacity(void);
  */
 X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char *reason, unsigned reason_len);
 void x86p_jit_storage_destroy(X86pJitStorage *storage);
+/*
+ * Whether another block fits, and when it does not, WHICH limit said so.
+ *
+ * One boolean cannot answer the question a stalled run actually asks. A run
+ * evicting steadily while holding 21 MB of a 512 MB budget with 262,144 free
+ * block records was refused by something, and with only a yes/no there is no
+ * way to find out which of the three limits it was.
+ */
+typedef enum X86pJitStorageRoom {
+  kX86pJitStorageRoom = 0,     /* another block fits */
+  kX86pJitStorageOutOfBytes,   /* the byte budget */
+  kX86pJitStorageOutOfSlots,   /* every module slot this storage owns is live */
+  kX86pJitStorageAtEngineLimit /* the live-module ceiling the engine has shown */
+} X86pJitStorageRoom;
+X86pJitStorageRoom x86p_jit_storage_room(const X86pJitStorage *storage);
 int x86p_jit_storage_has_room(const X86pJitStorage *storage);
 size_t x86p_jit_storage_used(const X86pJitStorage *storage);
 /* The two limits this storage was created with, so a report of what it HOLDS
