@@ -169,6 +169,7 @@ add_library(x86port_runtime STATIC
   src/x86port/cond.c
   src/x86port/x87.c
   src/x86port/x87_binary128.c
+  src/x86port/x87_ext80_widen.c
   src/x86port/x87_transcendental.c
   src/x86port/jit_x87_predicates.c
   src/x86port/x87_softfloat.cpp
@@ -437,6 +438,11 @@ if(NOT EMSCRIPTEN)
   x86p_strict_target(test_x87_narrow)
   add_test(NAME test_x87_narrow COMMAND test_x87_narrow)
 endif()
+
+add_executable(test_x87_ext80_widen tests/test_x87_ext80_widen.cpp)
+target_link_libraries(test_x87_ext80_widen PRIVATE x86port)
+x86p_strict_target(test_x87_ext80_widen)
+add_test(NAME test_x87_ext80_widen COMMAND test_x87_ext80_widen)
 
 add_executable(test_x87_binary128 tests/test_x87_binary128.c)
 target_link_libraries(test_x87_binary128 PRIVATE x86port)

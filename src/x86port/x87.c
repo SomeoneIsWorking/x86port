@@ -2,6 +2,7 @@
 #include "x87.h"
 
 #include "x87_binary128.h"
+#include "x87_ext80_widen.h"
 #include "x87_softfloat.h"
 
 #include <fenv.h>
@@ -643,9 +644,41 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
  * these are the existing conversions; on a binary128 host they go straight to
  * and from the ext80 the softfloat already works in.
  */
+/*
+ * Both directions widen EXACTLY -- every binary32 and binary64 value has an
+ * ext80 with the same number in it -- so neither consults the control word nor
+ * can raise anything. They had been calling the general softfloat conversion,
+ * which exists to make the rounding decision this direction does not have, and
+ * that was 4.95% of the browser's guest worker. x87_ext80_widen owns the
+ * reassembly now, and tests/test_x87_ext80_widen.cpp holds it to the host
+ * x87's own answer over every subnormal and a sweep of both spaces.
+ */
+#if X86P_X87_BINARY128
+/*
+ * The storage holds ten bytes of architectural state in a sixteen-byte object,
+ * and the six between them are padding this file never reads.
+ *
+ * Something else does. The register file is compared as memory -- the WASM
+ * differential does one memcmp of the whole X86pX87, which is what lets it
+ * catch a tag, a TOP or a control word that the value comparison would miss --
+ * so a register whose padding was never written makes two runs that agree
+ * about every number differ anyway. Leaving it uninitialised failed FLD32 and
+ * FLD64 there, five cases each, while the conversion itself was right to the
+ * bit. Zeroing first is what the softfloat wrapper this replaces did, and the
+ * two stores that follow leave one 16-byte zero behind.
+ */
+static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
+  X86pX87Reg out;
+  memset(&out, 0, sizeof out);
+  out.signif = wide.signif;
+  out.sign_exp = wide.sign_exp;
+  return out;
+}
+#endif
+
 X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits) {
 #if X86P_X87_BINARY128
-  return x86p_x87_software_widen_f32(bits);
+  return reg_of_ext80(x86p_ext80_from_f32_bits(bits));
 #else
   return x86p_x87_from_f32(bits);
 #endif
@@ -653,7 +686,7 @@ X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits) {
 
 X86pX87Reg x86p_x87_reg_from_f64_bits(uint64_t bits) {
 #if X86P_X87_BINARY128
-  return x86p_x87_software_widen_f64(bits);
+  return reg_of_ext80(x86p_ext80_from_f64_bits(bits));
 #else
   return x86p_x87_from_f64(bits);
 #endif
