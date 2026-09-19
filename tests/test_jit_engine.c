@@ -1041,6 +1041,30 @@ static void test_the_entry_watch_names_the_block_that_sent_the_run_there(void) {
   CHECK(w.have_previous[1] == 1);
   printf("    watch: %u report(s), first previous 0x%08x\n", w.calls, w.previous[1]);
   x86p_jit_engine_destroy(eng);
+
+  /*
+   * ON ENTRY, not on exit. Watch the block that DOES something and seed the
+   * register it writes: a report taken after the block ran would show the
+   * written value, which is the wrong state for asking how the run arrived.
+   * Measured before this was fixed: a watch on a title's fatal handler showed
+   * a stack the handler had already pushed its own call frame onto, so the
+   * arguments it was called with were not there to read.
+   */
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  memset(&w, 0, sizeof w);
+  x86p_jit_engine_set_entry_watch(eng, GUEST_BASE, 1u, watch_note, &w);
+  seed(&cpu);
+  cpu.reg[kX86pEax] = 5u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 20u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(w.calls == 1u);
+  CHECK(w.eax[0] == 5u);          /* not 6: the INC in that block has not run yet */
+  CHECK(cpu.reg[kX86pEax] == 6u); /* and it did run */
+  x86p_jit_engine_destroy(eng);
 }
 
 /*

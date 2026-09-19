@@ -526,6 +526,17 @@ X86pJitRunStatus x86p_jit_engine_run(
     }
     consecutive_translate_retries = 0u;
 
+    /* BEFORE the block runs, which is the whole point: taken after, the
+       report shows a register file the block has already rewritten and a
+       stack it has already pushed its own frames onto. */
+    if (e->watch_left != 0u && before_eip == e->watch_addr) {
+      e->watch_left--;
+      e->watch(e->watch_user,
+               before_eip,
+               e->stats.blocks_entered != 0u ? e->last_entry : 0u,
+               e->stats.blocks_entered != 0u,
+               cpu);
+    }
     uint32_t (*fn)(X86pCpu *);
     *(void **)&fn = host;
     exit = (X86pJitExit)fn(cpu);
@@ -543,14 +554,6 @@ X86pJitRunStatus x86p_jit_engine_run(
      */
     if (e->stats.blocks_entered != 0u && before_eip == e->last_entry) {
       e->stats.blocks_reentered++;
-    }
-    if (e->watch_left != 0u && before_eip == e->watch_addr) {
-      e->watch_left--;
-      e->watch(e->watch_user,
-               before_eip,
-               e->stats.blocks_entered != 0u ? e->last_entry : 0u,
-               e->stats.blocks_entered != 0u,
-               cpu);
     }
     e->last_entry = before_eip;
     e->stats.blocks_entered++;
