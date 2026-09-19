@@ -204,6 +204,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_arena.c
   ${X86P_JIT_BACKEND_SOURCES}
   ${X86P_JIT_STORAGE_SOURCES}
+  src/x86port/jit_chain_census.c
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)
 target_link_libraries(x86port_runtime PRIVATE x86p_softfloat)
@@ -288,6 +289,12 @@ if(NOT EMSCRIPTEN)
   x86p_strict_target(test_jit_engine)
   add_test(NAME test_jit_engine COMMAND test_jit_engine)
 endif()
+
+add_executable(test_jit_chain_census tests/test_jit_chain_census.c)
+target_link_libraries(test_jit_chain_census PRIVATE x86port)
+target_include_directories(test_jit_chain_census PRIVATE src/x86port)
+x86p_strict_target(test_jit_chain_census)
+add_test(NAME test_jit_chain_census COMMAND test_jit_chain_census)
 
 add_executable(test_jit_profile tests/test_jit_profile.c)
 target_link_libraries(test_jit_profile PRIVATE x86port)

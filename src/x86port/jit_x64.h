@@ -37,6 +37,7 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "jit_chain_census.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -217,6 +218,14 @@ typedef struct X86pJitBlock {
    */
   unsigned exits;
   unsigned exits_static;
+  /* The distinct constant successor addresses of `exits_static`, capped at
+     X86P_JIT_CHAIN_TARGETS, with the rest counted in `static_targets_overflowed`.
+     A chaining backend branches to exactly these; the runtime chain census
+     compares them against where the run actually went. Filled by the
+     WebAssembly backend only, like the counts above. */
+  uint32_t static_targets[X86P_JIT_CHAIN_TARGETS];
+  unsigned static_target_count;
+  unsigned static_targets_overflowed;
   unsigned exits_backward;
   unsigned exits_loop;
   unsigned exits_self;

@@ -1022,6 +1022,59 @@ static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(voi
          (unsigned long long)chain.blocks_entered);
 }
 
+/*
+ * THE DESIGNED NEGATIVE for the runtime chain census. This host's backend is
+ * the x86-64 one, which emits no constant successor addresses at all, so every
+ * dispatch in this run must land in `unrecorded` and none in `chainable`. If
+ * the census folded "the predecessor recorded nothing" into chainable's
+ * complement, a browser run could not be told from this one -- both would read
+ * as "nothing is chainable", and the number #166 needs would be a fiction.
+ */
+static void test_a_backend_that_records_no_successors_reads_as_unrecorded(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  const X86pJitChainCensus *census;
+  char reason[256];
+
+  /* The two-block chain again: every entry is a real dispatch. */
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xEB;
+  g_guest[1] = 0x02;
+  g_guest[4] = 0xEB;
+  g_guest[5] = 0xFA;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  CHECK(x86p_jit_engine_chain_census(eng) == NULL); /* off unless armed */
+  CHECK(x86p_jit_engine_set_chain_census(eng, 1, 64u, reason, sizeof reason));
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+
+  census = x86p_jit_engine_chain_census(eng);
+  CHECK(census != NULL);
+  CHECK(x86p_jit_chain_census_entries(census) == 200u);
+  CHECK(x86p_jit_chain_census_chainable(census) == 0u);
+  CHECK(x86p_jit_chain_census_unrecorded(census) == 200u);
+  /* Both blocks were recorded -- with no successors, which is the point. */
+  CHECK(x86p_jit_chain_census_blocks(census) == 2u);
+  CHECK(x86p_jit_chain_census_dropped_keys(census) == 0u);
+  CHECK(x86p_jit_chain_census_overflowed(census) == 0u);
+
+  printf("    x86-64 backend: %llu entries, %llu chainable, %llu unrecorded\n",
+         (unsigned long long)x86p_jit_chain_census_entries(census),
+         (unsigned long long)x86p_jit_chain_census_chainable(census),
+         (unsigned long long)x86p_jit_chain_census_unrecorded(census));
+
+  CHECK(x86p_jit_engine_set_chain_census(eng, 0, 0u, reason, sizeof reason));
+  CHECK(x86p_jit_engine_chain_census(eng) == NULL);
+  x86p_jit_engine_destroy(eng);
+}
+
 int main(void) {
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND on this host: this suite cannot run and claims nothing\n");
@@ -1043,6 +1096,7 @@ int main(void) {
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
   RUN(test_summing_stats_leaves_no_field_behind);
   RUN(test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not);
+  RUN(test_a_backend_that_records_no_successors_reads_as_unrecorded);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;

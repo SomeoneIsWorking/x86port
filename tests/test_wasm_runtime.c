@@ -252,6 +252,48 @@ static void smallest_storage(const X86pMem *mem) {
   check(live_modules() == 0u, "minimum storage leaked generated modules");
 }
 
+/*
+ * THE POSITIVE SIDE of the runtime chain census, whose negative lives in
+ * tests/test_jit_engine.c: this backend DOES emit constant successor
+ * addresses, so a two-block guest loop must report almost every dispatch as
+ * one a chaining backend could have removed. Without this case the census
+ * could report "unrecorded" for every entry on every host and still pass.
+ */
+static void chain_census(const X86pMem *mem) {
+  char reason[256] = {0};
+  X86pCpu cpu;
+  X86pJitEngine *engine = create(mem, 1u << 16, 64u);
+  const X86pJitChainCensus *census;
+  if (!engine) {
+    return;
+  }
+  /* +0: JMP +2 (to +4); +4: JMP -6 (back to +0). Every entry is a dispatch
+     and none of them re-enters the block just left. */
+  memset(guest, 0x90, sizeof guest);
+  guest[0] = 0xeb;
+  guest[1] = 0x02;
+  guest[4] = 0xeb;
+  guest[5] = 0xfa;
+
+  check(x86p_jit_engine_set_chain_census(engine, 1, 64u, reason, sizeof reason), reason);
+  memset(&cpu, 0, sizeof cpu);
+  cpu.eip = kGuestBase;
+  run(engine, &cpu, 200u);
+
+  census = x86p_jit_engine_chain_census(engine);
+  check(census != NULL, "chain census detached itself");
+  check(x86p_jit_chain_census_entries(census) == 200u, "chain census missed entries");
+  /* Every entry but the first, which has no predecessor to compare against. */
+  check(x86p_jit_chain_census_chainable(census) == 199u, "chain census saw no chainable dispatch");
+  check(x86p_jit_chain_census_unrecorded(census) == 1u, "chain census recorded no successors");
+  check(x86p_jit_chain_census_dropped_keys(census) == 0u, "chain census dropped a block");
+  printf("chain census: %llu of %llu entries chainable, %llu unrecorded\n",
+         (unsigned long long)x86p_jit_chain_census_chainable(census),
+         (unsigned long long)x86p_jit_chain_census_entries(census),
+         (unsigned long long)x86p_jit_chain_census_unrecorded(census));
+  x86p_jit_engine_destroy(engine);
+}
+
 int main(void) {
   X86pMem mem = {.host = guest, .lo = kGuestBase, .size = sizeof guest};
   helpers_and_invalidation(&mem);
@@ -259,6 +301,7 @@ int main(void) {
   lifetime(&mem, 16u);
   smallest_storage(&mem);
   invalid_module();
+  chain_census(&mem);
   printf("WebAssembly shipping runtime: %u checks, %u failures\n", checks, failures);
   return failures ? 1 : 0;
 }

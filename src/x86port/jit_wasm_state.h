@@ -32,6 +32,7 @@
 #include "decode.h"
 #include "emit_wasm.h"
 #include "flags.h"
+#include "jit_chain_census.h"
 #include "jit_wasm_module.h"
 #include "jit_x64.h"
 
@@ -86,6 +87,17 @@ typedef struct X86pWasmPlan {
 typedef struct X86pWasmExitCensus {
   unsigned total;
   unsigned to_immediate; /* the successor is a constant in the emitted code */
+
+  /*
+   * The constant successor ADDRESSES, for the runtime chain census: counting
+   * how many exits name a constant cannot say whether the dispatches actually
+   * paid went to one of them. Distinct addresses only, capped, with the ones
+   * past the cap counted so a block with many exits is visible as such rather
+   * than quietly truncated.
+   */
+  uint32_t targets[X86P_JIT_CHAIN_TARGETS];
+  unsigned target_count;
+  unsigned targets_overflowed;
 
   /*
    * THREE NESTED SUBSETS OF to_immediate, RANKING THREE DIFFERENT FIXES.
