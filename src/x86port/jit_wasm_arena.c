@@ -91,7 +91,8 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
         "all %u module slots are live; the caller has published %u and released %u",
         a->capacity,
         a->published,
-        a->released);
+        a->released,
+        a->ceiling);
     return -1;
   }
   i = a->free_head - 1u;
@@ -106,18 +107,26 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
   module = a->host.instantiate(a->host.user, bytes, len, detail, sizeof detail);
   if (module < 0) {
     a->failures++;
+    /* The engine would not take one more than this. Remember it, so the next
+       attempt finds the arena full and the caller evicts instead of asking
+       again for something that cannot be given. */
+    if (a->ceiling == 0u || a->live < a->ceiling) {
+      a->ceiling = a->live;
+    }
     /* With the denominators: an engine that refuses the fortieth module and
        one that refuses the eight-thousandth are different problems, and the
        refusal is the only place that number is ever seen. */
     say(reason,
         reason_len,
-        "the engine rejected a %zu-byte module: %s (%u live of %u slot(s); %u published and %u released so far)",
+        "the engine rejected a %zu-byte module: %s (%u live of %u slot(s); %u published and %u released so far; "
+        "the arena will hold no more than %u from here)",
         len,
         detail[0] ? detail : "no reason given",
         a->live,
         a->capacity,
         a->published,
-        a->released);
+        a->released,
+        a->ceiling);
     return -1;
   }
   a->free_head = a->slot[i].next_free;
@@ -176,6 +185,17 @@ void x86p_wasm_arena_release_all(X86pWasmArena *a) {
 
 unsigned x86p_wasm_arena_live(const X86pWasmArena *a) {
   return a ? a->live : 0u;
+}
+
+unsigned x86p_wasm_arena_ceiling(const X86pWasmArena *a) {
+  return a ? a->ceiling : 0u;
+}
+
+int x86p_wasm_arena_has_room(const X86pWasmArena *a) {
+  if (!a || a->live >= a->capacity) {
+    return 0;
+  }
+  return a->ceiling == 0u || a->live < a->ceiling;
 }
 
 unsigned x86p_wasm_arena_published(const X86pWasmArena *a) {

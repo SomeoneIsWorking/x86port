@@ -44,12 +44,21 @@ typedef struct Stub {
   int releases;       /* calls to release() */
   int refuse;         /* when set, instantiate() fails */
   int resolve_fails;  /* when set, resolve() returns 0 -- the null table slot */
+  int engine_ceiling; /* when set, the engine refuses beyond this many live */
   int last_released;
 } Stub;
 
 static int stub_instantiate(void *user, const void *bytes, size_t len, char *error, unsigned error_len) {
   Stub *s = (Stub *)user;
   s->instantiations++;
+  /* An engine that holds fewer modules than the arena was built for, and says
+     so only by refusing one. This is Firefox, measured. */
+  if (s->engine_ceiling && s->live >= s->engine_ceiling) {
+    if (error && error_len) {
+      snprintf(error, error_len, "%s", kEngineWords);
+    }
+    return -1;
+  }
   if (!bytes || len == 0 || s->refuse) {
     if (error && error_len) {
       snprintf(error, error_len, "%s", kEngineWords);
@@ -283,6 +292,51 @@ static void test_zero_capacity_is_refused(void) {
   x86p_wasm_arena_dispose(&arena);
 }
 
+/*
+ * The arena is given more slots than the engine can hold, which is what a
+ * browser does: Firefox 156 refused the 16,112th module of a 65,536-slot arena
+ * and the run died with room to spare by the arena's own accounting. The arena
+ * must take the refusal as the measurement it is.
+ */
+static void test_the_engine_ceiling_is_learned_from_a_refusal(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int token;
+  unsigned i;
+  bind(&arena, &stub, &host);
+  stub.engine_ceiling = 3;
+  check("no ceiling is assumed before one is shown", x86p_wasm_arena_ceiling(&arena), 0);
+  check("and the arena has room", x86p_wasm_arena_has_room(&arena), 1);
+  for (i = 0; i < 3u; ++i) {
+    check("publishing under the engine's ceiling succeeds",
+          x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+          1);
+  }
+  reason[0] = '\0';
+  check("the engine refuses the next one",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
+        -1);
+  check("the ceiling is what was live when it refused", x86p_wasm_arena_ceiling(&arena), 3);
+  check("the reason names it", strstr(reason, "no more than 3") != NULL, 1);
+  check("and the arena is now full at that number, though slots remain", x86p_wasm_arena_has_room(&arena), 0);
+  check("the slots really do remain", x86p_wasm_arena_capacity(&arena) > 3u, 1);
+  /*
+   * The point of learning it is that the run continues. Release one, and the
+   * arena must accept a replacement -- a ceiling that refused forever would be
+   * the same dead run with a better message.
+   */
+  token = 0;
+  x86p_wasm_arena_release(&arena, token);
+  check("after a release there is room again", x86p_wasm_arena_has_room(&arena), 1);
+  check("and publishing succeeds",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+        1);
+  check("the ceiling is not raised by that success", x86p_wasm_arena_ceiling(&arena), 3);
+  x86p_wasm_arena_dispose(&arena);
+}
+
 int main(void) {
   test_publish_and_release();
   test_cap_refuses_rather_than_evicting();
@@ -292,6 +346,7 @@ int main(void) {
   test_no_engine_refuses();
   test_partial_host_is_no_host();
   test_zero_capacity_is_refused();
+  test_the_engine_ceiling_is_learned_from_a_refusal();
   printf("test_jit_wasm_arena: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
