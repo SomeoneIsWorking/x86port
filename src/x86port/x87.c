@@ -536,6 +536,29 @@ static int reg_is_nan(X86pX87Reg v) {
 }
 #endif
 
+#if X86P_X87_BINARY128
+/*
+ * The storage holds ten bytes of architectural state in a sixteen-byte object,
+ * and the six between them are padding this file never reads.
+ *
+ * Something else does. The register file is compared as memory -- the WASM
+ * differential does one memcmp of the whole X86pX87, which is what lets it
+ * catch a tag, a TOP or a control word that the value comparison would miss --
+ * so a register whose padding was never written makes two runs that agree
+ * about every number differ anyway. Leaving it uninitialised failed FLD32 and
+ * FLD64 there, five cases each, while the conversion itself was right to the
+ * bit. Zeroing first is what the softfloat wrapper this replaces did, and the
+ * two stores that follow leave one 16-byte zero behind.
+ */
+static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
+  X86pX87Reg out;
+  memset(&out, 0, sizeof out);
+  out.signif = wide.signif;
+  out.sign_exp = wide.sign_exp;
+  return out;
+}
+#endif
+
 /*
  * The op census, which counts and never decides. Its second column asks the
  * SAME predicates x86p_ext80_mul_ordinary asks, so a run cannot report more
@@ -646,23 +669,46 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
 #if X86P_X87_BINARY128
     {
       /*
-       * Straight into the softfloat in the format it takes, and straight back
-       * out. Nothing here widens to binary128: that round trip was 38% of this
-       * path, measured by tests/bench_x87_arith.cpp.
+       * The ordinary cases -- two operands that are each a normal or a zero,
+       * round to nearest, 80-bit precision, a normal or zero result -- as
+       * integer work on the encoding. On the game's Dead Zone route that is
+       * 99% of the arithmetic performed: measured, by the census in this file,
+       * which asks these same rules rather than guessing at their
+       * preconditions.
        *
-       * x87_ext80_arith.h holds an ordinary-case multiply that answers the
-       * same operation as integer work on the encoding, and calling it HERE
-       * was measured in the game: 13.84 presents/s against 13.83, which is
-       * nothing. It is 1.3x to 1.8x on the arithmetic alone and only 1.06x
-       * through this entry point, because what surrounds the arithmetic --
-       * this function's own operand fetch, the register-file read and write,
-       * and the call that reached it -- costs more than the arithmetic does.
-       * The rule stays as the thing an inline path in the backend must match;
-       * this path stays as it was.
+       * A refusal falls through to exactly the softfloat that ran before, so
+       * this decides speed and never an answer. The rules report the status
+       * bits themselves -- inexact and C1 -- because a fast path with the
+       * right number and the wrong status word would be wrong in the one place
+       * a guest can see a rounding.
        */
-      uint16_t status = 0;
-      r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
-      f->status |= status;
+      X86pExt80 ex;
+      X86pExt80 ey;
+      X86pExt80 er;
+      uint16_t raised = 0u;
+      int answered = 0;
+      ex.signif = x.signif;
+      ex.sign_exp = x.sign_exp;
+      ey.signif = y.signif;
+      ey.sign_exp = y.sign_exp;
+      if (!divide_by_zero) {
+        if (op == kX86pX87Mul) {
+          answered = x86p_ext80_mul_ordinary(f->control, ex, ey, &er, &raised);
+        } else if (op == kX86pX87Add || op == kX86pX87Sub) {
+          answered = x86p_ext80_add_ordinary(f->control, ex, ey, op == kX86pX87Sub, &er, &raised);
+        }
+      }
+      if (answered) {
+        r = reg_of_ext80(er);
+        f->status |= raised;
+      } else {
+        /* Straight into the softfloat in the format it takes, and straight
+           back out. Nothing here widens to binary128: that round trip was 38%
+           of this path, measured by tests/bench_x87_arith.cpp. */
+        uint16_t status = 0;
+        r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
+        f->status |= status;
+      }
     }
 #elif defined(X86P_X87_HOST_FPU)
     /* One rounding, at the guest's precision, on the unit that defines it. */
@@ -745,28 +791,6 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
  * reassembly now, and tests/test_x87_ext80_widen.cpp holds it to the host
  * x87's own answer over every subnormal and a sweep of both spaces.
  */
-#if X86P_X87_BINARY128
-/*
- * The storage holds ten bytes of architectural state in a sixteen-byte object,
- * and the six between them are padding this file never reads.
- *
- * Something else does. The register file is compared as memory -- the WASM
- * differential does one memcmp of the whole X86pX87, which is what lets it
- * catch a tag, a TOP or a control word that the value comparison would miss --
- * so a register whose padding was never written makes two runs that agree
- * about every number differ anyway. Leaving it uninitialised failed FLD32 and
- * FLD64 there, five cases each, while the conversion itself was right to the
- * bit. Zeroing first is what the softfloat wrapper this replaces did, and the
- * two stores that follow leave one 16-byte zero behind.
- */
-static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
-  X86pX87Reg out;
-  memset(&out, 0, sizeof out);
-  out.signif = wide.signif;
-  out.sign_exp = wide.sign_exp;
-  return out;
-}
-#endif
 
 X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits) {
 #if X86P_X87_BINARY128
