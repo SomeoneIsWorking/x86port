@@ -142,6 +142,17 @@ void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsi
 /* Push the guest value at kX86pWasmLocalAddr, zero-extended from width `w`. */
 void x86p_wasm_state_load_mem(X86pWasmState *s, int w);
 
+/*
+ * Push the guest value at kX86pWasmLocalAddr as a low/high i32 pair, for the
+ * widths a single i32 cannot hold.
+ *
+ * A pair rather than an i64 because every import takes and returns i32 -- see
+ * x86p_wasm_import_type -- and at width 8 the two halves are the two loads an
+ * engine issues for an unaligned i64 anyway. At widths 1 to 4 the high half is
+ * a constant zero, so the caller does not branch on the width.
+ */
+void x86p_wasm_state_load_mem_pair(X86pWasmState *s, int w);
+
 /* Store local `value` at kX86pWasmLocalAddr, at width `w`. */
 void x86p_wasm_state_store_mem(X86pWasmState *s, int w, X86pWasmLocal value);
 

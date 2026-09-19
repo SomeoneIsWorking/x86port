@@ -1,7 +1,23 @@
 #include "x87_memory.h"
 
+/* The widths that arrive as a little-endian integer's worth of bits, which is
+   every width except the ten bytes of an 80-bit operand. */
+static int bits_width_supported(unsigned width, int integer) {
+  return integer ? (width == 2 || width == 4 || width == 8) : (width == 4 || width == 8);
+}
+
 static int width_supported(unsigned width, int integer) {
-  return integer ? (width == 2 || width == 4 || width == 8) : (width == 4 || width == 8 || width == 10);
+  return bits_width_supported(width, integer) || (!integer && width == 10);
+}
+
+X86pX87MemoryStatus x86p_x87_reg_from_operand_bits(uint64_t bits, unsigned width, int integer, X86pX87Reg *out) {
+  if (!out || !bits_width_supported(width, integer)) {
+    return kX86pX87MemoryUnsupported;
+  }
+  *out = integer      ? x86p_x87_reg_from_long_double(x86p_x87_integer_value(bits, width))
+         : width == 4 ? x86p_x87_reg_from_f32_bits((uint32_t)bits)
+                      : x86p_x87_reg_from_f64_bits(bits);
+  return kX86pX87MemoryOk;
 }
 
 /*
@@ -32,10 +48,7 @@ x86p_x87_read_value_raw(const X86pMem *mem, uint32_t address, unsigned width, in
   for (unsigned i = 0; i < width; i++) {
     bits |= (uint64_t)bytes[i] << (8u * i);
   }
-  *out = integer      ? x86p_x87_reg_from_long_double(x86p_x87_integer_value(bits, width))
-         : width == 4 ? x86p_x87_reg_from_f32_bits((uint32_t)bits)
-                      : x86p_x87_reg_from_f64_bits(bits);
-  return kX86pX87MemoryOk;
+  return x86p_x87_reg_from_operand_bits(bits, width, integer, out);
 }
 
 X86pX87MemoryStatus x86p_x87_write_value_raw(

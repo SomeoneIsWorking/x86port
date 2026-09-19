@@ -266,17 +266,39 @@ void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn
   x86p_wasm_state_guard_addr(s, insn_eip, w, access);
 }
 
-void x86p_wasm_state_load_mem(X86pWasmState *s, int w) {
+/* `byte_offset` bytes past kX86pWasmLocalAddr. The guard ran for the WHOLE
+   operand, so every byte the offset reaches is already inside the mapping and
+   already permitted -- this is the second half of one access, never a second
+   access. */
+static void load_mem_at(X86pWasmState *s, int w, uint32_t byte_offset) {
   if (s->plan.memory_context) {
     x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
     x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    if (byte_offset != 0u) {
+      x86p_wasm_i32_const(s->e, (int32_t)byte_offset);
+      x86p_wasm_i32_op(s->e, kWasmI32Add);
+    }
     x86p_wasm_i32_const(s->e, w);
     x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemLoad);
     return;
   }
 
   x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
-  load_w(s, 0u, w);
+  load_w(s, byte_offset, w);
+}
+
+void x86p_wasm_state_load_mem(X86pWasmState *s, int w) {
+  load_mem_at(s, w, 0u);
+}
+
+void x86p_wasm_state_load_mem_pair(X86pWasmState *s, int w) {
+  if (w <= 4) {
+    load_mem_at(s, w, 0u);
+    x86p_wasm_i32_const(s->e, 0);
+    return;
+  }
+  load_mem_at(s, 4, 0u);
+  load_mem_at(s, 4, 4u);
 }
 
 void x86p_wasm_state_store_mem(X86pWasmState *s, int w, X86pWasmLocal value) {
