@@ -17,8 +17,7 @@
  * significand always ends up left-justified with its leading one at bit 63,
  * which is where ext80 keeps it explicitly rather than implying it.
  */
-static X86pExt80 widen(uint64_t sign, uint32_t exp, uint64_t mant, uint32_t field, uint32_t exp_max,
-                       uint32_t bias) {
+static X86pExt80 widen(uint64_t sign, uint32_t exp, uint64_t mant, uint32_t field, uint32_t exp_max, uint32_t bias) {
   const uint32_t shift = 63u - field;
   X86pExt80 out;
   out.signif = 0u;
@@ -74,6 +73,5 @@ X86pExt80 x86p_ext80_from_f32_bits(uint32_t bits) {
 }
 
 X86pExt80 x86p_ext80_from_f64_bits(uint64_t bits) {
-  return widen(bits >> 63, (uint32_t)((bits >> 52) & 0x7FFu), bits & 0xFFFFFFFFFFFFFull, 52u, 0x7FFu,
-               1023u);
+  return widen(bits >> 63, (uint32_t)((bits >> 52) & 0x7FFu), bits & 0xFFFFFFFFFFFFFull, 52u, 0x7FFu, 1023u);
 }

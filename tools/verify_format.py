@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from x86port_checks.format import selftest, verify_format
+from x86port_checks.format import enumeration_selftest, selftest, verify_format
 
 SKIP = 77
 
@@ -35,6 +35,8 @@ def main() -> int:
         if args.selftest:
             formatter = selftest(root)
             print(f"format negative control passed: {formatter} rewrote misformatted input")
+            listing = enumeration_selftest()
+            print(f"enumeration control passed: {listing}")
             return 0
         result = verify_format(root)
     except FileNotFoundError as error:
@@ -56,9 +58,14 @@ def main() -> int:
             print(f"  {name}")
         print(f"  fix: {result.formatter} -i --style=file " + " ".join(result.drifting))
         return 1
+    absent = (
+        f", {len(result.absent)} listed but not on disk (staged deletion)"
+        if result.absent
+        else ""
+    )
     print(
         f"format OK: {result.checked} of {result.checked} first-party source(s) "
-        f"match .clang-format ({result.formatter})"
+        f"match .clang-format ({result.formatter}){absent}"
     )
     return 0
 
