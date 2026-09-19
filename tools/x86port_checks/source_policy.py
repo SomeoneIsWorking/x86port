@@ -28,6 +28,13 @@ _OUTPUT_PATTERNS = (
     re.compile(r"\bstd::(?:cerr|cout|clog)\b"),
 )
 _ENVIRONMENT_PATTERN = re.compile(r"\b(?:getenv|secure_getenv|_dupenv_s)\s*\(")
+# EM_JS bodies are JavaScript that clang-format lays out as C. Measured: a
+# template literal written as `${failure.name}: ${failure.message}` came back
+# from the formatter as `${failure.name} : $ { failure.message }`, which is
+# still valid JavaScript and interpolates nothing, so the browser's own words
+# for a failed run were replaced by the source text of the expression. Build
+# such strings with concatenation instead; nothing here rewrites a `+`.
+_TEMPLATE_LITERAL_PATTERN = re.compile(r"`[^`\n]*\$\{")
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,12 @@ def scan_source(path: Path, text: str) -> list[SourceViolation]:
                     relative, line_number, "process environment", line.strip()
                 )
             )
+        if _TEMPLATE_LITERAL_PATTERN.search(line):
+            violations.append(
+                SourceViolation(
+                    relative, line_number, "formatter-hostile template literal", line.strip()
+                )
+            )
     return violations
 
 
@@ -143,6 +156,9 @@ add_library(x86port_runtime STATIC src/x86port/cpu.c src/x86port/x87_softfloat.c
         Path("src/x86port/cpu.c"): 'fprintf(stderr, "bad\\n");',
         Path("src/x86port/alu.c"): 'const char *value = getenv("BAD");',
         Path("src/x86port/jit_engine.c"): 'OutputDebugStringA("bad");',
+        # The formatter would take this apart and leave a message that reads
+        # back the expression's own text instead of the browser's words.
+        Path("src/x86port/jit_wasm_host.c"): "stringToUTF8(`${failure.message}`, error, len);",
     }
     violations = [
         violation
@@ -157,6 +173,10 @@ add_library(x86port_runtime STATIC src/x86port/cpu.c src/x86port/x87_softfloat.c
         raise RuntimeError("diagnostic owner was incorrectly rejected")
     if scan_source(CONFIG_OWNER, 'const char *value = getenv("X86PORT_OPTION");'):
         raise RuntimeError("configuration owner was incorrectly rejected")
+    if scan_source(Path("src/x86port/jit_wasm_host.c"), 'stringToUTF8(failure.name + ": " + failure.message, e, n);'):
+        raise RuntimeError("the concatenation this policy asks for was rejected")
+    if scan_source(Path("src/x86port/jit_wasm_host.c"), "const s = `a plain literal`;"):
+        raise RuntimeError("a template literal with no interpolation was rejected")
     at_limit = "/* fixture */\n" * SOURCE_LINE_LIMIT
     if scan_source(Path("src/x86port/jit_arm64.c"), at_limit):
         raise RuntimeError("source-size positive control rejected the boundary")
