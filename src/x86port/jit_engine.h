@@ -168,6 +168,11 @@ typedef struct X86pJitEngineStats {
    */
   uint64_t compactions;
   uint64_t compaction_refusals;
+  /* Blocks waiting for a batch to fill, and 1 per engine that has stopped
+     compacting for good, so a compaction count that stops rising can be told
+     apart from batches that stopped filling. */
+  uint64_t compaction_pending;
+  uint64_t compaction_stopped;
 } X86pJitEngineStats;
 
 /*

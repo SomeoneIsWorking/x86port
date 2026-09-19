@@ -74,6 +74,16 @@ unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
   return 0u;
 }
 
+unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage) {
+  (void)storage;
+  return 0u;
+}
+
+int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage) {
+  (void)storage;
+  return 0;
+}
+
 void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->used = 0u;
 }
