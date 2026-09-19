@@ -547,6 +547,16 @@ target_link_libraries(test_jit_wasm_compact PRIVATE x86port_runtime)
 x86p_strict_target(test_jit_wasm_compact)
 add_test(NAME test_jit_wasm_compact COMMAND test_jit_wasm_compact)
 
+# The WebAssembly storage's own bookkeeping. The shipping source is compiled in
+# rather than linked from the runtime library, because that library carries the
+# NATIVE storage on a native host -- and the bug this test exists for is in how
+# the wasm one counts block records against modules, which no native build
+# would ever run.
+add_executable(test_jit_storage_wasm tests/test_jit_storage_wasm.c src/x86port/jit_storage_wasm.c)
+target_link_libraries(test_jit_storage_wasm PRIVATE x86port_runtime)
+x86p_strict_target(test_jit_storage_wasm)
+add_test(NAME test_jit_storage_wasm COMMAND test_jit_storage_wasm)
+
 add_executable(test_jit_wasm_arena tests/test_jit_wasm_arena.c)
 target_link_libraries(test_jit_wasm_arena PRIVATE x86port_runtime)
 x86p_strict_target(test_jit_wasm_arena)

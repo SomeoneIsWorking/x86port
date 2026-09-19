@@ -32,7 +32,7 @@ void x86p_jit_storage_destroy(X86pJitStorage *storage);
 typedef enum X86pJitStorageRoom {
   kX86pJitStorageRoom = 0,     /* another block fits */
   kX86pJitStorageOutOfBytes,   /* the byte budget */
-  kX86pJitStorageOutOfSlots,   /* every module slot this storage owns is live */
+  kX86pJitStorageOutOfSlots,   /* every BLOCK RECORD this storage owns is live */
   kX86pJitStorageAtEngineLimit /* the live-module ceiling the engine has shown */
 } X86pJitStorageRoom;
 X86pJitStorageRoom x86p_jit_storage_room(const X86pJitStorage *storage);
