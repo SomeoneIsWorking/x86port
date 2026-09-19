@@ -231,6 +231,15 @@ int x86p_wasm_can_lower(const X86pInsn *insn) {
 
 /* ---- the block loop ------------------------------------------------------ */
 
+void x86p_wasm_plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan) {
+  plan->base = (uint32_t)(uintptr_t)mem->host;
+  plan->lo = mem->lo;
+  plan->size = mem->size;
+  plan->memory_context = mem->sparse ? (uint32_t)(uintptr_t)mem : 0u;
+  plan->perms = mem->sparse ? 0u : (uint32_t)(uintptr_t)mem->perms;
+  plan->page_shift = mem->page_shift;
+}
+
 X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
                                     const X86pMem *fetch,
                                     const X86pWasmPlan *plan,

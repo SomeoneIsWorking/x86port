@@ -44,6 +44,16 @@ extern "C" {
  * is an indirect-table index, which is exactly what a function pointer is
  * there, so the value goes straight into X86pJitBlock::entry. A return of 0 or
  * below is a failure: table index 0 is the null entry.
+ *
+ * `adopt` is what makes a block's module replaceable underneath it. A block
+ * that is already running holds ONE address -- its table entry -- and every
+ * cached reference and every compiled call goes through that entry, so a
+ * module can be swapped for another that exports the same code as long as the
+ * entry keeps working. `adopt` points an existing entry at another module's
+ * export and moves the entry's ownership with it, so releasing the module the
+ * block came from no longer frees an entry the block is still entered
+ * through. It is optional: a host that cannot do it leaves the pointer NULL
+ * and its caller does not compact, rather than compacting incorrectly.
  */
 typedef struct X86pWasmHost {
   /* On refusal, write why into `error` (never longer than `error_len`,
@@ -52,6 +62,9 @@ typedef struct X86pWasmHost {
      and the one that lost a whole run was the one with no words. */
   int (*instantiate)(void *user, const void *bytes, size_t len, char *error, unsigned error_len);
   int (*resolve)(void *user, int module, const char *field);
+  /* Returns 0 without changing anything when either module is gone or `to`
+     has no export named `to_field`. */
+  int (*adopt)(void *user, int to, const char *to_field, int from, const char *from_field, int entry);
   void (*release)(void *user, int module);
   void *user;
 } X86pWasmHost;
@@ -120,6 +133,7 @@ typedef struct X86pWasmArena {
   unsigned released;  /* modules handed back to the engine */
   unsigned refusals;  /* publications refused because the cap was reached */
   unsigned failures;  /* publications the engine itself rejected */
+  unsigned adoptions; /* entries moved from one module to another */
 } X86pWasmArena;
 
 /*
@@ -153,6 +167,24 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
  * token is not live or the export is not there.
  */
 void *x86p_wasm_arena_entry(X86pWasmArena *a, int token, const char *field);
+
+/*
+ * Move `entry` -- an address a previous x86p_wasm_arena_entry() returned for
+ * `from`'s export `from_field` -- onto `to`'s export `to_field`.
+ *
+ * This is how a block outlives the module it was first published in. The
+ * entry's value does not change, so every cached reference and every compiled
+ * call that already goes through it keeps working, and `from` may then be
+ * released without taking the entry with it.
+ *
+ * Returns 0, changing nothing, when either token is not live, when the host
+ * cannot adopt, or when the export is not there.
+ */
+int x86p_wasm_arena_adopt(
+    X86pWasmArena *a, int to, const char *to_field, int from, const char *from_field, void *entry);
+
+/* Whether this arena's engine can move an entry between modules at all. */
+int x86p_wasm_arena_can_adopt(const X86pWasmArena *a);
 
 /* Hand a module back to the engine. Releasing a token twice, or one that was
    never live, does nothing and is not an error: a block cache that discards
@@ -192,6 +224,7 @@ unsigned x86p_wasm_arena_published(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_released(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_refusals(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_failures(const X86pWasmArena *a);
+unsigned x86p_wasm_arena_adoptions(const X86pWasmArena *a);
 
 #ifdef __cplusplus
 } /* extern "C" */

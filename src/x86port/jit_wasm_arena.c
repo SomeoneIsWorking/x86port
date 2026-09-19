@@ -157,6 +157,35 @@ void *x86p_wasm_arena_entry(X86pWasmArena *a, int token, const char *field) {
   return (void *)(uintptr_t)(unsigned)callable;
 }
 
+int x86p_wasm_arena_can_adopt(const X86pWasmArena *a) {
+  return a && host_is_usable(&a->host) && a->host.adopt != NULL;
+}
+
+int x86p_wasm_arena_adopt(
+    X86pWasmArena *a, int to, const char *to_field, int from, const char *from_field, void *entry) {
+  unsigned index;
+  if (!x86p_wasm_arena_can_adopt(a) || !to_field || !from_field || !entry) {
+    return 0;
+  }
+  if (to < 0 || (unsigned)to >= a->capacity || from < 0 || (unsigned)from >= a->capacity) {
+    return 0;
+  }
+  if (!a->slot[to].live || !a->slot[from].live) {
+    return 0;
+  }
+  index = (unsigned)(uintptr_t)entry;
+  if (index == 0u) {
+    /* Table entry 0 is the null entry, so it is not an address a block was
+       ever entered at -- adopting it would point the null entry at real code. */
+    return 0;
+  }
+  if (!a->host.adopt(a->host.user, a->slot[to].module, to_field, a->slot[from].module, from_field, (int)index)) {
+    return 0;
+  }
+  a->adoptions++;
+  return 1;
+}
+
 void x86p_wasm_arena_release(X86pWasmArena *a, int token) {
   if (!a || token < 0 || (unsigned)token >= a->capacity) {
     return;
@@ -214,6 +243,10 @@ unsigned x86p_wasm_arena_released(const X86pWasmArena *a) {
 
 unsigned x86p_wasm_arena_refusals(const X86pWasmArena *a) {
   return a ? a->refusals : 0u;
+}
+
+unsigned x86p_wasm_arena_adoptions(const X86pWasmArena *a) {
+  return a ? a->adoptions : 0u;
 }
 
 unsigned x86p_wasm_arena_failures(const X86pWasmArena *a) {
