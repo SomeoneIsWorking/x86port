@@ -95,6 +95,11 @@ typedef struct X86pJitEngineStats {
      X86pJitBlock::cond_unknown_kind: the remainder, conds_translated minus
      conds_inline minus this, is the count that a new derivation would win. */
   uint64_t conds_unknown_kind;
+  /* Memory-operand x87 loads translated, and those whose widening the emitted
+     code performs itself. See X86pJitBlock::x87_loads: a backend with no
+     inline form reports the denominator and a zero, rather than nothing. */
+  uint64_t x87_loads_translated;
+  uint64_t x87_loads_inline;
 
   /*
    * The exit census, over the blocks this engine translated. X86pWasmExitCensus

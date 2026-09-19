@@ -388,6 +388,8 @@ static void *translate_at(
   e->stats.conds_translated += blk.conds;
   e->stats.conds_inline += blk.cond_inline;
   e->stats.conds_unknown_kind += blk.cond_unknown_kind;
+  e->stats.x87_loads_translated += blk.x87_loads;
+  e->stats.x87_loads_inline += blk.x87_loads_inline;
   e->stats.exits += blk.exits;
   e->stats.exits_static += blk.exits_static;
   e->stats.exits_backward += blk.exits_backward;

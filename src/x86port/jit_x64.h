@@ -165,6 +165,19 @@ typedef struct X86pJitBlock {
   unsigned cond_unknown_kind;
 
   /*
+   * Memory-operand x87 loads, and those whose widening the block performs
+   * itself rather than calling out of its module for. Only the WebAssembly
+   * backend emits the inline form; jit_wasm_x87_load.h says why that backend
+   * has one at all.
+   *
+   * Both, for the reason the condition census gives: a build that inlined
+   * nothing and a corpus with no float loads in it are the same zero, and they
+   * call for opposite work.
+   */
+  unsigned x87_loads;
+  unsigned x87_loads_inline;
+
+  /*
    * How many places the block can leave to, and how many of those the
    * translator already knows the address of. This is what ranks block chaining:
    * an exit to a constant is one a backend could branch to directly, where an

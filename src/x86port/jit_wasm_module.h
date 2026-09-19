@@ -138,8 +138,28 @@ typedef enum X86pWasmLocal {
   kX86pWasmLocalR,       /* the flag tuple's result, and the value written back */
   kX86pWasmLocalCarry,   /* the carry-in, live across a bounds check */
   kX86pWasmLocalTarget,  /* a computed guest EIP */
-  kX86pWasmLocalCount    /* MUST stay last */
+  kX86pWasmLocalCount    /* MUST stay last of the i32 locals */
 } X86pWasmLocal;
+
+/*
+ * The i64 locals, which follow the i32 ones in one further group.
+ *
+ * A SECOND TYPE AND NOT A PAIR OF HALVES. An ext80 significand is 64 bits and
+ * the widening that builds one is a shift across the whole width, so doing it
+ * in i32 halves would mean open-coding the carries -- more emitted code, in the
+ * path this exists to make shorter. WebAssembly has i64; the block signature
+ * does not change, because these are locals rather than parameters.
+ *
+ * Numbered after kX86pWasmLocalCount because local indices are one flat space
+ * across every group: the i32 group occupies 1..kX86pWasmLocalCount-1 after the
+ * cpu parameter, and these continue from there.
+ */
+typedef enum X86pWasmLocal64 {
+  kX86pWasmLocal64Bits = (int)kX86pWasmLocalCount, /* an operand's raw bits, then its significand */
+  kX86pWasmLocal64Count                            /* MUST stay last */
+} X86pWasmLocal64;
+
+#define X86P_WASM_LOCAL64_GROUP ((uint32_t)kX86pWasmLocal64Count - (uint32_t)kX86pWasmLocalCount)
 
 /*
  * The block function's signature, as an index into the module's type section.

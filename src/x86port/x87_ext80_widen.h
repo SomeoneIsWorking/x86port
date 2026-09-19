@@ -46,6 +46,34 @@ typedef struct X86pExt80 {
   uint16_t sign_exp;
 } X86pExt80;
 
+/* ext80's exponent bias. Published because the WebAssembly backend emits the
+   normal case of this widening inline, and a second spelling of the rebias
+   would be free to drift from the one below by a power of two. */
+#define X86P_EXT80_BIAS 16383
+
+/*
+ * What a `width`-byte source operand's bits mean: the stored fraction's width,
+ * the all-ones exponent that marks an infinity or a NaN, and the format's
+ * bias. The sign is always the top bit and so is not described.
+ *
+ * A DESCRIPTOR AND NOT TWO LITERAL CALL SITES. These six numbers decide where
+ * every field of an operand is, and the WebAssembly backend now emits the
+ * shift-and-rebias for the normal case rather than calling it -- so they have
+ * two consumers, in two languages, and a disagreement between them would
+ * surface as a load that is wrong by a factor of two rather than as anything
+ * that looks like a mistake.
+ *
+ * `field` is zero for a width that is not 4 or 8, which is the only refusal
+ * this can have and is what a caller must test before using the rest.
+ */
+typedef struct X86pExt80Source {
+  uint32_t field;
+  uint32_t exp_max;
+  uint32_t bias;
+} X86pExt80Source;
+
+X86pExt80Source x86p_ext80_source(unsigned width);
+
 X86pExt80 x86p_ext80_from_f32_bits(uint32_t bits);
 X86pExt80 x86p_ext80_from_f64_bits(uint64_t bits);
 

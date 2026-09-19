@@ -134,8 +134,9 @@ int x86p_wasm_module_body_begin(X86pWasmModule *m) {
    * refuses -- this makes mismatched ORDER impossible as well.
    */
   m->body = body;
-  x86p_wasm_locals(&m->e, 1);
+  x86p_wasm_locals(&m->e, 2);
   x86p_wasm_local_group(&m->e, (uint32_t)kX86pWasmLocalCount - 1u, kWasmI32);
+  x86p_wasm_local_group(&m->e, X86P_WASM_LOCAL64_GROUP, kWasmI64);
   m->open = 1;
   return (int)m->written;
 }
