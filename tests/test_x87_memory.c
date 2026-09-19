@@ -1,23 +1,28 @@
 /*
  * x87 memory operands, over fixtures that make the two paths DIFFERENT paths.
  *
- * x86p_x87_read_value resolves the mapping once and reads the operand in
- * place when the whole operand is one span, and falls back to copying when it
- * is not. That is an optimisation only if both paths produce the same value,
- * and the only way to know is a fixture where each is genuinely taken.
+ * x86p_mem_read_bytes reads the whole range in place when it is one span and
+ * copies span by span when it is not, so an x87 operand takes one path or the
+ * other depending only on where it lies. That is an optimisation only if both
+ * produce the same value, and the only way to know is a fixture where each is
+ * genuinely taken.
  *
  * Finding one is the whole difficulty, and the first attempt at this file was
  * wrong: on contiguous memory a span does NOT stop where the permission byte
  * merely differs, only where the requested access is not granted -- and there
- * x86p_mem_read_bytes would refuse too. So an operand straddling a read-write
- * page and a read-only one resolves in one span, and a test built on that
- * discriminates nothing. It passed with the copying path compiled out.
+ * the read would be refused outright. So an operand straddling a read-write
+ * page and a read-only one is one span, and a test built on that discriminates
+ * nothing. It passed with the span-by-span path compiled out.
  *
  * The case that does take it is SPARSE memory: two adjacent guest ranges from
  * SEPARATE host allocations. Both are readable, so the span walker crosses
- * them and x86p_mem_read_bytes succeeds; x86p_sparse_resolve refuses, because
- * there is no single host pointer that spans both. Compiling the copying path
- * out must make these checks fail, and it does.
+ * them; there is no single host pointer that spans both, so the whole-range
+ * resolution declines. The checks below assert that premise in both
+ * directions rather than believing it.
+ *
+ * The falsification for the span-by-span path itself lives in
+ * test_memory_sparse, which is where that path now is: compiling it out fails
+ * 313 of its checks.
  */
 #include "cpu.h"
 #include "memory_sparse.h"
