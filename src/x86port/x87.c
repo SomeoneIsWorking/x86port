@@ -550,12 +550,27 @@ static X86pExt80 census_ext80_of_reg(X86pX87Reg v) {
 }
 
 static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
+  const X86pExt80 ex = census_ext80_of_reg(x);
+  const X86pExt80 ey = census_ext80_of_reg(y);
+  const unsigned i = (unsigned)op;
   f->op_census->ordinary_measured = 1;
-  f->op_census->total[(unsigned)op]++;
-  if (x86p_ext80_control_is_ordinary(f->control) && x86p_ext80_is_normal(census_ext80_of_reg(x)) &&
-      x86p_ext80_is_normal(census_ext80_of_reg(y))) {
-    f->op_census->ordinary[(unsigned)op]++;
+  f->op_census->total[i]++;
+  if (!x86p_ext80_control_is_ordinary(f->control)) {
+    f->op_census->refused_control[i]++;
+    return;
   }
+  if (x86p_ext80_is_normal(ex) && x86p_ext80_is_normal(ey)) {
+    f->op_census->ordinary[i]++;
+    return;
+  }
+  /* A zero is separated from everything else only when it is the ONLY reason:
+     a zero against a NaN is the NaN's case, not the zero's. */
+  if ((x86p_ext80_is_zero(ex) || x86p_ext80_is_zero(ey)) && (x86p_ext80_is_zero(ex) || x86p_ext80_is_normal(ex)) &&
+      (x86p_ext80_is_zero(ey) || x86p_ext80_is_normal(ey))) {
+    f->op_census->refused_zero[i]++;
+    return;
+  }
+  f->op_census->refused_other[i]++;
 }
 #else
 static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
