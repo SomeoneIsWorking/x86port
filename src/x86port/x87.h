@@ -124,13 +124,45 @@ typedef struct X86pX87Reg {
 typedef long double X86pX87Reg;
 #endif
 
+/* The arithmetic operations, as a count usable before the enum below names
+   them; the static assertion after that enum is what keeps the two equal. */
+#define X86P_X87_OPS 4
+
+/*
+ * WHICH ARITHMETIC A RUN ACTUALLY PERFORMS, off by default.
+ *
+ * The static op mix of a binary says nothing about a route: a multiply inside
+ * a skinning loop and a divide in a menu weigh the same there. This counts
+ * what a run executes, and beside each total the number of operations an
+ * inline encoding-level path could have taken -- `x86p_ext80_mul_ordinary`'s
+ * own preconditions, asked through the same predicates it asks, so the two
+ * cannot drift.
+ *
+ * `ordinary_measured` is 0 on a host whose register file is not the ext80
+ * encoding, where those preconditions cannot be asked of the storage. A
+ * reader must print that rather than a row of zeroes, which would read like a
+ * run whose arithmetic an inline path could never touch.
+ */
+typedef struct X86pX87OpCensus {
+  uint64_t total[X86P_X87_OPS];
+  uint64_t ordinary[X86P_X87_OPS];
+  int ordinary_measured;
+} X86pX87OpCensus;
+
 typedef struct X86pX87 {
   X86pX87Reg reg[X86P_X87_REGS]; /* PHYSICAL registers; ST(i) is reg[(top+i)&7] */
   uint8_t tag[X86P_X87_REGS];
   uint8_t top;
   uint16_t control;
   uint16_t status; /* C0-C3 and the exception flags; TOP is merged in on read */
+  /* NULL unless a consumer armed the census; the branch is one predictable
+     test on a path that costs tens of nanoseconds. */
+  X86pX87OpCensus *op_census;
 } X86pX87;
+
+/* `census` may be NULL, which disarms it. The counters belong to the caller
+   and are not cleared here. */
+void x86p_x87_set_op_census(X86pX87 *f, X86pX87OpCensus *census);
 
 /*
  * THE MMX REGISTERS ARE THESE REGISTERS.
@@ -220,6 +252,8 @@ typedef enum X86pX87Op {
   kX86pX87Div,
   kX86pX87OpCount /* MUST stay last */
 } X86pX87Op;
+
+_Static_assert((int)kX86pX87OpCount == X86P_X87_OPS, "the op census has one counter per arithmetic operation");
 
 int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse);
 

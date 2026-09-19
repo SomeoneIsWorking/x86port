@@ -2,6 +2,7 @@
 #include "x87.h"
 
 #include "x87_binary128.h"
+#include "x87_ext80_arith.h"
 #include "x87_ext80_narrow.h"
 #include "x87_ext80_widen.h"
 #include "x87_softfloat.h"
@@ -535,6 +536,44 @@ static int reg_is_nan(X86pX87Reg v) {
 }
 #endif
 
+/*
+ * The op census, which counts and never decides. Its second column asks the
+ * SAME predicates x86p_ext80_mul_ordinary asks, so a run cannot report more
+ * reachable operations than an inline path would accept.
+ */
+#if X86P_X87_BINARY128
+static X86pExt80 census_ext80_of_reg(X86pX87Reg v) {
+  X86pExt80 w;
+  w.signif = v.signif;
+  w.sign_exp = v.sign_exp;
+  return w;
+}
+
+static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
+  f->op_census->ordinary_measured = 1;
+  f->op_census->total[(unsigned)op]++;
+  if (x86p_ext80_control_is_ordinary(f->control) && x86p_ext80_is_normal(census_ext80_of_reg(x)) &&
+      x86p_ext80_is_normal(census_ext80_of_reg(y))) {
+    f->op_census->ordinary[(unsigned)op]++;
+  }
+}
+#else
+static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
+  /* The register file is the host's own long double here, so the encoding the
+     predicates read is not the storage. Counting totals is still honest;
+     claiming to have measured the second column would not be. */
+  (void)x;
+  (void)y;
+  f->op_census->total[(unsigned)op]++;
+}
+#endif
+
+void x86p_x87_set_op_census(X86pX87 *f, X86pX87OpCensus *census) {
+  if (f) {
+    f->op_census = census;
+  }
+}
+
 int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse) {
   X86pX87Reg a, r;
   if (!f || !x86p_x87_get_raw(f, dst, &a)) {
@@ -552,6 +591,9 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
     X86pX87Reg y = reverse ? a : src;
     if ((unsigned)op >= (unsigned)kX86pX87OpCount) {
       return 0;
+    }
+    if (f->op_census) {
+      census_note(f, op, x, y);
     }
 #if X86P_X87_BINARY128
     const int divide_by_zero = op == kX86pX87Div && reg_is_zero(y) && !reg_is_zero(x) && !reg_is_nan(x);

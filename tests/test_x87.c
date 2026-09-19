@@ -160,6 +160,68 @@ static void test_clear_exceptions_preserves_unrelated_state(void) {
 /* Overflow and underflow are REPORTED. Silently wrapping TOP produces an
    engine that drifts from hardware with no symptom for thousands of
    instructions. */
+/*
+ * The op census counts what a run performs, and its second column says what an
+ * encoding-level inline path could have taken.
+ *
+ * The designed negatives are the point. An unarmed census must count nothing,
+ * or an off switch that silently records would make every reading suspect; a
+ * rounding mode the fast path refuses must not appear in the `ordinary`
+ * column, or a run would report headroom no inline path could reach; and where
+ * the storage is not the ext80 encoding the column is not measured at all,
+ * which `ordinary_measured` says instead of a row of zeroes.
+ */
+static void test_the_op_census_counts_what_a_run_performs(void) {
+  X86pX87OpCensus census;
+  X86pX87 f;
+  memset(&census, 0, sizeof census);
+
+  /* Unarmed: the same work, and nothing recorded. */
+  x86p_x87_reset(&f);
+  CHECK(x86p_x87_push(&f, 3.0L));
+  CHECK(x86p_x87_push(&f, 5.0L));
+  CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 7.0L, 0));
+  CHECK_EQ_U(census.total[kX86pX87Mul], 0);
+  CHECK_EQ_U(census.ordinary_measured, 0);
+
+  x86p_x87_set_op_census(&f, &census);
+  CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 7.0L, 0));
+  CHECK(x86p_x87_arith(&f, kX86pX87Add, 0, 1.0L, 0));
+  CHECK(x86p_x87_arith(&f, kX86pX87Add, 0, 1.0L, 0));
+  CHECK(x86p_x87_arith(&f, kX86pX87Div, 0, 2.0L, 0));
+  CHECK_EQ_U(census.total[kX86pX87Mul], 1);
+  CHECK_EQ_U(census.total[kX86pX87Add], 2);
+  CHECK_EQ_U(census.total[kX86pX87Sub], 0);
+  CHECK_EQ_U(census.total[kX86pX87Div], 1);
+
+  if (census.ordinary_measured) {
+    /* Four normals at the default control word: every one of them reachable. */
+    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.ordinary[kX86pX87Add], 2);
+
+    /* Round-toward-negative is not the ordinary case, so the operation is
+       counted and the headroom is not. */
+    f.control = (uint16_t)((f.control & ~(uint16_t)X86P_X87_RC_MASK) | (uint16_t)X86P_X87_RC_DOWN);
+    CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 3.0L, 0));
+    CHECK_EQ_U(census.total[kX86pX87Mul], 2);
+    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+
+    /* A zero operand is not a normal, for the same reason. */
+    f.control = (uint16_t)(f.control & ~(uint16_t)X86P_X87_RC_MASK);
+    CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 0.0L, 0));
+    CHECK_EQ_U(census.total[kX86pX87Mul], 3);
+    CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+  } else {
+    printf("  NOTE: this host's register file is not the ext80 encoding, so "
+           "the census counted operations and measured no headroom.\n");
+  }
+
+  /* Disarming stops it again. */
+  x86p_x87_set_op_census(&f, NULL);
+  CHECK(x86p_x87_arith(&f, kX86pX87Sub, 0, 1.0L, 0));
+  CHECK_EQ_U(census.total[kX86pX87Sub], 0);
+}
+
 static void test_stack_overflow_and_underflow_are_reported(void) {
   X86pX87 f;
   long double v;
@@ -674,6 +736,7 @@ int main(void) {
   RUN(test_top_appears_in_the_status_word);
   RUN(test_clear_exceptions_preserves_unrelated_state);
   RUN(test_stack_overflow_and_underflow_are_reported);
+  RUN(test_the_op_census_counts_what_a_run_performs);
   RUN(test_empty_register_is_not_zero);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);
