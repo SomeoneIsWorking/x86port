@@ -163,6 +163,33 @@ typedef struct X86pJitBlock {
    * not the total.
    */
   unsigned cond_unknown_kind;
+
+  /*
+   * How many places the block can leave to, and how many of those the
+   * translator already knows the address of. This is what ranks block chaining:
+   * an exit to a constant is one a backend could branch to directly, where an
+   * exit to a register or a memory word has to go back through the dispatcher.
+   * `exits_backward`, `exits_loop` and `exits_self` are three nested subsets of
+   * `exits_static`: a guest loop backedge, one whose head is inside this block,
+   * and one naming the block's own first address. They rank three fixes of
+   * increasing cost and decreasing reach, and which one a given guest loop
+   * falls into is decided by where the block was started rather than by the
+   * guest. X86pWasmExitCensus states each.
+   *
+   * A BLOCK HAS MORE THAN ONE EXIT. A conditional branch does not end a block
+   * here; its taken path is an exit inside the body and the run continues past
+   * it. Counting a block's terminator alone answers a different question, and
+   * answers it in a way that hides every loop.
+   *
+   * FILLED BY THE WEBASSEMBLY BACKEND ONLY. The machine-code backends leave
+   * these zero, so a consumer that reports them must refuse rather than print a
+   * zero that reads like a census; see tools/jit_coverage.c.
+   */
+  unsigned exits;
+  unsigned exits_static;
+  unsigned exits_backward;
+  unsigned exits_loop;
+  unsigned exits_self;
 } X86pJitBlock;
 
 /*

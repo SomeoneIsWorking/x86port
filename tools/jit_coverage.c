@@ -238,76 +238,56 @@ static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
 }
 
 /*
- * Classify where a translated block goes when it ends, by walking it back the
- * way the translator walked it forward. The block records its guest length but
- * not its last instruction, and the difference between "a relative branch" and
- * "an indirect one" is the whole question, so the walk is the only way to ask.
+ * WHERE A BLOCK CAN GO.
  *
- * A walk that does not land exactly on the block's end is counted as its own
- * class rather than guessed at: it would mean the decoder and the translator
- * disagree about this block's instructions, which is a defect and not an exit
- * kind.
+ * Block chaining removes the dispatcher's hash lookup and its second indirect
+ * call, and it can only do that for a successor the translator already knows.
+ * A RET or an indirect jump goes back through the dispatcher whatever else is
+ * built, so the ratio between these is what decides whether chaining is worth
+ * building -- and it is a property of the shipped binary, which no generated
+ * program can stand in for.
+ *
+ * The three nested subsets under it are the loop backedges, which pay a
+ * dispatch PER ITERATION and are worth the most for the least. X86pWasmExitCensus
+ * states what separates them; each is a cheaper fix reaching fewer exits.
+ *
+ * WHICH TIER A LOOP LANDS IN DEPENDS ON THIS TOOL, NOT ON THE GUEST. It walks
+ * each function linearly from its first byte, so a loop head the running engine
+ * would dispatch to -- and translate a block AT -- is mid-block here, and one
+ * above a CALL is in an earlier block still. `to_self` and `to_loop` are floors
+ * in this census; `to_backward` is the one that does not move, because a
+ * backedge is backward however the blocks were cut.
+ *
+ * READ FROM THE TRANSLATOR, NOT RE-DERIVED HERE. This tool used to walk each
+ * block's bytes and classify its LAST instruction, and that is the wrong
+ * question twice over: a conditional branch does not end a block in the
+ * WebAssembly backend, so the loop backedges are exits INSIDE the body that a
+ * terminator walk never sees. It reported one self-loop in 113,272 blocks of a
+ * real title. The lowering knows each exit's target exactly, because it is the
+ * thing that emits it, so it counts them and this sums what it counted.
  */
-static void note_exit(const X86pMem *mem,
-                      uint32_t entry,
-                      const X86pJitBlock *blk,
-                      unsigned long *relative,
-                      unsigned long *fallthrough,
-                      unsigned long *ret,
-                      unsigned long *indirect,
-                      unsigned long *other,
-                      unsigned long *unwalkable) {
-  X86pInsn last;
-  uint32_t walked = 0u;
-  int have = 0;
+typedef struct ExitCensus {
+  unsigned long blocks; /* blocks that reported an exit -- the denominator */
+  unsigned long total;
+  unsigned long to_static;
+  unsigned long to_backward;
+  unsigned long to_loop;
+  unsigned long to_self;
+} ExitCensus;
 
-  if (!blk->ends_in_branch) {
-    /* The instruction cap or the code budget ended it, and execution
-       continues at the address after it, which is known. */
-    ++*fallthrough;
+static void note_exit(const X86pJitBlock *blk, ExitCensus *c) {
+  if (blk->exits == 0u) {
+    /* Either a backend that does not fill these in, or a block whose only way
+       out is a refusal rather than a successor. Neither is an exit, and the
+       report refuses outright if NO block in the corpus reported one. */
     return;
   }
-  while (walked < blk->guest_len) {
-    uint8_t bytes[X86P_MAX_INSN_LEN];
-    X86pInsn in;
-    uint32_t k;
-    uint32_t avail = 0;
-    for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN; k++) {
-      uint32_t byte;
-      if (!x86p_mem_read(mem, entry + walked + k, 1, &byte)) {
-        break;
-      }
-      bytes[k] = (uint8_t)byte;
-      avail++;
-    }
-    if (!avail || !x86p_decode(bytes, avail, &in) || !in.length) {
-      break;
-    }
-    walked += in.length;
-    last = in;
-    have = 1;
-  }
-  if (!have || walked != blk->guest_len) {
-    ++*unwalkable;
-    return;
-  }
-  switch (last.op) {
-  case kX86pInsnJmp:
-  case kX86pInsnJcc:
-  case kX86pInsnCall:
-    if (last.operands == 1 && last.operand[0].kind == kX86pOperandImm) {
-      ++*relative;
-    } else {
-      ++*indirect;
-    }
-    break;
-  case kX86pInsnRet:
-    ++*ret;
-    break;
-  default:
-    ++*other;
-    break;
-  }
+  c->blocks++;
+  c->total += blk->exits;
+  c->to_static += blk->exits_static;
+  c->to_backward += blk->exits_backward;
+  c->to_loop += blk->exits_loop;
+  c->to_self += blk->exits_self;
 }
 
 int main(int argc, char **argv) {
@@ -335,12 +315,7 @@ int main(int argc, char **argv) {
    * chaining is worth building -- and it is a property of the shipped binary,
    * which no generated program can stand in for.
    */
-  unsigned long exit_relative = 0;    /* a branch to an immediate: known */
-  unsigned long exit_fallthrough = 0; /* out of room: the next address is known */
-  unsigned long exit_ret = 0;
-  unsigned long exit_indirect = 0;
-  unsigned long exit_other = 0;
-  unsigned long exit_unwalkable = 0;
+  ExitCensus exits = {0};
   /*
    * Blocks this build cannot ENTER, which is not the same as blocks it cannot
    * translate. A backend that produces a WebAssembly module has no host
@@ -492,15 +467,7 @@ int main(int argc, char **argv) {
       conds += blk.conds;
       conds_inline += blk.cond_inline;
       conds_unknown += blk.cond_unknown_kind;
-      note_exit(&mem,
-                entry + walked,
-                &blk,
-                &exit_relative,
-                &exit_fallthrough,
-                &exit_ret,
-                &exit_indirect,
-                &exit_other,
-                &exit_unwalkable);
+      note_exit(&blk, &exits);
       if (blk.ends_in_branch) {
         note_stopper("(branch: block ended normally)");
       } else if (blk.stopper == NULL) {
@@ -690,29 +657,39 @@ int main(int argc, char **argv) {
            conds_unknown,
            conds - conds_inline - conds_unknown);
   }
-  printf("\n  where a block goes when it ends -- what block chaining could reach:\n");
-  printf("    relative branch (static)  %lu  (%.1f%%)\n",
-         exit_relative,
-         blocks ? 100.0 * (double)exit_relative / (double)blocks : 0.0);
-  printf("    ran out of room (static)  %lu  (%.1f%%)\n",
-         exit_fallthrough,
-         blocks ? 100.0 * (double)exit_fallthrough / (double)blocks : 0.0);
-  printf("    RET                       %lu  (%.1f%%)\n",
-         exit_ret,
-         blocks ? 100.0 * (double)exit_ret / (double)blocks : 0.0);
-  printf("    indirect JMP/CALL         %lu  (%.1f%%)\n",
-         exit_indirect,
-         blocks ? 100.0 * (double)exit_indirect / (double)blocks : 0.0);
-  printf("    other terminator          %lu  (%.1f%%)\n",
-         exit_other,
-         blocks ? 100.0 * (double)exit_other / (double)blocks : 0.0);
-  printf("    the walk did not agree    %lu   <-- a decoder/translator disagreement, not an exit kind\n",
-         exit_unwalkable);
-  printf("    STATIC SUCCESSOR          %lu  (%.1f%%)\n",
-         exit_relative + exit_fallthrough,
-         blocks ? 100.0 * (double)(exit_relative + exit_fallthrough) / (double)blocks : 0.0);
-  printf("    Each block counts ONCE. A hot loop and a function that never runs weigh\n"
-         "    the same here, so this is the static ratio and not the dynamic one.\n");
+  printf("\n  where a block can go -- what block chaining could reach:\n");
+  if (exits.total == 0) {
+    printf("    REFUSED: not one of the %lu block(s) reported an exit. Either this\n"
+           "    build's backend does not fill X86pJitBlock's exit counters -- only\n"
+           "    the WebAssembly one does -- or nothing was translated. This is NOT\n"
+           "    a corpus without branches in it.\n",
+           blocks);
+  } else {
+    const double per = 100.0 / (double)exits.total;
+    printf("    %lu exit(s) from %lu block(s), %.2f per block\n",
+           exits.total,
+           exits.blocks,
+           exits.blocks ? (double)exits.total / (double)exits.blocks : 0.0);
+    printf("    successor already known    %lu  (%.1f%%)  <-- chaining can reach these\n",
+           exits.to_static,
+           per * (double)exits.to_static);
+    printf("      of those, BACKWARD -- a guest loop backedge, paying a\n"
+           "      dispatch per iteration:          %lu  (%.1f%% of exits)\n",
+           exits.to_backward,
+           per * (double)exits.to_backward);
+    printf("        head inside this same block:   %lu  (%.1f%%)\n", exits.to_loop, per * (double)exits.to_loop);
+    printf("        head AT this block's entry:    %lu  (%.1f%%)  <-- a single-pass\n"
+           "                                       `loop` around the body reaches these\n",
+           exits.to_self,
+           per * (double)exits.to_self);
+    printf("      The last two are floors: this walk splits each function linearly,\n"
+           "      so a loop head the engine would start a block at is mid-block here.\n");
+    printf("    Each block counts ONCE. A hot loop and a function that never runs weigh\n"
+           "    the same here, so this is the static ratio and not the dynamic one.\n");
+    printf("    computed at run time       %lu  (%.1f%%)  <-- RET, indirect JMP/CALL\n",
+           exits.total - exits.to_static,
+           per * (double)(exits.total - exits.to_static));
+  }
 
   printf("\n  differential on real code: %lu block(s) compared, %lu divergence(s)\n", compared, diverged);
   if (unenterable) {

@@ -262,7 +262,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   l.e = x86p_wasm_module_emitter(m);
   l.fetch = fetch;
   x86p_wasm_lower_flags_written(&l, -1, -1);
-  x86p_wasm_state_init(&l.state, l.e, plan);
+  x86p_wasm_state_init(&l.state, l.e, plan, eip);
 
   body = x86p_wasm_module_body_begin(m);
   if (body < 0) {
@@ -355,6 +355,11 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
      * `count < MAX` keeps the cap reachable: the loop top would otherwise be
      * skipped by this continue and the block could grow without bound.
      */
+    /* Everything from the block's first byte up to and including this address
+       has been lowered, so an exit naming an address in that span is a branch
+       back into this block's own code. The exit census reads it. */
+    l.state.pc = pc;
+
     continuation = entry->terminates ? x86p_wasm_continue_lower((uint8_t)insn.op) : NULL;
     keep_going = continuation != NULL && count < X86P_WASM_MAX_INSNS;
     if (keep_going) {
@@ -403,6 +408,11 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->cond_helper_calls = l.conds - l.cond_inline;
   out->cond_inline = l.cond_inline;
   out->cond_unknown_kind = l.cond_unknown_kind;
+  out->exits = l.state.exits.total;
+  out->exits_static = l.state.exits.to_immediate;
+  out->exits_backward = l.state.exits.backward;
+  out->exits_loop = l.state.exits.within_block;
+  out->exits_self = l.state.exits.to_entry;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
