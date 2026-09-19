@@ -113,9 +113,48 @@ int x86p_mem_ok(const X86pMem *m, uint32_t addr, int w) {
   return (w == 1 || w == 2 || w == 4) && x86p_mem_accessible(m, addr, (uint32_t)w, kX86pMemRead);
 }
 
+/*
+ * The whole span in one walk, when it is one span.
+ *
+ * Both bulk calls below have to prove the WHOLE range accessible before they
+ * touch anything -- the write so a partial failure cannot leave the guest
+ * half-mutated or the observer misinformed, the read so a caller that gets a
+ * refusal is not looking at a partly filled buffer. They proved it with
+ * x86p_mem_accessible, which walks the permission structure, and then walked
+ * it a second time through backing_span to do the copying.
+ *
+ * One walk answers both questions when the range does not straddle anything:
+ * a span covering all n bytes IS the proof, and it comes with the pointer.
+ * Measured on the browser's Dead Zone route, where this is the x87 operand
+ * path: x86p_x87_read_value fell from 13.59% of the guest worker to 10.95%
+ * and backing_span from 5.66% to 3.50%.
+ *
+ * A range that DOES straddle costs one walk more than before, because the
+ * old two-walk path still runs after this one declines. That case is the
+ * sparse mode crossing separate host allocations; the contiguous mode a
+ * browser uses answers here.
+ */
+static int one_span(const X86pMem *m, uint32_t addr, uint32_t n, unsigned access, uint8_t **host) {
+  if (!n || addr > UINT32_MAX - (n - 1u)) {
+    return 0;
+  }
+  if (m && m->sparse) {
+    return x86p_sparse_resolve(m->sparse, addr, n, access, host);
+  }
+  return backing_span(m, addr, n, access, host) == n;
+}
+
 int x86p_mem_read_bytes(const X86pMem *m, uint32_t addr, void *dst, uint32_t n) {
   uint8_t *output = dst;
-  if (!dst || !x86p_mem_accessible(m, addr, n, kX86pMemRead)) {
+  uint8_t *host = NULL;
+  if (!dst) {
+    return 0;
+  }
+  if (one_span(m, addr, n, kX86pMemRead, &host)) {
+    memcpy(output, host, n);
+    return 1;
+  }
+  if (!x86p_mem_accessible(m, addr, n, kX86pMemRead)) {
     return 0;
   }
   while (n) {
@@ -136,7 +175,20 @@ void x86p_mem_set_write_observer(X86pMemWriteObserver fn, void *user) {
 
 int x86p_mem_write_bytes(const X86pMem *m, uint32_t addr, const void *src, uint32_t n) {
   const uint8_t *input = src;
-  if (!src || !x86p_mem_accessible(m, addr, n, kX86pMemWrite)) {
+  uint8_t *host = NULL;
+  if (!src) {
+    return 0;
+  }
+  if (one_span(m, addr, n, kX86pMemWrite, &host)) {
+    /* The span is the proof that every byte is writable, so the observer is
+       told before the first byte moves exactly as it is below. */
+    if (g_write_observer) {
+      g_write_observer(addr, n, g_write_observer_user);
+    }
+    memcpy(host, input, n);
+    return 1;
+  }
+  if (!x86p_mem_accessible(m, addr, n, kX86pMemWrite)) {
     return 0;
   }
   if (g_write_observer) {
