@@ -532,6 +532,12 @@ target_link_libraries(test_x87_software PRIVATE x86port_runtime)
 x86p_strict_target(test_x87_software)
 add_test(NAME test_x87_software COMMAND test_x87_software)
 
+# A measurement, not a gate: it reports a ratio of two wall-clock times, which
+# is not a property a test can assert. Deliberately absent from add_test.
+add_executable(bench_x87_arith tests/bench_x87_arith.cpp)
+target_link_libraries(bench_x87_arith PRIVATE x86port_runtime x86p_softfloat)
+x86p_strict_target(bench_x87_arith)
+
 if(NOT EMSCRIPTEN)
   # Exercises a native callee-saved host register; the WASM ABI has no r12.
   add_executable(test_jit_startup tests/test_jit_startup.c)
