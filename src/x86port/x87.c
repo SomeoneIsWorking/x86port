@@ -2,6 +2,7 @@
 #include "x87.h"
 
 #include "x87_binary128.h"
+#include "x87_ext80_narrow.h"
 #include "x87_ext80_widen.h"
 #include "x87_softfloat.h"
 
@@ -692,9 +693,35 @@ X86pX87Reg x86p_x87_reg_from_f64_bits(uint64_t bits) {
 #endif
 }
 
+/*
+ * The ordinary case of a float store, without the softfloat.
+ *
+ * x87_ext80_narrow.h holds what "ordinary" is and why it is worth separating.
+ * A refusal falls through to exactly the conversion that ran before, so this
+ * decides speed and never an answer: tests/test_x87_ext80_narrow.cpp checks
+ * the fast path against the conversion it bypasses, and tests/test_x87_narrow.c
+ * checks this entry point itself under all four rounding modes.
+ */
+#if X86P_X87_BINARY128
+static int narrow_ordinary(uint16_t control, X86pX87Reg v, unsigned width, uint64_t *out) {
+  X86pExt80 wide;
+  if ((control & X86P_X87_RC_MASK) != X86P_X87_RC_NEAREST) {
+    return 0;
+  }
+  wide.signif = v.signif;
+  wide.sign_exp = v.sign_exp;
+  return x86p_ext80_narrow_nearest(wide, width, out);
+}
+#endif
+
 uint64_t x86p_x87_reg_to_f32_bits(const X86pX87 *f, X86pX87Reg v) {
 #if X86P_X87_BINARY128
-  return x86p_x87_software_narrow_raw(f ? f->control : X86P_X87_CW_INIT, v, 0);
+  const uint16_t control = f ? f->control : (uint16_t)X86P_X87_CW_INIT;
+  uint64_t bits;
+  if (narrow_ordinary(control, v, 4u, &bits)) {
+    return bits;
+  }
+  return x86p_x87_software_narrow_raw(control, v, 0);
 #else
   return x86p_x87_to_f32(f, v);
 #endif
@@ -702,7 +729,12 @@ uint64_t x86p_x87_reg_to_f32_bits(const X86pX87 *f, X86pX87Reg v) {
 
 uint64_t x86p_x87_reg_to_f64_bits(const X86pX87 *f, X86pX87Reg v) {
 #if X86P_X87_BINARY128
-  return x86p_x87_software_narrow_raw(f ? f->control : X86P_X87_CW_INIT, v, 1);
+  const uint16_t control = f ? f->control : (uint16_t)X86P_X87_CW_INIT;
+  uint64_t bits;
+  if (narrow_ordinary(control, v, 8u, &bits)) {
+    return bits;
+  }
+  return x86p_x87_software_narrow_raw(control, v, 1);
 #else
   return x86p_x87_to_f64(f, v);
 #endif

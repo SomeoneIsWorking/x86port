@@ -59,6 +59,11 @@ typedef struct X86pWasmLower {
      widening instead of the import call. See jit_wasm_x87_load.h. */
   unsigned x87_loads;
   unsigned x87_loads_inline;
+  /* And the same pair for memory-operand x87 stores. See
+     jit_wasm_x87_store.h: the store rounds, so its inline arm accepts a
+     narrower set of values than the load's and the share matters more. */
+  unsigned x87_stores;
+  unsigned x87_stores_inline;
   /* SIMD instructions lowered, and how many became WebAssembly SIMD instead of
      the import call. See jit_wasm_simd_inline.h. Both are needed: the share is
      what says whether a route's packed work is actually taking the new path,

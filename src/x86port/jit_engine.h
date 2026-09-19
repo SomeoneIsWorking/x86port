@@ -100,6 +100,11 @@ typedef struct X86pJitEngineStats {
      inline form reports the denominator and a zero, rather than nothing. */
   uint64_t x87_loads_translated;
   uint64_t x87_loads_inline;
+  /* Memory-operand x87 stores translated, and those the emitted code narrows
+     itself. Same contract again; the store's inline arm rounds, so its share
+     is a property of the VALUES the route stores as well as of the code. */
+  uint64_t x87_stores_translated;
+  uint64_t x87_stores_inline;
   /* SIMD instructions translated, and those the emitted code performs with the
      host's own 128-bit SIMD. Same contract: the denominator is published so a
      zero numerator can be told apart from a corpus with no SIMD in it. */

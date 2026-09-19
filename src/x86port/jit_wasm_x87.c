@@ -3,6 +3,7 @@
 #include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 #include "jit_wasm_x87_load.h"
+#include "jit_wasm_x87_store.h"
 #include "jit_x87_predicates.h"
 #include "x87_memory.h"
 #include <stddef.h>
@@ -336,6 +337,13 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   case kX86pX87InsnStoreInt:
     if (!memory) {
       copy_value(l, 0, index, 0, insn->x87_pops);
+      return;
+    }
+    /* The denominator for the inline narrowing, counted here for the reason
+       the loads' is: a build that inlined none must still report the stores it
+       declined, or "none inlined" cannot be told from "none reached". */
+    l->x87_stores++;
+    if (x86p_wasm_x87_store_inline(l, insn, pc)) {
       return;
     }
     store_arguments(l, insn);

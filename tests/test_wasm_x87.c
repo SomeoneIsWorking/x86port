@@ -20,6 +20,10 @@ static unsigned checks, failures, cases, entries, faults, refusals;
    was never emitted, and an inline count equal to the total would mean the
    forms it must DECLINE -- the integer loads -- were never lowered here. */
 static unsigned long x87_loads, x87_loads_inline;
+/* The same pair for stores, and the same two negatives: no inline count means
+   the emitted narrowing never ran, and an inline count equal to the total
+   means the values and forms it must DECLINE were never stored here. */
+static unsigned long x87_stores, x87_stores_inline;
 static const char *current;
 static void check(int pass, const char *reason) {
   checks++;
@@ -136,6 +140,8 @@ static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu
     entries += (unsigned)stats.blocks_entered;
     x87_loads += (unsigned long)stats.x87_loads_translated;
     x87_loads_inline += (unsigned long)stats.x87_loads_inline;
+    x87_stores += (unsigned long)stats.x87_stores_translated;
+    x87_stores_inline += (unsigned long)stats.x87_stores_inline;
     x86p_jit_engine_destroy(engine);
   }
   x86p_sparse_destroy(sparse);
@@ -331,6 +337,106 @@ static void load_widening(void) {
   }
 }
 
+/*
+ * FST/FSTP m32 and m64 over the ST(0) values and machine states that decide
+ * which arm of the emitted narrowing runs.
+ *
+ * The store ROUNDS, so unlike the load its arms are separated by the value's
+ * low bits as well as by its class: a discarded part that is exactly half an
+ * ulp goes to even, one bit either side of that does not, and a significand of
+ * all ones carries out of the top into the next exponent -- which the emitted
+ * arm refuses and the helper completes. jit_wasm_x87_store.h says why the two
+ * sides refuse the same set.
+ *
+ * ROUNDING CONTROL IS PART OF THE FIXTURE and not a separate suite. Only
+ * round-to-nearest is the emitted arm's; the other three must reach the helper
+ * with the value unchanged, and a fast path that ignored RC would agree with
+ * the interpreter on every case here except those.
+ *
+ * The values arrive as the guest's own ten bytes rather than as a long double,
+ * so a case can name an encoding the host's float type cannot hold -- an
+ * unnormal, whose stored exponent has no explicit integer bit, is a value the
+ * emitted arm must refuse and no arithmetic can produce.
+ */
+static void store_narrowing(void) {
+  static const struct {
+    const char *name;
+    uint16_t sign_exp;
+    uint64_t signif;
+  } values[] = {
+      {"one", 0x3fffu, 0x8000000000000000ull},
+      {"negative one and a half", 0xbfffu, 0xc000000000000000ull},
+      {"f32 tie to even, down", 0x3fffu, 0x8000008000000000ull},
+      {"f32 one above the tie", 0x3fffu, 0x8000008000000001ull},
+      {"f32 one below the tie", 0x3fffu, 0x8000007fffffffffull},
+      {"f32 tie to even, up", 0x3fffu, 0x8000018000000000ull},
+      {"f64 tie to even, down", 0x3fffu, 0x8000000000000400ull},
+      {"f64 one above the tie", 0x3fffu, 0x8000000000000401ull},
+      {"f64 tie to even, up", 0x3fffu, 0x8000000000000c00ull},
+      {"carries out of the significand", 0x3fffu, 0xffffffffffffffffull},
+      {"positive zero", 0x0000u, 0x0000000000000000ull},
+      {"negative zero", 0x8000u, 0x0000000000000000ull},
+      {"ext80 subnormal", 0x0000u, 0x0000000000000001ull},
+      {"infinity", 0x7fffu, 0x8000000000000000ull},
+      {"quiet NaN", 0x7fffu, 0xc000000000000000ull},
+      {"unnormal", 0x3fffu, 0x4000000000000000ull},
+      {"below binary32's normals", 0x3f80u, 0x8000000000000000ull},
+      {"binary32's smallest normal", 0x3f81u, 0x8000000000000000ull},
+      {"binary32's largest normal", 0x407eu, 0xffffff0000000000ull},
+      {"rounds up out of binary32", 0x407eu, 0xffffffffffffffffull},
+      /* The exponent exactly one above the target's largest normal, which
+         rebiases to its all-ones exponent -- the infinity encoding. It must be
+         REFUSED, and it is the only value that separates a bound of exp_max-1
+         from one of exp_max: without it, an emitted test that admitted this
+         and stored an infinity passed every other case here. */
+      {"rebiases onto binary32's infinity", 0x407fu, 0x8000000000000000ull},
+      /* And the same exponent with a fraction, which is the case that actually
+         separates the two bounds: with an empty fraction both a refusal and a
+         wrongly-taken inline arm produce the infinity that the overflowing
+         conversion rounds to, and only a fraction makes the wrong arm produce
+         a NaN instead. */
+      {"rebiases onto binary32's infinity, with a fraction", 0x407fu, 0xffffff0000000000ull},
+      {"rebiases onto binary64's infinity, with a fraction", 0x43ffu, 0xfffffffffffff800ull},
+      {"above binary32's normals", 0x4080u, 0x8000000000000000ull},
+      {"rebiases onto binary64's infinity", 0x43ffu, 0x8000000000000000ull},
+      {"binary64's smallest normal", 0x3c01u, 0x8000000000000000ull},
+      {"rounds up out of binary64", 0x43feu, 0xffffffffffffffffull},
+  };
+  static const struct {
+    const char *name;
+    uint8_t code[2];
+  } forms[] = {{"FST32", {0xd9, 0x17}}, {"FSTP32", {0xd9, 0x1f}}, {"FST64", {0xdd, 0x17}}, {"FSTP64", {0xdd, 0x1f}}};
+  /* Both mappings and the permission arm, because the emitted narrowing runs
+     only on the contiguous one and its address verdict is a value it must
+     honour: a page the table does not make writable has to reach the helper
+     and fault exactly as it did before. */
+  static const unsigned modes[] = {kMapPlain, kMapPerms | 3u, kMapPerms | kX86pMemRead, kMapSparse | 3u};
+  for (unsigned v = 0; v < sizeof values / sizeof *values; v++) {
+    for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
+      for (unsigned m = 0; m < sizeof modes / sizeof *modes; m++) {
+        for (unsigned rc = 0; rc < 4; rc++) {
+          uint8_t bytes[10];
+          X86pCpu cpu = initial(2);
+          for (unsigned b = 0; b < 8; b++) {
+            bytes[b] = (uint8_t)(values[v].signif >> (8u * b));
+          }
+          bytes[8] = (uint8_t)values[v].sign_exp;
+          bytes[9] = (uint8_t)(values[v].sign_exp >> 8);
+          cpu.x87.control = (uint16_t)(0x7f | rc << 10);
+          x86p_x87_set_raw(&cpu.x87, 0, x86p_x87_reg_from_f80(bytes));
+          run_case(values[v].name, forms[f].code, 2, cpu, modes[m]);
+        }
+      }
+    }
+  }
+  /* An empty stack: the store must not happen, three status bits are set and
+     TOP does not move. That is the emitted arm's one refusal about the
+     MACHINE rather than the value. */
+  for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
+    run_case("store from an empty stack", forms[f].code, 2, initial(0), kMapPlain);
+  }
+}
+
 static void precision_and_refusals(void) {
   static const uint16_t precision[] = {0, 0x200, 0x300};
   static const uint8_t forms[][2] = {
@@ -362,6 +468,7 @@ int main(void) {
   comparison_sources();
   memory_forms();
   load_widening();
+  store_narrowing();
   precision_and_refusals();
   current = "denominators";
   check(cases == entries && entries > 400, "missing translated cases");
@@ -371,13 +478,18 @@ int main(void) {
      equality would mean this suite proved nothing about which path ran. */
   check(x87_loads_inline > 0, "no x87 load was lowered to the emitted widening");
   check(x87_loads_inline < x87_loads, "every x87 load was inlined, so the declined forms went untested");
-  printf("WASM x87: cases=%u entries=%u faults=%u refusals=%u loads=%lu inline=%lu checks=%u failures=%u\n",
+  check(x87_stores_inline > 0, "no x87 store was lowered to the emitted narrowing");
+  check(x87_stores_inline < x87_stores, "every x87 store was inlined, so the declined forms went untested");
+  printf("WASM x87: cases=%u entries=%u faults=%u refusals=%u loads=%lu inline=%lu stores=%lu inline=%lu "
+         "checks=%u failures=%u\n",
          cases,
          entries,
          faults,
          refusals,
          x87_loads,
          x87_loads_inline,
+         x87_stores,
+         x87_stores_inline,
          checks,
          failures);
   return failures ? 1 : 0;
