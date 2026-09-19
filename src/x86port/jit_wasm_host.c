@@ -64,7 +64,15 @@ EM_JS(int,
           // reporting it as "running guest code" for another seven minutes.
           // The name is kept because an out-of-memory and a bad module need
           // different fixes.
-          stringToUTF8(failure.name + ": " + failure.message, error, error_len);
+          // WITH the count the engine is actually looking at. The arena's own
+          // live count said 15,104 when Firefox refused, and a page that
+          // released the same number of modules was accepted immediately --
+          // so the two counts disagreeing is the thing to see, and only this
+          // side can report the host map's size.
+          stringToUTF8(failure.name + ": " + failure.message + " [" + host.modules.size +
+                           " module(s) held by this host]",
+                       error,
+                       error_len);
           return -1;
         }
         const id = host.next++;
