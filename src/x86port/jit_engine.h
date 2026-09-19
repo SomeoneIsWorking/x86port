@@ -178,6 +178,12 @@ typedef struct X86pJitEngineStats {
      these are the pool's total. */
   uint64_t code_bytes_limit;
   uint64_t block_records;
+  /* Evictions by the limit that asked for them. A run that keeps evicting
+     while its budget and its slots are both far from full was refused by the
+     third one, and only the split says so. */
+  uint64_t evictions_out_of_bytes;
+  uint64_t evictions_out_of_slots;
+  uint64_t evictions_at_engine_limit;
 } X86pJitEngineStats;
 
 /*
