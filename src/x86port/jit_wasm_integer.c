@@ -109,7 +109,7 @@ void x86p_wasm_multiply_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t p
   if (insn->operands != 1) {
     x86p_wasm_state_store_reg(&l->state, insn->operand[0].reg, width, kX86pWasmLocalR);
   }
-  l->last_kind = -1;
+  x86p_wasm_lower_flags_written(l, -1, -1);
 }
 
 int x86p_wasm_divide_accepts(const X86pInsn *insn) {
@@ -130,7 +130,7 @@ void x86p_wasm_divide_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc)
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, pc, kX86pJitExitDivideError);
   x86p_wasm_end(l->e);
-  l->last_kind = -1;
+  x86p_wasm_lower_flags_written(l, -1, -1);
 }
 
 int x86p_wasm_string_accepts(const X86pInsn *insn) {
@@ -155,7 +155,7 @@ void x86p_wasm_string_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc)
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, pc, kX86pJitExitUnsupported);
   x86p_wasm_end(l->e);
-  l->last_kind = -1;
+  x86p_wasm_lower_flags_written(l, -1, -1);
 }
 
 int x86p_wasm_loop_accepts(const X86pInsn *insn) {
@@ -200,5 +200,5 @@ void x86p_wasm_popfd_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
   x86p_wasm_i32_op(l->e, kWasmI32Add);
   x86p_wasm_local_set(l->e, kX86pWasmLocalA);
   x86p_wasm_state_store_reg(&l->state, kX86pEsp, 4, kX86pWasmLocalA);
-  l->last_kind = kX86pFlagsExplicit;
+  x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
 }

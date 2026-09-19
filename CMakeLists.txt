@@ -183,6 +183,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_imports.c
   src/x86port/jit_wasm_bitops.c
   src/x86port/jit_wasm_control.c
+  src/x86port/jit_wasm_cond.c
   src/x86port/jit_wasm_x87.c
   src/x86port/jit_wasm_simd.c
   src/x86port/x87_memory.c
@@ -332,7 +333,7 @@ if(EMSCRIPTEN)
   target_link_libraries(test_wasm_integer PRIVATE x86port_runtime x86port_test_oracle)
   x86p_strict_target(test_wasm_integer)
   add_test(NAME test_wasm_integer COMMAND test_wasm_integer)
-  foreach(family x87 simd integer_tail)
+  foreach(family x87 simd integer_tail cond)
     add_executable(test_wasm_${family} tests/test_wasm_${family}.c)
     target_link_libraries(test_wasm_${family} PRIVATE x86port_runtime x86port_test_oracle)
     x86p_strict_target(test_wasm_${family})
@@ -340,6 +341,7 @@ if(EMSCRIPTEN)
   endforeach()
   target_sources(test_wasm_integer_tail PRIVATE tests/wasm_differential.c)
   target_sources(test_wasm_simd PRIVATE tests/wasm_differential.c)
+  target_sources(test_wasm_cond PRIVATE tests/wasm_differential.c)
 endif()
 add_executable(test_three_dnow tests/test_three_dnow.c)
 target_link_libraries(test_three_dnow PRIVATE x86port)

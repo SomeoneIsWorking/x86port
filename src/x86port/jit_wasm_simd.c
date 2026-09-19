@@ -279,6 +279,6 @@ void x86p_wasm_simd_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     x86p_wasm_state_store_reg(&l->state, d->reg, 4, kX86pWasmLocalR);
   }
   if (op == kX86pSimdComiss || op == kX86pSimdUcomiss) {
-    l->last_kind = kX86pFlagsExplicit;
+    x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
   }
 }

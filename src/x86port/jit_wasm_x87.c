@@ -1,5 +1,6 @@
 #include "jit_wasm_x87.h"
 
+#include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 #include "jit_x87_predicates.h"
 #include "x87_memory.h"
@@ -371,12 +372,10 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     x86p_wasm_if(l->e, kWasmVoid);
     pop_values(l, insn->x87_pops);
     x86p_wasm_end(l->e);
-    l->last_kind = -1;
+    x86p_wasm_lower_flags_written(l, -1, -1);
     return;
   case kX86pX87InsnCmov:
-    integer(l, insn->cond);
-    x86p_wasm_state_flags_addr(&l->state);
-    x86p_wasm_call_import(l, kX86pWasmImportCond);
+    x86p_wasm_cond_value(l, (X86pCond)insn->cond);
     x86p_wasm_if(l->e, kWasmVoid);
     copy_value(l, (unsigned)insn->operand[1].reg, 0, 0, 0);
     x86p_wasm_end(l->e);
