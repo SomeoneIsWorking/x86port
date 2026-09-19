@@ -5,6 +5,7 @@
 #include "jit_wasm_x87_load.h"
 #include "jit_wasm_x87_store.h"
 #include "jit_x87_predicates.h"
+#include "x87_ext80_arith.h"
 #include "x87_memory.h"
 #include <stddef.h>
 #include <string.h>
@@ -95,6 +96,27 @@ int x86p_wasm_x87_store_at(
   popped(f, pops);
   return 1;
 }
+/*
+ * A float memory operand as the encoding the rules take, skipping the register
+ * type entirely. Only the two widths a game actually multiplies by; an integer
+ * operand or an 80-bit one falls through to the long path, which is still the
+ * one authority for them.
+ */
+static int operand_ext80(uint64_t bits, uint32_t width, uint32_t integer, X86pExt80 *out) {
+  if (integer) {
+    return 0;
+  }
+  if (width == 4u) {
+    *out = x86p_ext80_from_f32_bits((uint32_t)bits);
+    return 1;
+  }
+  if (width == 8u) {
+    *out = x86p_ext80_from_f64_bits(bits);
+    return 1;
+  }
+  return 0;
+}
+
 int x86p_wasm_x87_arith_mem_bits(X86pX87 *f,
                                  uint32_t lo,
                                  uint32_t hi,
@@ -103,8 +125,15 @@ int x86p_wasm_x87_arith_mem_bits(X86pX87 *f,
                                  uint32_t op,
                                  uint32_t reverse,
                                  uint32_t pops) {
+  const uint64_t bits = operand_bits(lo, hi);
   X86pX87Reg value;
-  if (x86p_x87_reg_from_operand_bits(operand_bits(lo, hi), width, (int)integer, &value) != kX86pX87MemoryOk) {
+  X86pExt80 wide;
+  if (operand_ext80(bits, width, integer, &wide) &&
+      x86p_x87_arith_ext80_fast(f, (X86pX87Op)op, 0, wide, (int)reverse)) {
+    popped(f, pops);
+    return 1;
+  }
+  if (x86p_x87_reg_from_operand_bits(bits, width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
   x86p_x87_arith_raw(f, (X86pX87Op)op, 0, value, (int)reverse);
@@ -113,6 +142,12 @@ int x86p_wasm_x87_arith_mem_bits(X86pX87 *f,
 }
 int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op, uint32_t reverse, uint32_t pops) {
   X86pX87Reg value;
+  X86pExt80 wide;
+  if (x86p_x87_ext80_of_st(f, (int)src, &wide) &&
+      x86p_x87_arith_ext80_fast(f, (X86pX87Op)op, (int)dst, wide, (int)reverse)) {
+    popped(f, pops);
+    return 1;
+  }
   if (!x86p_x87_get_raw(f, (int)src, &value)) {
     return 0;
   }

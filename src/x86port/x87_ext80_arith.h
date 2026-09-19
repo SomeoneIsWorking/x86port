@@ -79,6 +79,26 @@ int x86p_ext80_mul_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, X86pExt8
  */
 int x86p_ext80_add_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, int subtract, X86pExt80 *out, uint16_t *flags);
 
+/*
+ * THE ARITHMETIC WITHOUT THE ROUND TRIP THROUGH THE REGISTER TYPE.
+ *
+ * x86p_x87_arith_raw reads ST(dst) into a copy, swaps two copies for the
+ * reverse forms, takes the operands' fields out into an X86pExt80 pair, builds
+ * a register out of the result and writes that back through a second bounds
+ * check. Measured by tests/bench_x87_arith.cpp, that bookkeeping is about
+ * seventy percent of the path now that the arithmetic is integer work --
+ * the browser profile puts x86p_x87_arith_raw at 12.24% of the guest worker
+ * against 5.3% for the rules it calls.
+ *
+ * These two do the same operation in the format the rules take, reading and
+ * writing the register file's fields in place. They answer only the cases the
+ * rules answer, and return 0 having changed NOTHING otherwise -- the caller
+ * then runs exactly the path it ran before, which stays the one authority for
+ * empty registers, faults, special values and every rounding mode.
+ */
+int x86p_x87_ext80_of_st(const X86pX87 *f, int i, X86pExt80 *out);
+int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, int reverse);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

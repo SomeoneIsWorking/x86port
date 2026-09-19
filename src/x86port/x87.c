@@ -572,9 +572,7 @@ static X86pExt80 census_ext80_of_reg(X86pX87Reg v) {
   return w;
 }
 
-static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
-  const X86pExt80 ex = census_ext80_of_reg(x);
-  const X86pExt80 ey = census_ext80_of_reg(y);
+static void census_note_ext80(X86pX87 *f, X86pX87Op op, X86pExt80 ex, X86pExt80 ey) {
   const unsigned i = (unsigned)op;
   X86pExt80 ignored;
   uint16_t ignored_flags = 0u;
@@ -617,6 +615,10 @@ static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
   }
 }
 
+static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
+  census_note_ext80(f, op, census_ext80_of_reg(x), census_ext80_of_reg(y));
+}
+
 #else
 static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
   /* The register file is the host's own long double here, so the encoding the
@@ -633,6 +635,96 @@ void x86p_x87_set_op_census(X86pX87 *f, X86pX87OpCensus *census) {
     f->op_census = census;
   }
 }
+
+/*
+ * The register file's fields in the format the rules take, and back again.
+ * See x87_ext80_arith.h for why these exist rather than another layer over
+ * x86p_x87_get_raw and x86p_x87_set_raw.
+ */
+#if X86P_X87_BINARY128
+
+int x86p_x87_ext80_of_st(const X86pX87 *f, int i, X86pExt80 *out) {
+  int p;
+  if (!f || !out || i < 0 || i >= X86P_X87_REGS) {
+    return 0;
+  }
+  p = phys(f, i);
+  if (f->tag[p] == (uint8_t)kX86pX87TagEmpty) {
+    return 0;
+  }
+  out->signif = f->reg[p].signif;
+  out->sign_exp = f->reg[p].sign_exp;
+  return 1;
+}
+
+int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, int reverse) {
+  X86pExt80 a;
+  X86pExt80 x;
+  X86pExt80 y;
+  X86pExt80 r;
+  uint16_t raised = 0u;
+  int answered;
+  int p;
+  if (!x86p_x87_ext80_of_st(f, dst, &a)) {
+    return 0;
+  }
+  /* `reverse` swaps the operands and nothing else, exactly as the long form
+     does; these are two 16-byte values rather than two registers. */
+  x = reverse ? src : a;
+  y = reverse ? a : src;
+  /* The census lives on both paths or on neither: an operation this one
+     answers never reaches x86p_x87_arith_raw, so counting only there would
+     make the instrument quietly under-report the moment this landed. */
+  if (f->op_census) {
+    census_note_ext80(f, op, x, y);
+  }
+  if (op == kX86pX87Mul) {
+    answered = x86p_ext80_mul_ordinary(f->control, x, y, &r, &raised);
+  } else if (op == kX86pX87Add || op == kX86pX87Sub) {
+    answered = x86p_ext80_add_ordinary(f->control, x, y, op == kX86pX87Sub, &r, &raised);
+  } else {
+    return 0;
+  }
+  if (!answered) {
+    return 0;
+  }
+  /*
+   * The whole 16-byte object is written, not just the two fields. The register
+   * file is compared as memory -- the WASM differential does one memcmp of the
+   * X86pX87 -- so a write that left the six padding bytes alone would differ
+   * from the long path on bytes no value depends on. This is the same store
+   * reg_of_ext80 makes, and jit_wasm_x87_load.c's emitted one.
+   */
+  p = phys(f, dst);
+  f->reg[p] = reg_of_ext80(r);
+  /* Neither rule can produce an infinity or a NaN, and a zero result is the
+     only non-valid tag they can reach. */
+  f->tag[p] = (uint8_t)((r.signif == 0u && (r.sign_exp & 0x7FFFu) == 0u) ? kX86pX87TagZero : kX86pX87TagValid);
+  f->status |= raised;
+  return 1;
+}
+
+#else
+
+int x86p_x87_ext80_of_st(const X86pX87 *f, int i, X86pExt80 *out) {
+  /* The register file is the host's own long double here, so its fields are
+     not this encoding and there is nothing to read in place. */
+  (void)f;
+  (void)i;
+  (void)out;
+  return 0;
+}
+
+int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, int reverse) {
+  (void)f;
+  (void)op;
+  (void)dst;
+  (void)src;
+  (void)reverse;
+  return 0;
+}
+
+#endif /* X86P_X87_BINARY128 */
 
 int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse) {
   X86pX87Reg a, r;

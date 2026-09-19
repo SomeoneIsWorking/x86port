@@ -25,6 +25,8 @@
  */
 #include "x87.h"
 
+#include "x87_ext80_arith.h"
+
 _Static_assert(sizeof(X86pX87Tag) == sizeof(unsigned int), "C ABI enum width");
 _Static_assert(sizeof(X86pX87Op) == sizeof(unsigned int), "C ABI enum width");
 _Static_assert(sizeof(X86pX87Insn) == sizeof(unsigned int), "C ABI enum width");
@@ -244,6 +246,67 @@ static void test_the_op_census_counts_what_a_run_performs(void) {
   x86p_x87_set_op_census(&f, NULL);
   CHECK(x86p_x87_arith(&f, kX86pX87Sub, 0, 1.0L, 0));
   CHECK_EQ_U(census.total[kX86pX87Sub], 0);
+}
+
+/*
+ * The fused path, checked AGAINST the long one on the same operation.
+ *
+ * It exists to skip x86p_x87_arith_raw's bookkeeping, so the thing that can go
+ * wrong is not the arithmetic -- the rules are differentially tested elsewhere
+ * -- but the register file: the tag, and the six padding bytes the WASM
+ * differential compares with memcmp. So this runs both paths from an identical
+ * starting state and compares the WHOLE X86pX87, which is the comparison that
+ * would catch a padding byte left behind.
+ *
+ * It also asserts that the fast path was TAKEN. A version that always returned
+ * 0 would make every value comparison here pass while proving nothing.
+ */
+static void test_the_fused_arith_path_matches_the_long_one(void) {
+  static const struct {
+    long double a;
+    long double b;
+    X86pX87Op op;
+    int reverse;
+  } kCases[] = {
+      {3.0L, 5.0L, kX86pX87Mul, 0},
+      {3.0L, 5.0L, kX86pX87Sub, 1},
+      {1.0L, 0.0L, kX86pX87Mul, 0},  /* a zero operand, which the rules take */
+      {0.0L, 7.0L, kX86pX87Add, 0},  /* and which must leave tag = zero */
+      {1.5L, -1.5L, kX86pX87Add, 0}, /* exact cancellation: the rules refuse */
+      {1.0L, 3.0L, kX86pX87Div, 0},  /* no rule for a divide */
+  };
+  size_t i;
+  int taken = 0;
+  int refused = 0;
+  for (i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
+    X86pX87 fast;
+    X86pX87 slow;
+    X86pExt80 src;
+    x86p_x87_reset(&fast);
+    CHECK(x86p_x87_push(&fast, kCases[i].b));
+    CHECK(x86p_x87_push(&fast, kCases[i].a));
+    slow = fast;
+    if (!x86p_x87_ext80_of_st(&fast, 1, &src)) {
+      /* No ext80 register file on this host; the entry point says so by
+         refusing rather than by inventing an encoding. */
+      printf("  NOTE: this host has no ext80 register file, so the fused "
+             "path is not present to compare.\n");
+      return;
+    }
+    if (x86p_x87_arith_ext80_fast(&fast, kCases[i].op, 0, src, kCases[i].reverse)) {
+      taken++;
+    } else {
+      refused++;
+      continue;
+    }
+    CHECK(x86p_x87_arith_raw(&slow, kCases[i].op, 0, x86p_x87_reg_from_long_double(kCases[i].b), kCases[i].reverse));
+    /* Every byte, including the padding and the tag word. */
+    CHECK(memcmp(&fast, &slow, sizeof fast) == 0);
+  }
+  /* Both answers, or this proves nothing: the divide and the cancellation must
+     refuse, and the other four must be taken. */
+  CHECK_EQ_U(taken, 4);
+  CHECK_EQ_U(refused, 2);
 }
 
 static void test_stack_overflow_and_underflow_are_reported(void) {
@@ -761,6 +824,7 @@ int main(void) {
   RUN(test_clear_exceptions_preserves_unrelated_state);
   RUN(test_stack_overflow_and_underflow_are_reported);
   RUN(test_the_op_census_counts_what_a_run_performs);
+  RUN(test_the_fused_arith_path_matches_the_long_one);
   RUN(test_empty_register_is_not_zero);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);
