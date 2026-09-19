@@ -174,8 +174,15 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
   }
   token = x86p_jit_wasm_publish(&storage->arena, block, storage->buffer, block->host_bytes, reason, reason_len);
   if (token < 0) {
+    /* The arena has already written why, WITH its denominators. Label it
+       rather than replacing it: overwriting here is what reduced "out of
+       memory with 40 modules live of 8192" to "out of memory". */
     const char *host_error = x86p_wasm_host_error(&storage->arena.host);
-    if (host_error[0] && reason && reason_len) {
+    if (reason && reason_len && reason[0]) {
+      char said[320];
+      snprintf(said, sizeof said, "%s", reason);
+      snprintf(reason, reason_len, "WebAssembly publication: %s", said);
+    } else if (host_error[0] && reason && reason_len) {
       snprintf(reason, reason_len, "WebAssembly publication: %s", host_error);
     }
     return kX86pJitOutOfSpace;
