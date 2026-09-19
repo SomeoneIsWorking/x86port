@@ -604,7 +604,9 @@ add_test(
 # none, so drift was invisible: a ten-file backend landed with seven files off
 # the tracked style while the other 126 matched it exactly. This SKIPs (77)
 # rather than passing when no clang-format is present, and its negative control
-# proves the comparison fires.
+# proves both that the comparison fires and that the file list contains sources
+# that have never been committed -- enumerating the index alone made this check
+# blind to new files, which is the one case where its verdict is being read.
 add_test(
   NAME verify_format
   COMMAND

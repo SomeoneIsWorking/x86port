@@ -44,8 +44,12 @@ bool same(X86pExt80 got, uint64_t signif, uint16_t sign_exp) {
 void expect(X86pExt80 got, uint64_t signif, uint16_t sign_exp, const char *what) {
   g_checks++;
   if (!same(got, signif, sign_exp)) {
-    std::printf("FAIL %s: got %04x:%016llx want %04x:%016llx\n", what, got.sign_exp,
-                (unsigned long long)got.signif, sign_exp, (unsigned long long)signif);
+    std::printf("FAIL %s: got %04x:%016llx want %04x:%016llx\n",
+                what,
+                got.sign_exp,
+                (unsigned long long)got.signif,
+                sign_exp,
+                (unsigned long long)signif);
     g_failures++;
   }
 }
@@ -137,8 +141,13 @@ void differ_f32(uint32_t bits, const char *what) {
   const X86pExt80 want = oracle_from_f32(bits), got = x86p_ext80_from_f32_bits(bits);
   g_checks++;
   if (!same(got, want.signif, want.sign_exp)) {
-    std::printf("FAIL %s 0x%08x: got %04x:%016llx host %04x:%016llx\n", what, bits, got.sign_exp,
-                (unsigned long long)got.signif, want.sign_exp, (unsigned long long)want.signif);
+    std::printf("FAIL %s 0x%08x: got %04x:%016llx host %04x:%016llx\n",
+                what,
+                bits,
+                got.sign_exp,
+                (unsigned long long)got.signif,
+                want.sign_exp,
+                (unsigned long long)want.signif);
     g_failures++;
   }
 }
@@ -150,9 +159,13 @@ void differ_f64(uint64_t bits, const char *what) {
   const X86pExt80 want = oracle_from_f64(bits), got = x86p_ext80_from_f64_bits(bits);
   g_checks++;
   if (!same(got, want.signif, want.sign_exp)) {
-    std::printf("FAIL %s 0x%016llx: got %04x:%016llx host %04x:%016llx\n", what,
-                (unsigned long long)bits, got.sign_exp, (unsigned long long)got.signif,
-                want.sign_exp, (unsigned long long)want.signif);
+    std::printf("FAIL %s 0x%016llx: got %04x:%016llx host %04x:%016llx\n",
+                what,
+                (unsigned long long)bits,
+                got.sign_exp,
+                (unsigned long long)got.signif,
+                want.sign_exp,
+                (unsigned long long)want.signif);
     g_failures++;
   }
 }
@@ -185,19 +198,13 @@ void table() {
   expect(x86p_ext80_from_f64_bits(0x3FF0000000000000ull), 0x8000000000000000ull, 0x3FFFu, "f64 1.0");
   expect(x86p_ext80_from_f64_bits(0xBFF0000000000000ull), 0x8000000000000000ull, 0xBFFFu, "f64 -1.0");
   expect(x86p_ext80_from_f64_bits(0x3FF8000000000000ull), 0xC000000000000000ull, 0x3FFFu, "f64 1.5");
-  expect(x86p_ext80_from_f64_bits(0x0000000000000001ull), 0x8000000000000000ull, 0x3BCDu,
-         "f64 min subnormal");
-  expect(x86p_ext80_from_f64_bits(0x000FFFFFFFFFFFFFull), 0xFFFFFFFFFFFFF000ull, 0x3C00u,
-         "f64 max subnormal");
-  expect(x86p_ext80_from_f64_bits(0x0010000000000000ull), 0x8000000000000000ull, 0x3C01u,
-         "f64 min normal");
-  expect(x86p_ext80_from_f64_bits(0x7FEFFFFFFFFFFFFFull), 0xFFFFFFFFFFFFF800ull, 0x43FEu,
-         "f64 max normal");
+  expect(x86p_ext80_from_f64_bits(0x0000000000000001ull), 0x8000000000000000ull, 0x3BCDu, "f64 min subnormal");
+  expect(x86p_ext80_from_f64_bits(0x000FFFFFFFFFFFFFull), 0xFFFFFFFFFFFFF000ull, 0x3C00u, "f64 max subnormal");
+  expect(x86p_ext80_from_f64_bits(0x0010000000000000ull), 0x8000000000000000ull, 0x3C01u, "f64 min normal");
+  expect(x86p_ext80_from_f64_bits(0x7FEFFFFFFFFFFFFFull), 0xFFFFFFFFFFFFF800ull, 0x43FEu, "f64 max normal");
   expect(x86p_ext80_from_f64_bits(0x7FF0000000000000ull), 0x8000000000000000ull, 0x7FFFu, "f64 +inf");
-  expect(x86p_ext80_from_f64_bits(0x7FF8000000000000ull), 0xC000000000000000ull, 0x7FFFu,
-         "f64 quiet NaN");
-  expect(x86p_ext80_from_f64_bits(0x7FF0000000000001ull), 0xC000000000000800ull, 0x7FFFu,
-         "f64 signalling NaN");
+  expect(x86p_ext80_from_f64_bits(0x7FF8000000000000ull), 0xC000000000000000ull, 0x7FFFu, "f64 quiet NaN");
+  expect(x86p_ext80_from_f64_bits(0x7FF0000000000001ull), 0xC000000000000800ull, 0x7FFFu, "f64 signalling NaN");
 }
 
 /* The comparator must reject a wrong answer, or every agreement above is
