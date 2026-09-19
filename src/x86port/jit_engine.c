@@ -488,7 +488,10 @@ X86pJitRunStatus x86p_jit_engine_run(
 
     if (!host) {
       X86pJitStatus st = kX86pJitOk;
-      char why[192];
+      /* Wide enough for the refusal WITH its denominators. At 192 the arena's
+         "%u live of %u slot(s); %u published and %u released" was cut off
+         mid-sentence, which removed the one number the reader needed. */
+      char why[512];
       why[0] = '\0';
       host = translate_at(e, cpu->eip, &st, NULL, why, (unsigned)sizeof why);
       if (!host) {

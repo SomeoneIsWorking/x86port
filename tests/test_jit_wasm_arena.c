@@ -337,6 +337,57 @@ static void test_the_engine_ceiling_is_learned_from_a_refusal(void) {
   x86p_wasm_arena_dispose(&arena);
 }
 
+/*
+ * A ceiling learned from one refusal is not a line the arena may then sit on.
+ * Measured in Firefox: publication was refused a second time with the arena
+ * already below the ceiling it had just learned, so a run that evicts one and
+ * republishes dies on the next block. The arena therefore backs off by a
+ * margin, and this is what that margin has to be worth: releasing one is not
+ * enough to declare room, and the refusal says the working limit rather than
+ * the raw ceiling.
+ */
+static void test_a_learned_ceiling_is_worked_below_not_on(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int token[32];
+  unsigned headroom;
+  unsigned i;
+  bind(&arena, &stub, &host);
+  /* Under the arena's own capacity, so the refusal can only come from the
+     engine -- a full arena would refuse for a different reason and prove
+     nothing about the ceiling. */
+  stub.engine_ceiling = 32;
+  for (i = 0; i < 32u; ++i) {
+    token[i] = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+    check("publishing under the engine's ceiling succeeds", token[i] >= 0, 1);
+  }
+  reason[0] = '\0';
+  check("the engine refuses the next one",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
+        -1);
+  check("the ceiling is what was live when it refused", x86p_wasm_arena_ceiling(&arena), 32);
+  headroom = x86p_wasm_arena_headroom(&arena);
+  check("and a ceiling that large carries headroom", headroom, 32u / kX86pWasmCeilingHeadroomDivisor);
+  check("the reason names the working limit and the ceiling it came from",
+        strstr(reason, "no more than 30 of a 32") != NULL,
+        1);
+  /* Releasing back to just under the ceiling is not room: that is the state
+     that was measured refusing. Only clearing the headroom as well is. */
+  for (i = 0; i < headroom; ++i) {
+    x86p_wasm_arena_release(&arena, token[i]);
+    check("still no room while the arena is inside its headroom", x86p_wasm_arena_has_room(&arena), 0);
+  }
+  x86p_wasm_arena_release(&arena, token[headroom]);
+  check("clearing the headroom is what gives room", x86p_wasm_arena_has_room(&arena), 1);
+  check("and publishing succeeds",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+        1);
+  check("the ceiling is not raised by that success", x86p_wasm_arena_ceiling(&arena), 32);
+  x86p_wasm_arena_dispose(&arena);
+}
+
 int main(void) {
   test_publish_and_release();
   test_cap_refuses_rather_than_evicting();
@@ -347,6 +398,7 @@ int main(void) {
   test_partial_host_is_no_host();
   test_zero_capacity_is_refused();
   test_the_engine_ceiling_is_learned_from_a_refusal();
+  test_a_learned_ceiling_is_worked_below_not_on();
   printf("test_jit_wasm_arena: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

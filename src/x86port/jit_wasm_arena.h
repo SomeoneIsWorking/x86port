@@ -84,6 +84,13 @@ typedef struct X86pWasmArenaSlot {
   unsigned next_free; /* index + 1 of the next free slot, 0 when this is last */
 } X86pWasmArenaSlot;
 
+/* One slot in this many is kept free below a learned ceiling -- see the
+   `headroom` field for what working at the ceiling itself was measured to do.
+   A ceiling smaller than this divides to no headroom, which is the right
+   answer for a host that holds only a handful of modules: there is nothing to
+   hold back. */
+enum { kX86pWasmCeilingHeadroomDivisor = 16u };
+
 typedef struct X86pWasmArena {
   X86pWasmHost host;
   X86pWasmArenaSlot *slot; /* `capacity` entries, owned */
@@ -98,6 +105,17 @@ typedef struct X86pWasmArena {
   /* The largest live count the engine has refused to exceed; 0 until one is
      observed. Never raised, so a ceiling learned once is honoured for the run. */
   unsigned ceiling;
+  /* How far below the ceiling the arena keeps itself.
+     A ceiling learned from one refusal is not a boundary that holds: measured
+     in Firefox, a publication was refused again with the arena already BELOW
+     the ceiling it had just learned, after releasing two modules. Whatever the
+     engine is counting, it is not exactly this arena's live count, so working
+     at the last refusal minus one is a run that refuses, evicts one, refuses
+     again and dies. Backing off by a margin gives the eviction something to
+     buy: one batch of evictions, then a long run of publications that succeed,
+     and if a refusal still comes it arrives lower and ratchets the ceiling
+     down again. */
+  unsigned headroom;
   unsigned published; /* modules successfully instantiated over the arena's life */
   unsigned released;  /* modules handed back to the engine */
   unsigned refusals;  /* publications refused because the cap was reached */
@@ -163,6 +181,10 @@ unsigned x86p_wasm_arena_live(const X86pWasmArena *a);
  * arena. Zero means no ceiling has been observed.
  */
 unsigned x86p_wasm_arena_ceiling(const X86pWasmArena *a);
+
+/* How many slots below the ceiling the arena refuses to use. Zero until a
+   ceiling has been learned, and zero for a ceiling too small to divide. */
+unsigned x86p_wasm_arena_headroom(const X86pWasmArena *a);
 /* Whether one more module may be published: below the caller's capacity AND
    below any ceiling the engine has shown us. */
 int x86p_wasm_arena_has_room(const X86pWasmArena *a);
