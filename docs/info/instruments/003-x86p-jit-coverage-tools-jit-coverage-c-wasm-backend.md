@@ -20,11 +20,15 @@ corpus, built against the x64 backend, reports **0 of 55,299** — that backend
 inlines no condition, and says so in `jit_x64_cond.c`. One instrument, two
 corpora-identical runs, opposite answers.
 
-The exit census: 53.9% relative branch, 16.4% RET, 27.5% indirect. A classifier
-that could not tell them apart would put everything in one row; these are three
-rows with three different populations, and the x64 backend's shorter blocks move
-the ratio to 69.3/11.2/18.7 on the same bytes, which is the response to a real
-difference and not a constant.
+The exit census: over the same corpus it reports 167,287 exits from 112,889
+blocks, 70.3% of them naming an address the translator already holds and 21.6%
+of them loop backedges. The x64 build over the same bytes **REFUSES** it by
+name, because that backend does not fill the counters and a row of zeros would
+read like a binary without branches in it. One instrument, two corpora-identical
+runs, an answer and a refusal.
+
+The counters behind it are asserted in `tests/test_wasm_exits.c`, 28 checks over
+eight shapes, each asserting the zeroes as well as the counts.
 
 ## Known failure modes
 
@@ -41,6 +45,22 @@ Two defects, both of the shape this registry exists to catch:
   counts those blocks as unenterable and REFUSES the differential by name;
   correctness for that backend is proven by the differential suites, not here.
 
+**The exit census answered the wrong question until 2026-09-19, and its answer
+looked plausible.** It walked each block's bytes and classified the LAST
+instruction. A conditional branch does not end a block in this backend, so every
+loop backedge was invisible: it reported ONE branch back to a block's own entry
+in 113,272 blocks, over code containing a skinning loop measured (issue #165 in
+the consuming title) to pay a dispatch per bone. The tell was that a near-zero
+was impossible, not that anything failed. It now sums counters the lowering
+fills as it emits each exit, and 54,015 exits that walk never saw came back.
+
+**A tier of that census is an artefact of this tool, and is labelled.** Where a
+block starts is decided by the walk, not by the guest: this tool splits each
+function linearly from its first byte, while the running engine translates from
+the address it dispatched to. So the same guest loop is a `to_entry` in the
+product and a mid-block backedge here. `backward` is the only tier invariant
+under that, and it is the one to quote.
+
 **Still true, by design:** every block counts once. A hot loop and a function
-that never runs weigh the same, so both censuses are static ratios. The dynamic
-ratio needs the running product's block histogram.
+that never runs weigh the same, so all three censuses are static ratios. The
+dynamic ratio needs the running product's block histogram.
