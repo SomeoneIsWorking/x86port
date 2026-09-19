@@ -69,6 +69,18 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s);
  */
 typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
+  /*
+   * Of those, the ones that re-entered the block just left: a guest loop going
+   * round again, having paid a full dispatch to do it.
+   *
+   * COUNTED PER ENTRY, WHICH IS THE POINT. Every other loop figure here is
+   * summed at translation, so a loop that runs a million times weighs the same
+   * as one that never runs -- useless for sizing a fix whose whole value is in
+   * iterations. This is the share of real dispatches a backend lowering a
+   * self-exit as a WebAssembly `loop` would remove, and it can report a low
+   * number as readily as a high one.
+   */
+  uint64_t blocks_reentered;
   uint64_t blocks_translated;
   uint64_t guest_insns_translated; /* summed at TRANSLATION, where it is known */
   /* Jcc and SETcc emitted, and how many of those the backend lowered to the
