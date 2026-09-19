@@ -67,6 +67,7 @@ unsigned x86p_wasm_arena_capacity(const X86pWasmArena *a) {
 int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, char *reason, unsigned reason_len) {
   unsigned i;
   int module;
+  char detail[192];
   if (!a) {
     say(reason, reason_len, "no arena");
     return -1;
@@ -101,10 +102,11 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
     say(reason, reason_len, "internal: free list names slot %u of %u, which is not free", i, a->capacity);
     return -1;
   }
-  module = a->host.instantiate(a->host.user, bytes, len);
+  detail[0] = '\0';
+  module = a->host.instantiate(a->host.user, bytes, len, detail, sizeof detail);
   if (module < 0) {
     a->failures++;
-    say(reason, reason_len, "the engine rejected a %zu-byte module", len);
+    say(reason, reason_len, "the engine rejected a %zu-byte module: %s", len, detail[0] ? detail : "no reason given");
     return -1;
   }
   a->free_head = a->slot[i].next_free;

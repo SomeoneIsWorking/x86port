@@ -46,7 +46,11 @@ extern "C" {
  * below is a failure: table index 0 is the null entry.
  */
 typedef struct X86pWasmHost {
-  int (*instantiate)(void *user, const void *bytes, size_t len);
+  /* On refusal, write why into `error` (never longer than `error_len`,
+     always terminated). The arena repeats it: "a bad module" and "the
+     engine is out of memory" are different problems with different fixes,
+     and the one that lost a whole run was the one with no words. */
+  int (*instantiate)(void *user, const void *bytes, size_t len, char *error, unsigned error_len);
   int (*resolve)(void *user, int module, const char *field);
   void (*release)(void *user, int module);
   void *user;

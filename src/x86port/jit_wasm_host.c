@@ -54,10 +54,17 @@ EM_JS(int,
           const module = new WebAssembly.Module(HEAPU8.subarray(start, start + length));
           instance = new WebAssembly.Instance(module, {env : host.env});
         } catch (failure) {
-          if (!(failure instanceof WebAssembly.CompileError) && !(failure instanceof WebAssembly.LinkError)) {
-            throw failure;
-          }
-          stringToUTF8(failure.message, error, error_len);
+          // Every failure here is a refusal to publish, not a broken program.
+          // Nothing has been added to host.modules yet, and the caller already
+          // counts a refusal and falls back, so there is a proven state to
+          // return to. Rethrowing did not: measured in Firefox 156, the module
+          // compiler threw `InternalError: out of memory` roughly a second into
+          // a run, the exception crossed the C stack out of the worker's
+          // onmessage, and the guest thread died while the heartbeat went on
+          // reporting it as "running guest code" for another seven minutes.
+          // The name is kept because an out-of-memory and a bad module need
+          // different fixes.
+          stringToUTF8(`${failure.name} : $ { failure.message }`, error, error_len);
           return -1;
         }
         const id = host.next++;
@@ -109,11 +116,16 @@ EM_JS(void, host_destroy, (void *key), {
   Module.x86pWasmHosts.delete(key);
 });
 
-static int instantiate(void *user, const void *bytes, size_t length) {
+static int instantiate(void *user, const void *bytes, size_t length, char *error, unsigned error_len) {
   X86pWasmHostState *state = user;
+  int module;
   state->error[0] = '\0';
-  return host_instantiate(
+  module = host_instantiate(
       user, bytes, length, state->names, state->addresses, kX86pWasmImportCount, state->error, sizeof state->error);
+  if (module < 0 && error && error_len) {
+    snprintf(error, error_len, "%s", state->error);
+  }
+  return module;
 }
 
 static int resolve(void *user, int module, const char *field) {

@@ -33,6 +33,10 @@ static void check(const char *what, long long got, long long want) {
 
 /* ---- the stub engine ----------------------------------------------------- */
 
+/* What a real engine says when it will not take another module. Firefox's
+ * module compiler says exactly this shape, and the arena must repeat it. */
+static const char kEngineWords[] = "InternalError: out of memory";
+
 typedef struct Stub {
   int next;           /* the next handle to hand out */
   int live;           /* handles instantiated and not yet released */
@@ -43,10 +47,13 @@ typedef struct Stub {
   int last_released;
 } Stub;
 
-static int stub_instantiate(void *user, const void *bytes, size_t len) {
+static int stub_instantiate(void *user, const void *bytes, size_t len, char *error, unsigned error_len) {
   Stub *s = (Stub *)user;
   s->instantiations++;
   if (!bytes || len == 0 || s->refuse) {
+    if (error && error_len) {
+      snprintf(error, error_len, "%s", kEngineWords);
+    }
     return -1;
   }
   s->live++;
@@ -196,6 +203,12 @@ static void test_engine_failure_is_not_a_refusal(void) {
    * look like a leak.
    */
   check("counted as a failure", x86p_wasm_arena_failures(&arena), 1);
+  /*
+   * And it repeats what the engine said. A refusal that reads only "rejected a
+   * 42-byte module" cannot tell a bad lowering from an engine that has run out
+   * of memory, and the second one is what silently ended a whole browser run.
+   */
+  check("the engine's own words survive", strstr(reason, kEngineWords) != NULL, 1);
   check("not counted as a refusal", x86p_wasm_arena_refusals(&arena), 0);
   check("nothing live", x86p_wasm_arena_live(&arena), 0);
   x86p_wasm_arena_dispose(&arena);
