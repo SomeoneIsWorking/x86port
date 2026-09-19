@@ -74,6 +74,18 @@ struct X86pJitStorage {
   size_t byte_budget;           /* how many bytes of LIVE module may be held at once */
   size_t used;
   unsigned next_victim; /* the module eviction looks at next */
+  /*
+   * How many BLOCK records are in use.
+   *
+   * Not the same quantity as live modules, and reading one for the other is
+   * what made a browser run abort with "all 65536 block record(s) are live"
+   * while the room check was reporting room: compaction puts up to
+   * X86P_WASM_COMPACT_BATCH blocks in one module, so the module count runs
+   * about a thirty-second of the record count and never reaches the record
+   * capacity. The records are what `take_block_slot` allocates from, so the
+   * records are what has to be counted.
+   */
+  unsigned live_blocks;
 };
 
 const char *x86p_jit_storage_mechanism(void) {
@@ -148,6 +160,7 @@ void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->pending_count = 0u;
   storage->used = 0u;
   storage->next_victim = 0u;
+  storage->live_blocks = 0u;
 }
 
 void x86p_jit_storage_destroy(X86pJitStorage *storage) {
@@ -167,7 +180,7 @@ X86pJitStorageRoom x86p_jit_storage_room(const X86pJitStorage *storage) {
   if (storage->used > storage->byte_budget || storage->byte_budget - storage->used < X86P_WASM_MIN_MODULE_BYTES) {
     return kX86pJitStorageOutOfBytes;
   }
-  if (x86p_wasm_arena_live(&storage->arena) >= storage->capacity_blocks) {
+  if (storage->live_blocks >= storage->capacity_blocks) {
     return kX86pJitStorageOutOfSlots;
   }
   /* ... and below whatever ceiling the engine has actually shown us, which may
@@ -251,6 +264,7 @@ static void drop_block(X86pJitStorage *storage, unsigned slot) {
   forget_pending(storage, slot);
   drop_module(storage, block->token);
   memset(block, 0, sizeof *block);
+  storage->live_blocks--;
 }
 
 /* ---- sharing a module between blocks -------------------------------------- */
@@ -445,6 +459,10 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     return kX86pJitOutOfSpace;
   }
   storage->blocks[slot] = (X86pWasmStoredBlock){block->guest_eip, block->guest_len, token, block->entry, 1};
+  /* Counted here rather than where the slot was found, because the two paths
+     between them return without making the record live, and a count raised for
+     a record that never became live never comes back down. */
+  storage->live_blocks++;
   hold_module(storage, token, block->host_bytes);
   if (storage->pending_count < X86P_WASM_COMPACT_BATCH) {
     storage->pending[storage->pending_count++] = (unsigned)slot;
