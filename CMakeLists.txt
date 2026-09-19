@@ -269,6 +269,11 @@ target_link_libraries(test_memory_perms PRIVATE x86port_runtime)
 x86p_strict_target(test_memory_perms)
 add_test(NAME test_memory_perms COMMAND test_memory_perms)
 
+add_executable(test_x87_memory tests/test_x87_memory.c)
+target_link_libraries(test_x87_memory PRIVATE x86port_runtime)
+x86p_strict_target(test_x87_memory)
+add_test(NAME test_x87_memory COMMAND test_x87_memory)
+
 if(NOT EMSCRIPTEN)
   # Probes native executable-memory allocation and protection transitions.
   add_executable(test_jit_engine tests/test_jit_engine.c)
