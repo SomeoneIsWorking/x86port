@@ -55,6 +55,10 @@ typedef struct X86pWasmLower {
   unsigned conds;
   unsigned cond_inline;
   unsigned cond_unknown_kind;
+  /* Memory-operand x87 loads lowered, and how many of them got the emitted
+     widening instead of the import call. See jit_wasm_x87_load.h. */
+  unsigned x87_loads;
+  unsigned x87_loads_inline;
   int last_kind;
   int last_w;
 } X86pWasmLower;

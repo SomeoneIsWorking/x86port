@@ -14,6 +14,12 @@
 #define SIZE 4096u
 static uint8_t guest[SIZE], reference[SIZE];
 static unsigned checks, failures, cases, entries, faults, refusals;
+/* Memory-operand x87 loads lowered across every case, and those that got the
+   emitted widening rather than the import call. Both, because each is a
+   negative the other cannot show: a zero inline count would mean the fast path
+   was never emitted, and an inline count equal to the total would mean the
+   forms it must DECLINE -- the integer loads -- were never lowered here. */
+static unsigned long x87_loads, x87_loads_inline;
 static const char *current;
 static void check(int pass, const char *reason) {
   checks++;
@@ -128,6 +134,8 @@ static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu
     check(stats.blocks_translated == 1 && stats.blocks_entered == 1 && stats.translate_refusals == 0,
           "case did not enter exactly one translated block");
     entries += (unsigned)stats.blocks_entered;
+    x87_loads += (unsigned long)stats.x87_loads_translated;
+    x87_loads_inline += (unsigned long)stats.x87_loads_inline;
     x86p_jit_engine_destroy(engine);
   }
   x86p_sparse_destroy(sparse);
@@ -261,6 +269,68 @@ static void memory_forms(void) {
   }
 }
 
+/*
+ * FLD32 and FLD64 over the operand values that decide which arm of the emitted
+ * widening runs, and over the stack depths that decide whether it may run at
+ * all.
+ *
+ * The backend emits the ordinary case itself and calls x86p_wasm_x87_load_bits
+ * for the rest (jit_wasm_x87_load.h says why). So there are now two
+ * implementations of one conversion, and the values below are exactly the ones
+ * that tell them apart: the zeroes and subnormals whose significand has no
+ * leading one to make explicit, the infinities and NaNs whose exponent means
+ * something else entirely, and the two ends of the normal range where an
+ * off-by-one in the rebias shows. The existing memory_forms cases reach FLD
+ * with one value, 1.75, which is normal as a double and +0.0 as the float made
+ * of its low four bytes -- so it exercises one arm each and neither boundary.
+ *
+ * DEPTH 8 IS NOT A DUPLICATE OF THE OTHERS. A full stack is a push overflow:
+ * nothing is stored, three status bits are set, and TOP does not move. That is
+ * the one refusal the emitted test for "ordinary" makes about the DESTINATION
+ * rather than the operand, and without it a fast path that stored over a live
+ * register would pass every value above.
+ */
+static void load_widening(void) {
+  static const struct {
+    const char *name;
+    uint64_t f64;
+    uint32_t f32;
+  } operands[] = {
+      {"one and a half", 0x3ff8000000000000ull, 0x3fc00000u},
+      {"negative normal", 0xc008000000000000ull, 0xc0400000u},
+      {"smallest normal", 0x0010000000000000ull, 0x00800000u},
+      {"largest normal", 0x7fefffffffffffffull, 0x7f7fffffu},
+      {"exponent one, full fraction", 0x001fffffffffffffull, 0x00ffffffu},
+      {"positive zero", 0x0000000000000000ull, 0x00000000u},
+      {"negative zero", 0x8000000000000000ull, 0x80000000u},
+      {"smallest subnormal", 0x0000000000000001ull, 0x00000001u},
+      {"largest subnormal", 0x000fffffffffffffull, 0x007fffffu},
+      {"negative subnormal", 0x8000000000000001ull, 0x80000001u},
+      {"infinity", 0x7ff0000000000000ull, 0x7f800000u},
+      {"negative infinity", 0xfff0000000000000ull, 0xff800000u},
+      {"quiet NaN", 0x7ff8000000000000ull, 0x7fc00000u},
+      {"signalling NaN", 0x7ff0000000000001ull, 0x7f800001u},
+  };
+  static const uint8_t fld32[] = {0xd9, 0x07};
+  static const uint8_t fld64[] = {0xdd, 0x07};
+  /* Both mappings, because the operand reaches the widening by a different
+     route on each -- a direct wasm load, or the checked import pair. */
+  static const unsigned modes[] = {kMapPlain, kMapSparse | 3u};
+  static const unsigned depths[] = {0, 2, 7, 8};
+  for (unsigned v = 0; v < sizeof operands / sizeof *operands; v++) {
+    for (unsigned d = 0; d < sizeof depths / sizeof *depths; d++) {
+      for (unsigned m = 0; m < sizeof modes / sizeof *modes; m++) {
+        X86pCpu cpu = initial(depths[d]);
+        memcpy(guest + 512, &operands[v].f64, sizeof operands[v].f64);
+        run_case(operands[v].name, fld64, sizeof fld64, cpu, modes[m]);
+        cpu = initial(depths[d]);
+        memcpy(guest + 512, &operands[v].f32, sizeof operands[v].f32);
+        run_case(operands[v].name, fld32, sizeof fld32, cpu, modes[m]);
+      }
+    }
+  }
+}
+
 static void precision_and_refusals(void) {
   static const uint16_t precision[] = {0, 0x200, 0x300};
   static const uint8_t forms[][2] = {
@@ -291,15 +361,23 @@ int main(void) {
   register_forms();
   comparison_sources();
   memory_forms();
+  load_widening();
   precision_and_refusals();
   current = "denominators";
   check(cases == entries && entries > 400, "missing translated cases");
   check(faults > 50 && refusals == 6, "negative classes were not exercised");
-  printf("WASM x87: cases=%u entries=%u faults=%u refusals=%u checks=%u failures=%u\n",
+  /* The emitted widening was reached, and so was the decline: the integer
+     loads in memory_forms are lowered here and must NOT get it. Either
+     equality would mean this suite proved nothing about which path ran. */
+  check(x87_loads_inline > 0, "no x87 load was lowered to the emitted widening");
+  check(x87_loads_inline < x87_loads, "every x87 load was inlined, so the declined forms went untested");
+  printf("WASM x87: cases=%u entries=%u faults=%u refusals=%u loads=%lu inline=%lu checks=%u failures=%u\n",
          cases,
          entries,
          faults,
          refusals,
+         x87_loads,
+         x87_loads_inline,
          checks,
          failures);
   return failures ? 1 : 0;

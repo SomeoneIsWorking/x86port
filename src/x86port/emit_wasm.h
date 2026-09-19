@@ -315,6 +315,11 @@ void x86p_wasm_i64_extend_i32_u(X86pWasmEmit *e);
 void x86p_wasm_i32_wrap_i64(X86pWasmEmit *e);
 void x86p_wasm_i64_mul(X86pWasmEmit *e);
 void x86p_wasm_i64_shr_u(X86pWasmEmit *e);
+/* The bitwise forms an ext80 widening needs: assembling a significand and an
+   exponent field out of the bits of a binary32 or binary64 operand. */
+void x86p_wasm_i64_and(X86pWasmEmit *e);
+void x86p_wasm_i64_or(X86pWasmEmit *e);
+void x86p_wasm_i64_shl(X86pWasmEmit *e);
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount);
 
 /* ---- control ----------------------------------------------------------- */

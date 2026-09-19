@@ -1,8 +1,9 @@
 /* See x87_ext80_widen.h. */
 #include "x87_ext80_widen.h"
 
-/* ext80's exponent bias, and the all-ones exponent shared by infinity and NaN. */
-#define EXT80_BIAS 16383
+/* The all-ones exponent shared by infinity and NaN. The bias is published, in
+   the header, because the emitted form of this widening needs it too. */
+#define EXT80_BIAS X86P_EXT80_BIAS
 #define EXT80_EXP_MAX 0x7FFFu
 #define EXT80_INTEGER_BIT 0x8000000000000000ull
 /* The significand's most significant fraction bit: an ext80 NaN is quiet when
@@ -68,10 +69,43 @@ static X86pExt80 widen(uint64_t sign, uint32_t exp, uint64_t mant, uint32_t fiel
   return out;
 }
 
+X86pExt80Source x86p_ext80_source(unsigned width) {
+  X86pExt80Source out;
+  out.field = 0u;
+  out.exp_max = 0u;
+  out.bias = 0u;
+  if (width == 4u) {
+    out.field = 23u;
+    out.exp_max = 0xFFu;
+    out.bias = 127u;
+  } else if (width == 8u) {
+    out.field = 52u;
+    out.exp_max = 0x7FFu;
+    out.bias = 1023u;
+  }
+  return out;
+}
+
+/*
+ * Splitting an operand into sign, exponent and fraction, written once.
+ *
+ * The two entry points below used to spell the three extractions out with the
+ * same six literals the descriptor now holds. That is the shape the emitted
+ * WebAssembly has to reproduce instruction for instruction, so it is the shape
+ * that has to have one home.
+ */
+static X86pExt80 widen_bits(uint64_t bits, unsigned width) {
+  const X86pExt80Source s = x86p_ext80_source(width);
+  const uint64_t sign = bits >> (width * 8u - 1u);
+  const uint32_t exp = (uint32_t)((bits >> s.field) & s.exp_max);
+  const uint64_t mant = bits & (((uint64_t)1u << s.field) - 1u);
+  return widen(sign, exp, mant, s.field, s.exp_max, s.bias);
+}
+
 X86pExt80 x86p_ext80_from_f32_bits(uint32_t bits) {
-  return widen((uint64_t)(bits >> 31), (bits >> 23) & 0xFFu, bits & 0x7FFFFFu, 23u, 0xFFu, 127u);
+  return widen_bits(bits, 4u);
 }
 
 X86pExt80 x86p_ext80_from_f64_bits(uint64_t bits) {
-  return widen(bits >> 63, (uint32_t)((bits >> 52) & 0x7FFu), bits & 0xFFFFFFFFFFFFFull, 52u, 0x7FFu, 1023u);
+  return widen_bits(bits, 8u);
 }

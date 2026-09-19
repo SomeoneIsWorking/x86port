@@ -2,6 +2,7 @@
 
 #include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
+#include "jit_wasm_x87_load.h"
 #include "jit_x87_predicates.h"
 #include "x87_memory.h"
 #include <stddef.h>
@@ -316,6 +317,14 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   case kX86pX87InsnLoadInt:
     if (!memory) {
       copy_value(l, index, 0, 1, 0);
+      return;
+    }
+    /* The denominator for the inline form, counted here because this is the
+       only site that knows a memory load was lowered at all -- a build where
+       x86p_wasm_x87_load_inline always declines must still report the loads it
+       declined, or "none inlined" cannot be told from "none reached". */
+    l->x87_loads++;
+    if (x86p_wasm_x87_load_inline(l, insn, pc)) {
       return;
     }
     memory_bits_arguments(l, insn, pc);
