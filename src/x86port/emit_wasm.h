@@ -321,6 +321,12 @@ void x86p_wasm_i64_shr_u(X86pWasmEmit *e);
 void x86p_wasm_i64_and(X86pWasmEmit *e);
 void x86p_wasm_i64_or(X86pWasmEmit *e);
 void x86p_wasm_i64_shl(X86pWasmEmit *e);
+/* And the three an ext80 NARROWING needs: rounding to nearest is adding half
+   an ulp to a 64-bit significand, comparing the discarded part against exactly
+   half to find a tie, and clearing one bit to send that tie to even. */
+void x86p_wasm_i64_add(X86pWasmEmit *e);
+void x86p_wasm_i64_eq(X86pWasmEmit *e);
+void x86p_wasm_i64_xor(X86pWasmEmit *e);
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount);
 
 /* ---- 128-bit SIMD ------------------------------------------------------ */

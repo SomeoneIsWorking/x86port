@@ -353,6 +353,15 @@ void x86p_wasm_i64_or(X86pWasmEmit *e) {
 void x86p_wasm_i64_shl(X86pWasmEmit *e) {
   x86p_wasm_byte(e, 0x86);
 }
+void x86p_wasm_i64_add(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0x7C);
+}
+void x86p_wasm_i64_eq(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0x51);
+}
+void x86p_wasm_i64_xor(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0x85);
+}
 
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount) {
   x86p_wasm_i64_const(e, amount);
