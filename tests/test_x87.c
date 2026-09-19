@@ -199,18 +199,40 @@ static void test_the_op_census_counts_what_a_run_performs(void) {
     CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
     CHECK_EQ_U(census.ordinary[kX86pX87Add], 2);
 
-    /* Round-toward-negative is not the ordinary case, so the operation is
-       counted and the headroom is not. */
+    /* Round-toward-negative is not the ordinary case: counted, no headroom,
+       and the refusal named as the control word's rather than an operand's. */
     f.control = (uint16_t)((f.control & ~(uint16_t)X86P_X87_RC_MASK) | (uint16_t)X86P_X87_RC_DOWN);
     CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 3.0L, 0));
     CHECK_EQ_U(census.total[kX86pX87Mul], 2);
     CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.refused_control[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 0);
 
-    /* A zero operand is not a normal, for the same reason. */
+    /* A zero operand is not a normal -- and it is the separable case, so it
+       must not land in the column that means "the softfloat earns its place". */
     f.control = (uint16_t)(f.control & ~(uint16_t)X86P_X87_RC_MASK);
     CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 0.0L, 0));
     CHECK_EQ_U(census.total[kX86pX87Mul], 3);
     CHECK_EQ_U(census.ordinary[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.refused_other[kX86pX87Mul], 0);
+
+    /* An infinity is not separable that way, and lands in the last column. */
+    CHECK(x86p_x87_push(&f, 1.0L));
+    CHECK(x86p_x87_arith(&f, kX86pX87Div, 0, 0.0L, 0)); /* 1/0 -> +inf in ST(0) */
+    CHECK(x86p_x87_arith(&f, kX86pX87Mul, 0, 2.0L, 0));
+    CHECK_EQ_U(census.refused_other[kX86pX87Mul], 1);
+    CHECK_EQ_U(census.refused_zero[kX86pX87Mul], 1);
+
+    /* Every operation is in exactly one column. */
+    {
+      unsigned op;
+      for (op = 0; op < X86P_X87_OPS; op++) {
+        CHECK_EQ_U(census.ordinary[op] + census.refused_control[op] + census.refused_zero[op] +
+                       census.refused_other[op],
+                   census.total[op]);
+      }
+    }
   } else {
     printf("  NOTE: this host's register file is not the ext80 encoding, so "
            "the census counted operations and measured no headroom.\n");

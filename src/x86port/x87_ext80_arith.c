@@ -16,6 +16,10 @@ int x86p_ext80_is_normal(X86pExt80 v) {
   return exponent - 1u < (unsigned)(kExt80MaxExp - 1u) && (v.signif >> 63) != 0u;
 }
 
+int x86p_ext80_is_zero(X86pExt80 v) {
+  return (v.sign_exp & 0x7FFFu) == 0u && v.signif == 0u;
+}
+
 int x86p_ext80_control_is_ordinary(uint16_t control) {
   return (control & X86P_X87_RC_MASK) == X86P_X87_RC_NEAREST && (control & X86P_X87_PC_MASK) == X86P_X87_PC_EXTENDED;
 }

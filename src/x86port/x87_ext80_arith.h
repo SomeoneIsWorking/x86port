@@ -50,6 +50,10 @@ extern "C" {
  * answer drifting from what the operation actually accepts.
  */
 int x86p_ext80_is_normal(X86pExt80 v);
+/* A true zero, of either sign: the case a census must separate from the rest,
+   because an operand that is zero has a trivial answer a wider rule could give
+   and a subnormal or a NaN does not. */
+int x86p_ext80_is_zero(X86pExt80 v);
 int x86p_ext80_control_is_ordinary(uint16_t control);
 
 /*
