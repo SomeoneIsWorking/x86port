@@ -149,6 +149,20 @@ typedef struct X86pJitBlock {
   unsigned conds;
   unsigned cond_helper_calls;
   unsigned cond_inline;
+  /*
+   * Of the conditions that were NOT lowered inline, those whose predecessor
+   * was not recorded at all -- the block's first flag reader, or an
+   * instruction whose flag kind is only known at run time, such as a shift
+   * whose count may be zero.
+   *
+   * This is the census that turns "nothing inlined" into a work item. Without
+   * it a zero inline count has two entirely different causes that call for
+   * opposite fixes: predecessors arriving unrecorded, which is a lowering that
+   * throws information away, and predecessors of a kind no derivation exists
+   * for yet, which is a derivation to write. Ranking that work needs the split,
+   * not the total.
+   */
+  unsigned cond_unknown_kind;
 } X86pJitBlock;
 
 /*

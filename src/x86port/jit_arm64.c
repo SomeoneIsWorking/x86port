@@ -683,6 +683,9 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
     return;
   }
   c->cond_helper_calls++;
+  if (last_kind < 0) {
+    c->cond_unknown_kind++;
+  }
   x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)cond);
   x86p_a64_emit_lea64(c->e, kA64X1, CPU_REG, flags_off());
   emit_call(c->e, (void *)&x86p_cond);
@@ -713,6 +716,9 @@ static void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallth
     return;
   }
   c->cond_helper_calls++;
+  if (last_kind < 0) {
+    c->cond_unknown_kind++;
+  }
   x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
   x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
   emit_call(e, (void *)&x86p_cond);
@@ -1148,6 +1154,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->conds = ctx.conds;
   out->cond_helper_calls = ctx.cond_helper_calls;
   out->cond_inline = ctx.cond_inline;
+  out->cond_unknown_kind = ctx.cond_unknown_kind;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

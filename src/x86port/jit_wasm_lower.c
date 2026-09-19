@@ -402,6 +402,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->conds = l.conds;
   out->cond_helper_calls = l.conds - l.cond_inline;
   out->cond_inline = l.cond_inline;
+  out->cond_unknown_kind = l.cond_unknown_kind;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

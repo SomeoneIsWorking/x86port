@@ -54,6 +54,7 @@ typedef struct X86pWasmLower {
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_inline;
+  unsigned cond_unknown_kind;
   int last_kind;
   int last_w;
 } X86pWasmLower;

@@ -212,6 +212,9 @@ int x86p_wasm_cond_is_inline(int last_kind, X86pCond cc) {
 int x86p_wasm_cond_value(X86pWasmLower *l, X86pCond cc) {
   int inlined = 0;
   l->conds++;
+  if (l->last_kind < 0) {
+    l->cond_unknown_kind++;
+  }
   if (x86p_wasm_cond_is_inline(l->last_kind, cc)) {
     inlined = (l->last_kind == (int)kX86pFlagsSub) ? emit_sub(l, cc) : emit_logic(l, cc);
   }

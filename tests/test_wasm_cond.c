@@ -187,15 +187,18 @@ static void the_inline_path_is_the_one_being_tested(void) {
     wasm_test_check(&suite, block.conds == 1u, "CMP+SETcc did not count one condition");
     wasm_test_check(&suite, block.cond_inline == 1u, "CMP+SETcc was not lowered inline");
     wasm_test_check(&suite, block.cond_helper_calls == 0u, "CMP+SETcc still called the authority");
+    wasm_test_check(&suite, block.cond_unknown_kind == 0u, "CMP+SETcc reported its predecessor as unrecorded");
   }
   if (lower_counts(alone, sizeof alone, &block)) {
     wasm_test_check(&suite, block.conds == 1u, "a lone SETcc did not count one condition");
     wasm_test_check(&suite, block.cond_inline == 0u, "a lone SETcc claimed an inline lowering it cannot have");
     wasm_test_check(&suite, block.cond_helper_calls == 1u, "a lone SETcc did not reach the authority");
+    wasm_test_check(&suite, block.cond_unknown_kind == 1u, "a lone SETcc did not report an unrecorded predecessor");
   }
   if (lower_counts(after_shl, sizeof after_shl, &block)) {
     wasm_test_check(&suite, block.cond_inline == 0u, "a shift's flags were treated as a derivable kind");
     wasm_test_check(&suite, block.cond_helper_calls == 1u, "SHL+SETcc did not reach the authority");
+    wasm_test_check(&suite, block.cond_unknown_kind == 1u, "a shift that records no kind was counted as classified");
   }
   wasm_test_check(&suite, !x86p_wasm_cond_is_inline(-1, kX86pCondZ), "an unknown predecessor claimed an inline form");
   wasm_test_check(&suite,
