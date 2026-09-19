@@ -9,6 +9,61 @@
 
 static const X86pWasmLocal lanes[] = {kX86pWasmLocalA, kX86pWasmLocalB, kX86pWasmLocalR, kX86pWasmLocalCarry};
 
+/*
+ * The MXCSR census. TEMPORARY -- see jit_wasm_simd.h for the question it
+ * exists to answer and when it comes out.
+ *
+ * Relaxed and not atomic. Several guest threads reach this, so a count may lose
+ * an increment to a race; the question is whether a rounding mode other than
+ * nearest occurs AT ALL, and a lost increment cannot turn a nonzero bucket into
+ * a zero one. Making these atomic would put a lock-prefixed operation in the
+ * path being measured, which is the one thing a measurement must not do.
+ */
+static X86pWasmSimdCensus g_census;
+
+enum {
+  kMxcsrRoundShift = 13, /* RC, two bits */
+  kMxcsrFlushToZero = 1u << 15,
+  kMxcsrDenormalsAreZero = 1u << 6
+};
+
+unsigned x86p_wasm_simd_mode_index(uint32_t mxcsr) {
+  return (unsigned)(((mxcsr >> kMxcsrRoundShift) & 3u) << 2) | ((mxcsr & kMxcsrFlushToZero) ? 2u : 0u) |
+         ((mxcsr & kMxcsrDenormalsAreZero) ? 1u : 0u);
+}
+
+/* Spelled out rather than composed, so a caller printing all sixteen in a loop
+ * gets sixteen live strings and not one shared buffer overwritten each time. */
+static const char *const mode_names[kX86pWasmSimdModeCount] = {"nearest",
+                                                               "nearest+DAZ",
+                                                               "nearest+FTZ",
+                                                               "nearest+FTZ+DAZ",
+                                                               "down",
+                                                               "down+DAZ",
+                                                               "down+FTZ",
+                                                               "down+FTZ+DAZ",
+                                                               "up",
+                                                               "up+DAZ",
+                                                               "up+FTZ",
+                                                               "up+FTZ+DAZ",
+                                                               "to-zero",
+                                                               "to-zero+DAZ",
+                                                               "to-zero+FTZ",
+                                                               "to-zero+FTZ+DAZ"};
+
+const char *x86p_wasm_simd_mode_name(unsigned index) {
+  if (index >= (unsigned)kX86pWasmSimdModeCount) {
+    return "out of range";
+  }
+  return mode_names[index];
+}
+
+void x86p_wasm_simd_census(X86pWasmSimdCensus *out) {
+  if (out) {
+    *out = g_census;
+  }
+}
+
 uint32_t x86p_wasm_simd_arithmetic(X86pCpu *cpu,
                                    uint32_t destination,
                                    uint32_t operation,
@@ -19,6 +74,11 @@ uint32_t x86p_wasm_simd_arithmetic(X86pCpu *cpu,
                                    uint32_t immediate) {
   const X86pSimdOp op = (X86pSimdOp)operation;
   const int scalar_result = op == kX86pSimdCvtss2si || op == kX86pSimdCvttss2si;
+  g_census.operations++;
+  g_census.by_mode[x86p_wasm_simd_mode_index(cpu->mxcsr)]++;
+  if (operation < (uint32_t)kX86pSimdOpCount) {
+    g_census.by_op[operation]++;
+  }
   X86pVec a = {.bytes = scalar_result ? 4u : 16u}, b = {.bytes = 16u}, r = {0};
   memcpy(a.b, cpu->xmm[destination], sizeof a.b);
   vec_set_u32(&b, 0, b0);
