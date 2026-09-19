@@ -130,8 +130,18 @@ typedef struct X86pWasmArena {
    */
   unsigned free_head; /* index + 1 of the first free slot, 0 when full */
   unsigned live;
-  /* The largest live count the engine has refused to exceed; 0 until one is
-     observed. Never raised, so a ceiling learned once is honoured for the run. */
+  /* The live count the engine last refused to exceed; 0 while none is in
+     force.
+
+     It is a hypothesis, not a boundary, and it is retired as soon as the
+     arena has backed off below it -- see `ceilings_retired`. Measured in
+     Firefox 156: a refusal arrived on a 121,950-byte module with 863 modules
+     live, reason "InternalError: out of memory", and the same host had
+     already been seen to accept a module again after nothing more than
+     releasing a thousand or yielding to the event loop. Held for the run,
+     that one refusal cost 1,641 evictions and 51,664 retranslated blocks in a
+     five-second window, because the arena spent the run defending a limit the
+     engine was no longer applying. */
   unsigned ceiling;
   /* How far below the ceiling the arena keeps itself.
      A ceiling learned from one refusal is not a boundary that holds: measured
@@ -144,11 +154,13 @@ typedef struct X86pWasmArena {
      and if a refusal still comes it arrives lower and ratchets the ceiling
      down again. */
   unsigned headroom;
-  unsigned published; /* modules successfully instantiated over the arena's life */
-  unsigned released;  /* modules handed back to the engine */
-  unsigned refusals;  /* publications refused because the cap was reached */
-  unsigned failures;  /* publications the engine itself rejected */
-  unsigned adoptions; /* entries moved from one module to another */
+  unsigned published;        /* modules successfully instantiated over the arena's life */
+  unsigned released;         /* modules handed back to the engine */
+  unsigned refusals;         /* publications refused because the cap was reached */
+  unsigned failures;         /* publications the engine itself rejected */
+  unsigned adoptions;        /* entries moved from one module to another */
+  unsigned ceilings_learned; /* refusals that put a ceiling in force */
+  unsigned ceilings_retired; /* ceilings dropped again after backing off below them */
 } X86pWasmArena;
 
 /*
@@ -223,15 +235,26 @@ unsigned x86p_wasm_arena_live(const X86pWasmArena *a);
  * evicted, and the refusal ended the run.
  *
  * So the arena LEARNS it: a refused instantiation records the live count as
- * the engine's observed ceiling, and from then on the arena is full at that
- * number. The caller's eviction path then does what it already does for a full
- * arena. Zero means no ceiling has been observed.
+ * the engine's observed ceiling, and the arena is full at that number until it
+ * has backed off below it. The caller's eviction path then does what it
+ * already does for a full arena. Once the back-off has happened the ceiling is
+ * retired, because the refusals seen in practice do not survive it and a
+ * ceiling kept past its back-off throttles the run for good. Zero means no
+ * ceiling is in force.
  */
 unsigned x86p_wasm_arena_ceiling(const X86pWasmArena *a);
 
 /* How many slots below the ceiling the arena refuses to use. Zero until a
    ceiling has been learned, and zero for a ceiling too small to divide. */
 unsigned x86p_wasm_arena_headroom(const X86pWasmArena *a);
+
+/* How many times a refusal put a ceiling in force, and how many of those were
+   retired again once the arena had backed off below them. A run whose two
+   numbers are equal and large is being throttled by refusals that do not
+   survive the back-off; one that learns a ceiling and never retires it is
+   sitting under a limit that really holds. */
+unsigned x86p_wasm_arena_ceilings_learned(const X86pWasmArena *a);
+unsigned x86p_wasm_arena_ceilings_retired(const X86pWasmArena *a);
 /* Whether one more module may be published: below the caller's capacity AND
    below any ceiling the engine has shown us. */
 int x86p_wasm_arena_has_room(const X86pWasmArena *a);

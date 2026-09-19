@@ -467,6 +467,14 @@ unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage) {
   return storage ? storage->pending_count : 0u;
 }
 
+unsigned x86p_jit_storage_ceilings_learned(const X86pJitStorage *storage) {
+  return storage ? x86p_wasm_arena_ceilings_learned(&storage->arena) : 0u;
+}
+
+unsigned x86p_jit_storage_ceilings_retired(const X86pJitStorage *storage) {
+  return storage ? x86p_wasm_arena_ceilings_retired(&storage->arena) : 0u;
+}
+
 const char *x86p_jit_storage_compaction_refusal_reason(const X86pJitStorage *storage) {
   return storage ? storage->compaction_why : "";
 }

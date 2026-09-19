@@ -43,6 +43,7 @@ typedef struct Stub {
   int instantiations; /* calls to instantiate(), successful or not */
   int releases;       /* calls to release() */
   int refuse;         /* when set, the engine refuses to take another module */
+  int refuse_once;    /* refuses the next module, then clears itself */
   int refuse_module;  /* when set, the engine refuses THIS module */
   int resolve_fails;  /* when set, resolve() returns 0 -- the null table slot */
   int engine_ceiling; /* when set, the engine refuses beyond this many live */
@@ -76,7 +77,10 @@ static int stub_instantiate(void *user, const void *bytes, size_t len, char *err
     }
     return kX86pWasmRefusedModule;
   }
-  if (s->refuse) {
+  if (s->refuse || s->refuse_once) {
+    /* A one-shot refusal is the measured Firefox case: the same host that
+       refused a module took one again after nothing but a release. */
+    s->refuse_once = 0;
     if (error && error_len) {
       snprintf(error, error_len, "%s", kEngineWords);
     }
@@ -375,7 +379,7 @@ static void test_the_engine_ceiling_is_learned_from_a_refusal(void) {
         x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
         -1);
   check("the ceiling is what was live when it refused", x86p_wasm_arena_ceiling(&arena), 3);
-  check("the reason names it", strstr(reason, "no more than 3") != NULL, 1);
+  check("the reason names it", strstr(reason, "back off to 3") != NULL, 1);
   check("and the arena is now full at that number, though slots remain", x86p_wasm_arena_has_room(&arena), 0);
   check("the slots really do remain", x86p_wasm_arena_capacity(&arena) > 3u, 1);
   /*
@@ -389,7 +393,9 @@ static void test_the_engine_ceiling_is_learned_from_a_refusal(void) {
   check("and publishing succeeds",
         x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
         1);
-  check("the ceiling is not raised by that success", x86p_wasm_arena_ceiling(&arena), 3);
+  check("the back-off retires the ceiling rather than keeping it for the run", x86p_wasm_arena_ceiling(&arena), 0);
+  check("which is counted", x86p_wasm_arena_ceilings_learned(&arena), 1);
+  check("on both sides", x86p_wasm_arena_ceilings_retired(&arena), 1);
   x86p_wasm_arena_dispose(&arena);
 }
 
@@ -433,6 +439,61 @@ static void test_a_refused_module_teaches_no_ceiling(void) {
  * enough to declare room, and the refusal says the working limit rather than
  * the raw ceiling.
  */
+/*
+ * A REFUSAL THAT DOES NOT SURVIVE THE BACK-OFF MUST NOT THROTTLE THE RUN.
+ *
+ * Measured in Firefox 156: the engine refused a 121,950-byte module with 863
+ * live and "InternalError: out of memory", and the same host accepted modules
+ * again after a release. Held as a ceiling for the rest of the run, that one
+ * refusal cost 1,641 evictions and 51,664 retranslated blocks in five seconds
+ * -- the arena defending a limit the engine was not applying. So the ceiling
+ * is a hypothesis: back off below it, then let the engine answer again.
+ */
+static void test_a_ceiling_the_engine_does_not_hold_is_retired(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int token[64];
+  unsigned live;
+  unsigned i;
+  bind(&arena, &stub, &host);
+  for (i = 0; i < 20u; ++i) {
+    token[i] = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+    check("publishing succeeds while the engine is willing", token[i] >= 0, 1);
+  }
+  stub.refuse_once = 1;
+  check("the engine refuses one", x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason), -1);
+  check("which puts a ceiling in force", x86p_wasm_arena_ceiling(&arena), 20);
+  check("and shuts the arena", x86p_wasm_arena_has_room(&arena), 0);
+  /* The back-off the ceiling asked for, and no more. */
+  for (i = 0; !x86p_wasm_arena_has_room(&arena); ++i) {
+    check("the back-off stays inside the ceiling it is answering", i < 20u, 1);
+    x86p_wasm_arena_release(&arena, token[i]);
+  }
+  check("the ceiling is retired once that has happened", x86p_wasm_arena_ceiling(&arena), 0);
+  check("and it is counted", x86p_wasm_arena_ceilings_retired(&arena), 1);
+  /*
+   * The discriminator: publishing must now go PAST the count the engine
+   * refused at. A run that stops at 20 again is the old behaviour passing a
+   * test about the new one.
+   */
+  live = x86p_wasm_arena_live(&arena);
+  while (live < 40u) {
+    check("publishing past the refused count succeeds",
+          x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+          1);
+    live = x86p_wasm_arena_live(&arena);
+  }
+  check("so the run is not capped by a refusal the engine did not repeat", live, 40);
+  /* And the arena is OPEN there. A ceiling still in force at twice the count
+     it was learned at is an arena that asks its caller to evict live code for
+     every block from here to the end of the run -- the 1,641 evictions. */
+  check("with the arena open above the count that was refused", x86p_wasm_arena_has_room(&arena), 1);
+  check("and one refusal cost one refused instantiation, not a run of them", x86p_wasm_arena_failures(&arena), 1);
+  x86p_wasm_arena_dispose(&arena);
+}
+
 static void test_a_learned_ceiling_is_worked_below_not_on(void) {
   X86pWasmArena arena;
   X86pWasmHost host;
@@ -458,7 +519,7 @@ static void test_a_learned_ceiling_is_worked_below_not_on(void) {
   headroom = x86p_wasm_arena_headroom(&arena);
   check("and a ceiling that large carries headroom", headroom, 32u / kX86pWasmCeilingHeadroomDivisor);
   check("the reason names the working limit and the ceiling it came from",
-        strstr(reason, "no more than 30 of a 32") != NULL,
+        strstr(reason, "back off to 30 of a 32") != NULL,
         1);
   /* Releasing back to just under the ceiling is not room: that is the state
      that was measured refusing. Only clearing the headroom as well is. */
@@ -471,7 +532,7 @@ static void test_a_learned_ceiling_is_worked_below_not_on(void) {
   check("and publishing succeeds",
         x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
         1);
-  check("the ceiling is not raised by that success", x86p_wasm_arena_ceiling(&arena), 32);
+  check("and the back-off retires the ceiling", x86p_wasm_arena_ceiling(&arena), 0);
   x86p_wasm_arena_dispose(&arena);
 }
 
@@ -577,6 +638,7 @@ int main(void) {
   test_the_engine_ceiling_is_learned_from_a_refusal();
   test_a_refused_module_teaches_no_ceiling();
   test_a_learned_ceiling_is_worked_below_not_on();
+  test_a_ceiling_the_engine_does_not_hold_is_retired();
   test_a_block_survives_the_release_of_the_module_it_came_from();
   test_adoption_refuses_what_it_cannot_do();
   test_an_engine_that_cannot_adopt_says_so();

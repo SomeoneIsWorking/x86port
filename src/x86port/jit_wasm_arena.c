@@ -116,6 +116,7 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
     if (module == kX86pWasmRefusedByEngine && (a->ceiling == 0u || a->live < a->ceiling)) {
       a->ceiling = a->live;
       a->headroom = a->ceiling / kX86pWasmCeilingHeadroomDivisor;
+      a->ceilings_learned++;
     }
     /* With the denominators: an engine that refuses the fortieth module and
        one that refuses the eight-thousandth are different problems, and the
@@ -135,7 +136,7 @@ int x86p_wasm_arena_publish(X86pWasmArena *a, const void *bytes, size_t len, cha
       say(reason,
           reason_len,
           "the ENGINE rejected a %zu-byte module: %s (%u live of %u slot(s); %u published and %u released so far; "
-          "the arena will work at no more than %u of a %u ceiling from here)",
+          "the arena will back off to %u of a %u ceiling before publishing again)",
           len,
           detail[0] ? detail : "no reason given",
           a->live,
@@ -202,6 +203,24 @@ int x86p_wasm_arena_adopt(
   return 1;
 }
 
+/*
+ * A ceiling has done its job once the arena is below it by the headroom, and
+ * keeping it past that point is what turns one refusal into a run-long
+ * throttle: the engine refused ONCE, under whatever pressure it was under at
+ * that instant, and the arena then spends the rest of the run evicting live
+ * code to honour a number the engine has stopped applying. Retiring it here
+ * costs at most one refused instantiation the next time the pressure is real,
+ * and that refusal ratchets a fresh ceiling in immediately.
+ */
+static void retire_ceiling_if_backed_off(X86pWasmArena *a) {
+  if (a->ceiling == 0u || a->live + a->headroom >= a->ceiling) {
+    return;
+  }
+  a->ceiling = 0u;
+  a->headroom = 0u;
+  a->ceilings_retired++;
+}
+
 void x86p_wasm_arena_release(X86pWasmArena *a, int token) {
   if (!a || token < 0 || (unsigned)token >= a->capacity) {
     return;
@@ -218,6 +237,7 @@ void x86p_wasm_arena_release(X86pWasmArena *a, int token) {
   a->free_head = (unsigned)token + 1u;
   a->live--;
   a->released++;
+  retire_ceiling_if_backed_off(a);
 }
 
 void x86p_wasm_arena_release_all(X86pWasmArena *a) {
@@ -247,6 +267,14 @@ int x86p_wasm_arena_has_room(const X86pWasmArena *a) {
 
 unsigned x86p_wasm_arena_headroom(const X86pWasmArena *a) {
   return a ? a->headroom : 0u;
+}
+
+unsigned x86p_wasm_arena_ceilings_learned(const X86pWasmArena *a) {
+  return a ? a->ceilings_learned : 0u;
+}
+
+unsigned x86p_wasm_arena_ceilings_retired(const X86pWasmArena *a) {
+  return a ? a->ceilings_retired : 0u;
 }
 
 unsigned x86p_wasm_arena_published(const X86pWasmArena *a) {

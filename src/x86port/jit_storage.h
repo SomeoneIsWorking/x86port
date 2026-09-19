@@ -84,6 +84,19 @@ unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage);
 const char *x86p_jit_storage_compaction_refusal_reason(const X86pJitStorage *storage);
 int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage);
 
+/*
+ * How many times the WebAssembly engine's refusal put a live-module ceiling in
+ * force, and how many of those the storage backed off below and retired.
+ *
+ * A ceiling is a hypothesis about a limit that cannot be asked for directly,
+ * and these two say which kind of host is underneath: equal and rising means
+ * refusals that do not survive the back-off, so the arena is paying one
+ * refused instantiation for each and carrying on; learned without retiring
+ * means a limit that really holds. Zero on a native storage, which has no
+ * modules. */
+unsigned x86p_jit_storage_ceilings_learned(const X86pJitStorage *storage);
+unsigned x86p_jit_storage_ceilings_retired(const X86pJitStorage *storage);
+
 void x86p_jit_storage_reset(X86pJitStorage *storage);
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi);
 X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
