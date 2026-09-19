@@ -38,7 +38,42 @@ static X86pCpu initial(unsigned depth) {
   memcpy(guest + 512, &value, sizeof value);
   return cpu;
 }
-static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu cpu, int permissions) {
+/*
+ * How a case's guest mapping is built, because the emitted code takes a
+ * different route for each and the routes are not the same amount of code.
+ *
+ *   kMapPlain       contiguous, no permission table. The desktop's shape: a
+ *                   bounds compare and a direct wasm access.
+ *   kMapPerms | A   contiguous WITH a permission table granting A on the pages
+ *                   the operand lands on. The emitted guard answers, including
+ *                   its two page loads.
+ *   kMapSparse | A  sparse, granting A on the operand's range. The checked
+ *                   imports answer.
+ *
+ * kMapPerms exists because a store on the contiguous mapping proves its
+ * address with x86p_wasm_state_check -- an if/else that reads the permission
+ * table only in the in-bounds arm -- and nothing else in this suite reaches
+ * that code with a table present. Without these cases the arm is never taken
+ * and a wrong page index would never show.
+ */
+enum { kMapPlain = 0u, kMapPerms = 0x10u, kMapSparse = 0x20u, kMapAccess = 0x0Fu };
+/* 256-byte pages over the 4 KiB fixture, so the code at offset 0, the operand
+   at 512 and the stack at 2048 land on pages nothing else governs. */
+enum { kTestPageShift = 8, kOperandPage = 512u >> kTestPageShift, kLastPage = (SIZE - 1u) >> kTestPageShift };
+static uint8_t guest_perms[SIZE >> kTestPageShift], reference_perms[SIZE >> kTestPageShift];
+
+static void fill_perms(uint8_t *table, unsigned access) {
+  for (unsigned page = 0; page < SIZE >> kTestPageShift; page++) {
+    table[page] = (uint8_t)(kX86pMemRead | kX86pMemWrite);
+  }
+  /* Only the pages an operand is aimed at carry the case's access, so the
+     code fetch and the stack are never what the case is actually testing. */
+  table[kOperandPage] = (uint8_t)access;
+  table[kLastPage] = (uint8_t)access;
+}
+
+static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu cpu, unsigned mode) {
+  const unsigned access = mode & kMapAccess;
   X86pCpu oracle = cpu;
   X86pMem mem = {.host = guest, .lo = BASE, .size = SIZE};
   X86pMem expected_mem = {.host = reference, .lo = BASE, .size = SIZE};
@@ -52,14 +87,22 @@ static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu
   guest[size] = 0xeb;
   guest[size + 1] = 0xfe;
   memcpy(reference, guest, sizeof guest);
-  if (permissions >= 0) {
+  if (mode & kMapPerms) {
+    fill_perms(guest_perms, access);
+    fill_perms(reference_perms, access);
+    mem.perms = guest_perms;
+    mem.page_shift = kTestPageShift;
+    expected_mem.perms = reference_perms;
+    expected_mem.page_shift = kTestPageShift;
+  }
+  if (mode & kMapSparse) {
     sparse = x86p_sparse_create();
     expected_sparse = x86p_sparse_create();
     check(sparse && expected_sparse, "sparse allocation");
     check(x86p_sparse_map(sparse, BASE, guest, 512) &&
-              x86p_sparse_map_access(sparse, BASE + 512, guest + 512, SIZE - 512, (unsigned)permissions) &&
+              x86p_sparse_map_access(sparse, BASE + 512, guest + 512, SIZE - 512, access) &&
               x86p_sparse_map(expected_sparse, BASE, reference, 512) &&
-              x86p_sparse_map_access(expected_sparse, BASE + 512, reference + 512, SIZE - 512, (unsigned)permissions),
+              x86p_sparse_map_access(expected_sparse, BASE + 512, reference + 512, SIZE - 512, access),
           "sparse mappings");
     mem.sparse = sparse;
     expected_mem.sparse = expected_sparse;
@@ -111,7 +154,7 @@ static void register_forms(void) {
   static const unsigned depths[] = {0, 1, 2, 8};
   for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
     for (unsigned d = 0; d < sizeof depths / sizeof *depths; d++) {
-      run_case(forms[f].name, forms[f].code, 2, initial(depths[d]), -1);
+      run_case(forms[f].name, forms[f].code, 2, initial(depths[d]), kMapPlain);
     }
   }
   for (unsigned negate = 0; negate < 2; negate++) {
@@ -121,13 +164,13 @@ static void register_forms(void) {
         X86pCpu cpu = initial(2);
         x86p_flags_set_explicit(&cpu.flags,
                                 (flags & 1 ? X86P_CF : 0) | (flags & 2 ? X86P_ZF : 0) | (flags & 4 ? X86P_PF : 0));
-        run_case("FCMOV condition", code, 2, cpu, -1);
+        run_case("FCMOV condition", code, 2, cpu, kMapPlain);
       }
     }
   }
   {
     const uint8_t code[] = {0x9b};
-    run_case("FWAIT populated stack", code, 1, initial(8), -1);
+    run_case("FWAIT populated stack", code, 1, initial(8), kMapPlain);
   }
 }
 
@@ -141,7 +184,7 @@ static void comparison_sources(void) {
     X86pCpu cpu = initial(2);
     x86p_x87_set(&cpu.x87, 0, values[i].a);
     x86p_x87_set(&cpu.x87, 1, values[i].b);
-    run_case("FCOMI explicit source", code, sizeof code, cpu, -1);
+    run_case("FCOMI explicit source", code, sizeof code, cpu, kMapPlain);
     /* The interpreter is independently checked against architectural outcomes,
        so a source-selection bug cannot pass through matching JIT/oracle code. */
     X86pMem mem = {.host = guest, .lo = BASE, .size = SIZE};
@@ -165,23 +208,56 @@ static void memory_forms(void) {
       {"FIADD32", {0xda, 0x07}}, {"FIMUL16", {0xde, 0x0f}},  {"FCOM32", {0xd8, 0x17}},        {"FCOMP64", {0xdc, 0x1f}},
       {"FICOM16", {0xde, 0x17}}, {"FICOMP32", {0xda, 0x1f}}, {"FNSTSW memory", {0xdd, 0x3f}}, {"FLDCW", {0xd9, 0x2f}},
       {"FNSTCW", {0xd9, 0x3f}}};
+  /* Every access combination on both tables, plus the table-free shape. The
+     four access values are the whole lattice: neither, read, write, both. */
+  static const unsigned modes[] = {kMapPlain,
+                                   kMapPerms | 0u,
+                                   kMapPerms | 1u,
+                                   kMapPerms | 2u,
+                                   kMapPerms | 3u,
+                                   kMapSparse | 0u,
+                                   kMapSparse | 1u,
+                                   kMapSparse | 2u,
+                                   kMapSparse | 3u};
   for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
-    for (int permissions = -1; permissions < 4; permissions++) {
-      run_case(forms[f].name, forms[f].code, 2, initial(2), permissions);
+    for (unsigned m = 0; m < sizeof modes / sizeof *modes; m++) {
+      run_case(forms[f].name, forms[f].code, 2, initial(2), modes[m]);
     }
+    /* Off both ends of the mapping, on the table-free shape and on the one
+       whose guard reads the table -- an out-of-bounds offset must be refused
+       before it becomes a page index. */
     X86pCpu cpu = initial(2);
     cpu.reg[kX86pEdi] = BASE + SIZE - 1;
-    run_case(forms[f].name, forms[f].code, 2, cpu, -1);
+    run_case(forms[f].name, forms[f].code, 2, cpu, kMapPlain);
+    run_case(forms[f].name, forms[f].code, 2, cpu, kMapPerms | 3u);
     cpu = initial(0);
     cpu.reg[kX86pEdi] = BASE - 1;
-    run_case(forms[f].name, forms[f].code, 2, cpu, -1);
+    run_case(forms[f].name, forms[f].code, 2, cpu, kMapPlain);
+    run_case(forms[f].name, forms[f].code, 2, cpu, kMapPerms | 3u);
   }
   {
+    /*
+     * The ordering case, and the reason the store's address verdict travels as
+     * a VALUE rather than as an early return. FIST of an infinity records an
+     * invalid operation in the status word, and it records it even though the
+     * write never happens -- so the conversion has to run before the refusal.
+     *
+     * Three ways to be refused, because they refuse at three different points:
+     * below the mapping entirely, off its far end, and inside it on a page the
+     * table does not make writable. The last one is the only one that reaches
+     * the permission arm of x86p_wasm_state_check.
+     */
     const uint8_t code[] = {0xdb, 0x1f};
     X86pCpu cpu = initial(1);
     x86p_x87_set(&cpu.x87, 0, INFINITY);
     cpu.reg[kX86pEdi] = BASE - 1;
-    run_case("FIST invalid sets IE before fault, preserves stack", code, 2, cpu, -1);
+    run_case("FIST invalid sets IE before fault, preserves stack", code, 2, cpu, kMapPlain);
+    run_case("FIST invalid sets IE before fault, preserves stack", code, 2, cpu, kMapPerms | 3u);
+    cpu.reg[kX86pEdi] = BASE + SIZE - 1;
+    run_case("FIST invalid sets IE past the far end", code, 2, cpu, kMapPerms | 3u);
+    cpu.reg[kX86pEdi] = BASE + 512;
+    run_case("FIST invalid sets IE on a read-only page", code, 2, cpu, kMapPerms | kX86pMemRead);
+    run_case("FIST invalid sets IE on an unmapped page", code, 2, cpu, kMapPerms | 0u);
   }
 }
 
@@ -196,7 +272,7 @@ static void precision_and_refusals(void) {
         cpu.x87.control = (uint16_t)(0x7f | precision[pc] | rc << 10);
         x86p_x87_set(&cpu.x87, 0, 0x1.0000000000000002p0L);
         x86p_x87_set(&cpu.x87, 1, 0x1p-1000L);
-        run_case("precision/rounding through emitted helpers", forms[f], 2, cpu, -1);
+        run_case("precision/rounding through emitted helpers", forms[f], 2, cpu, kMapPlain);
       }
     }
   }

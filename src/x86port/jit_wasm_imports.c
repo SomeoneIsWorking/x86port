@@ -45,6 +45,7 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportRdtsc] = {"cpu_rdtsc", (X86pWasmImportFn)x86p_cpu_rdtsc, 1, 0},
     [kX86pWasmImportX87LoadBits] = {"wasm_x87_load_bits", (X86pWasmImportFn)x86p_wasm_x87_load_bits, 5, 1},
     [kX86pWasmImportX87Store] = {"wasm_x87_store", (X86pWasmImportFn)x86p_wasm_x87_store, 5, 1},
+    [kX86pWasmImportX87StoreAt] = {"wasm_x87_store_at", (X86pWasmImportFn)x86p_wasm_x87_store_at, 5, 1},
     [kX86pWasmImportX87ArithMemBits] = {"wasm_x87_arith_mem_bits",
                                         (X86pWasmImportFn)x86p_wasm_x87_arith_mem_bits,
                                         7,

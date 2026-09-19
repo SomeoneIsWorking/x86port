@@ -139,6 +139,31 @@ void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn
  */
 void x86p_wasm_state_guard_addr(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access);
 
+/*
+ * The same proof, PUSHED AS AN i32 instead of taken: 1 when every byte of the
+ * access is inside the mapping and carries `access`, 0 otherwise.
+ *
+ * For the instruction that must do something before its fault is reported.
+ * FIST of a value it cannot represent records an invalid operation in the x87
+ * status word, and the interpreter it is checked against records it even when
+ * the address turns out not to be writable; an early return would skip the
+ * conversion and lose the flag. So the verdict travels as a value to the
+ * helper that does the conversion, and the helper decides the order.
+ *
+ * On the contiguous mapping kX86pWasmLocalAddr holds a linear-memory offset on
+ * success and is meaningless on failure. On the sparse mapping it holds the
+ * guest address either way, because the checked imports take guest addresses.
+ */
+void x86p_wasm_state_check(X86pWasmState *s, const X86pOperand *o, int w, unsigned access);
+
+/*
+ * Whether guest memory is the contiguous mapping, whose addresses the emitted
+ * code reaches directly, rather than the sparse one, which is reached only
+ * through the checked imports. A caller with a faster route on the first asks
+ * here instead of reading the plan for itself.
+ */
+int x86p_wasm_state_memory_is_direct(const X86pWasmState *s);
+
 /* Push the guest value at kX86pWasmLocalAddr, zero-extended from width `w`. */
 void x86p_wasm_state_load_mem(X86pWasmState *s, int w);
 

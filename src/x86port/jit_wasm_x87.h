@@ -17,12 +17,23 @@ void x86p_wasm_x87_lower(struct X86pWasmLower *l, const X86pInsn *insn, uint32_t
  * memory, so they cannot fault; they return 0 only for a width no conversion
  * knows, which is a refusal rather than a guest fault.
  *
- * The STORE form still takes an address, because writing back needs a second
- * result -- the bytes -- and every import returns one i32 at most. It keeps the
- * older contract: 0 on fault, 1 on completed operation, 2 on an empty source
- * register (no access and no pop). */
+ * The STORE forms do their own writing, because handing the bytes back would
+ * need a second result and every import returns one i32 at most. There is one
+ * per mapping a block may have been translated for, because the address they
+ * are given is not the same kind of thing:
+ *
+ *  - _store, the sparse mapping: a GUEST address, written through
+ *    x86p_mem_write_bytes, which resolves and checks it.
+ *  - _store_at, the contiguous mapping: a pointer the emitted code has already
+ *    bounds- and permission-checked, reached with no walk at all. `permitted`
+ *    is that check's verdict, and it arrives as a value rather than as an
+ *    early return so the conversion can set the status word first.
+ *
+ * Both keep the older contract: 0 on fault, 1 on completed operation, 2 on an
+ * empty source register (no access and no pop). */
 int x86p_wasm_x87_load_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer);
 int x86p_wasm_x87_store(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer);
+int x86p_wasm_x87_store_at(X86pX87 *f, uint8_t *at, uint32_t permitted, uint32_t width, uint32_t integer);
 int x86p_wasm_x87_arith_mem_bits(
     X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse);
 int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op, uint32_t reverse);
