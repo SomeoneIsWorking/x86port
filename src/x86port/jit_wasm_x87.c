@@ -3,19 +3,28 @@
 #include "jit_wasm_internal.h"
 #include "jit_x87_predicates.h"
 #include "x87_memory.h"
-#include "x87_state.h"
 #include <stddef.h>
 
 /*
  * These are the per-instruction helpers the emitted code calls, and they are
- * the reason x87 was 47% of the browser's guest worker: every one of them
- * used to convert the value into the host's widest float and straight back
- * out again, because that is what the register file held. They now stay in
- * the storage type from guest memory to guest memory.
+ * the reason x87 was 47% of the browser's guest worker: every one of them used
+ * to convert the value into the host's widest float and straight back out
+ * again, because that is what the register file held. They now stay in the
+ * storage type from guest memory to guest memory.
+ *
+ * The reading three no longer receive an address either. Handing one over cost
+ * a call into x86p_x87_read_value_raw, a walk of the guest mapping in
+ * x86p_mem_read_bytes and a span resolution behind it -- together about a fifth
+ * of the guest worker -- to fetch four or eight bytes that the emitted code can
+ * load itself with the instruction wasm has for exactly that.
  */
-int x86p_wasm_x87_load(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer) {
+static uint64_t operand_bits(uint32_t lo, uint32_t hi) {
+  return (uint64_t)lo | ((uint64_t)hi << 32);
+}
+
+int x86p_wasm_x87_load_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer) {
   X86pX87Reg value;
-  if (x86p_x87_read_value_raw(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
+  if (x86p_x87_reg_from_operand_bits(operand_bits(lo, hi), width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
   x86p_x87_push_raw(f, value);
@@ -28,10 +37,10 @@ int x86p_wasm_x87_store(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32
   }
   return x86p_x87_write_value_raw(f, mem, address, width, (int)integer, value) == kX86pX87MemoryOk;
 }
-int x86p_wasm_x87_arith_mem(
-    X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse) {
+int x86p_wasm_x87_arith_mem_bits(
+    X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse) {
   X86pX87Reg value;
-  if (x86p_x87_read_value_raw(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
+  if (x86p_x87_reg_from_operand_bits(operand_bits(lo, hi), width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
   x86p_x87_arith_raw(f, (X86pX87Op)op, 0, value, (int)reverse);
@@ -45,12 +54,16 @@ int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op,
   x86p_x87_arith_raw(f, (X86pX87Op)op, (int)dst, value, (int)reverse);
   return 1;
 }
-int x86p_wasm_x87_compare_mem(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer) {
-  long double value;
-  if (x86p_x87_read_value(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
+int x86p_wasm_x87_compare_mem_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer) {
+  X86pX87Reg value;
+  if (x86p_x87_reg_from_operand_bits(operand_bits(lo, hi), width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
-  x86p_x87_compare(f, value);
+  /* x86p_x87_compare still takes the host's widest float, so this one keeps a
+     conversion the other two shed. It is the same conversion the old path made
+     inside x86p_x87_read_value, not a new one -- comparison in the storage
+     type is a separate change and needs its own ordering authority. */
+  x86p_x87_compare(f, x86p_x87_reg_to_long_double(value));
   return 1;
 }
 int x86p_wasm_x87_copy(X86pX87 *f, uint32_t src, uint32_t dst, uint32_t push) {
@@ -119,12 +132,33 @@ static void pop_values(X86pWasmLower *l, unsigned count) {
     x86p_wasm_drop(l->e);
   }
 }
+static uint32_t operand_is_integer(const X86pInsn *insn) {
+  return insn->x87_mem_int || insn->x87 == kX86pX87InsnLoadInt || insn->x87 == kX86pX87InsnStoreInt;
+}
 static void memory_arguments(X86pWasmLower *l, const X86pInsn *insn) {
   self(l);
   integer(l, (uint32_t)(uintptr_t)l->fetch);
   x86p_wasm_state_address(&l->state, &insn->operand[0]);
   integer(l, insn->operand[0].size);
-  integer(l, insn->x87_mem_int || insn->x87 == kX86pX87InsnLoadInt || insn->x87 == kX86pX87InsnStoreInt);
+  integer(l, operand_is_integer(insn));
+}
+
+/*
+ * The arguments for a reading form: the operand itself, fetched inline.
+ *
+ * The guard comes first and with an empty operand stack, and it is the same
+ * x86p_wasm_state_guard every integer load emits -- bounds, then the two page
+ * permission bytes, then an early return on a fault, all in wasm. Only after it
+ * has passed does anything reach a helper, and what reaches the helper is a
+ * value, so the helper has no address to fault on.
+ */
+static void memory_bits_arguments(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  const int width = (int)insn->operand[0].size;
+  x86p_wasm_state_guard(&l->state, &insn->operand[0], pc, width, kX86pMemRead);
+  self(l);
+  x86p_wasm_state_load_mem_pair(&l->state, width);
+  integer(l, (uint32_t)width);
+  integer(l, operand_is_integer(insn));
 }
 static void memory_result(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_local_tee(l->e, kX86pWasmLocalR);
@@ -140,6 +174,23 @@ static void memory_result(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     pop_values(l, insn->x87_pops);
     x86p_wasm_end(l->e);
   }
+}
+/*
+ * A reading form's result. The zero branch is NOT the fault branch -- the guard
+ * already took that one, before the load -- it is the width admitted by
+ * x86p_wasm_x87_accepts meeting a conversion that does not know it, which would
+ * mean this backend and x86p_x87_reg_from_operand_bits had drifted apart. It
+ * refuses by name rather than pushing whatever a defaulted conversion returned.
+ *
+ * The pops are unconditional because the exit above is a `return`: control only
+ * reaches them when the operation completed.
+ */
+static void bits_result(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  x86p_wasm_i32_op(l->e, kWasmI32Eqz);
+  x86p_wasm_if(l->e, kWasmVoid);
+  x86p_wasm_state_exit_imm(&l->state, pc, kX86pJitExitUnsupported);
+  x86p_wasm_end(l->e);
+  pop_values(l, insn->x87_pops);
 }
 static void copy_value(X86pWasmLower *l, unsigned src, unsigned dst, int push, unsigned pops) {
   self(l);
@@ -180,9 +231,9 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
       copy_value(l, index, 0, 1, 0);
       return;
     }
-    memory_arguments(l, insn);
-    x86p_wasm_call_import(l, kX86pWasmImportX87Load);
-    memory_result(l, insn, pc);
+    memory_bits_arguments(l, insn, pc);
+    x86p_wasm_call_import(l, kX86pWasmImportX87LoadBits);
+    bits_result(l, insn, pc);
     return;
   case kX86pX87InsnStore:
   case kX86pX87InsnStoreInt:
@@ -196,11 +247,11 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     return;
   case kX86pX87InsnArith:
     if (memory) {
-      memory_arguments(l, insn);
+      memory_bits_arguments(l, insn, pc);
       integer(l, insn->x87_op);
       integer(l, insn->x87_reverse);
-      x86p_wasm_call_import(l, kX86pWasmImportX87ArithMem);
-      memory_result(l, insn, pc);
+      x86p_wasm_call_import(l, kX86pWasmImportX87ArithMemBits);
+      bits_result(l, insn, pc);
     } else {
       self(l);
       integer(l, insn->operands == 2 ? index : 0);
@@ -215,9 +266,9 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     return;
   case kX86pX87InsnCompare:
     if (memory) {
-      memory_arguments(l, insn);
-      x86p_wasm_call_import(l, kX86pWasmImportX87CompareMem);
-      memory_result(l, insn, pc);
+      memory_bits_arguments(l, insn, pc);
+      x86p_wasm_call_import(l, kX86pWasmImportX87CompareMemBits);
+      bits_result(l, insn, pc);
     } else {
       self(l);
       integer(l, index);

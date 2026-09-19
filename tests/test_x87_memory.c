@@ -178,9 +178,54 @@ static void split_allocation_cases(void) {
   x86p_sparse_destroy(sparse);
 }
 
+/*
+ * The operand as bits, which is how a backend that loaded it itself arrives.
+ *
+ * This is not the memory path with a layer removed -- nothing here touches
+ * guest memory -- so it is checked against hand-written literals rather than
+ * against the reader that shares the same conversion table. What it is for is
+ * the decision the table makes: WHICH conversion a width and an integer flag
+ * select, and which widths have no conversion at all.
+ */
+static void operand_bits_cases(void) {
+  X86pX87Reg reg;
+  X86pX87Reg narrow;
+
+  check(x86p_x87_reg_from_operand_bits(kF64, 8, 0, &reg) == kX86pX87MemoryOk, "eight bytes of binary64 convert");
+  check(x86p_x87_reg_to_long_double(reg) == 2.5L, "and they are 2.5, little-endian");
+  check(x86p_x87_reg_from_operand_bits(kF32, 4, 0, &narrow) == kX86pX87MemoryOk, "four bytes of binary32 convert");
+  check(x86p_x87_reg_to_long_double(narrow) == 2.5L, "and they are 2.5 too");
+
+  /* The discriminator for the width itself: the SAME bits under the two float
+     widths must not agree, or the width is being ignored. 0x40200000 is 2.5 as
+     a binary32 and a very small binary64. */
+  check(x86p_x87_reg_from_operand_bits(kF32, 8, 0, &reg) == kX86pX87MemoryOk, "the same bits convert at width 8");
+  check(x86p_x87_reg_to_long_double(reg) != 2.5L, "width 8 did not read them as a float");
+
+  check(x86p_x87_reg_from_operand_bits(0xFFFFFFFFull, 4, 1, &reg) == kX86pX87MemoryOk, "a 32-bit integer converts");
+  check(x86p_x87_reg_to_long_double(reg) == -1.0L, "FILD read -1, so the integer path is signed");
+  check(x86p_x87_reg_from_operand_bits(0xFFFFull, 2, 1, &reg) == kX86pX87MemoryOk, "a 16-bit integer converts");
+  check(x86p_x87_reg_to_long_double(reg) == -1.0L, "and -1 at 16 bits too, not 65535");
+  /* The same bits as a 32-bit integer, to prove the integer width is read. */
+  check(x86p_x87_reg_from_operand_bits(0xFFFFull, 4, 1, &reg) == kX86pX87MemoryOk, "0xFFFF converts at width 4");
+  check(x86p_x87_reg_to_long_double(reg) == 65535.0L, "width 4 did not sign-extend from bit 15");
+
+  /* The refusals, including the one that separates this entry point from the
+     memory reader: ten bytes are an operand there and not bits here. */
+  reg = narrow;
+  check(x86p_x87_reg_from_operand_bits(0, 10, 0, &reg) == kX86pX87MemoryUnsupported, "an 80-bit operand is not bits");
+  check(x86p_x87_reg_from_operand_bits(0, 6, 0, &reg) == kX86pX87MemoryUnsupported, "6 bytes is not an x87 operand");
+  check(x86p_x87_reg_from_operand_bits(0, 2, 0, &reg) == kX86pX87MemoryUnsupported, "there is no 16-bit float");
+  check(x86p_x87_reg_from_operand_bits(0, 10, 1, &reg) == kX86pX87MemoryUnsupported, "there is no 10-byte integer");
+  check(x86p_x87_reg_from_operand_bits(0, 0, 0, &reg) == kX86pX87MemoryUnsupported, "zero bytes is not an operand");
+  check(x86p_x87_reg_from_operand_bits(kF64, 8, 0, NULL) == kX86pX87MemoryUnsupported, "no destination is refused");
+  check(x86p_x87_reg_to_long_double(reg) == 2.5L, "and every refusal left the destination alone");
+}
+
 int main(void) {
   contiguous_cases();
   split_allocation_cases();
+  operand_bits_cases();
   printf("x87 memory operands: %u checks, %u failures\n", checks, failures);
   return failures ? 1 : 0;
 }
