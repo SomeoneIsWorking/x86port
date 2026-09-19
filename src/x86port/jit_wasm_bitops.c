@@ -81,7 +81,7 @@ void x86p_wasm_shift_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
     x86p_wasm_state_store_reg(&l->state, dst->reg, width, kX86pWasmLocalR);
   }
   x86p_wasm_end(l->e);
-  l->last_kind = -1;
+  x86p_wasm_lower_flags_written(l, -1, -1);
 }
 
 int x86p_wasm_bit_accepts(const X86pInsn *insn) {
@@ -133,7 +133,7 @@ void x86p_wasm_bit_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
       x86p_wasm_state_store_reg(&l->state, dst->reg, width, kX86pWasmLocalR);
     }
   }
-  l->last_kind = kX86pFlagsExplicit;
+  x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
 }
 
 int x86p_wasm_bcd_accepts(const X86pInsn *insn) {
@@ -150,5 +150,5 @@ void x86p_wasm_bcd_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, pc, kX86pJitExitDivideError);
   x86p_wasm_end(l->e);
-  l->last_kind = kX86pFlagsExplicit;
+  x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
 }

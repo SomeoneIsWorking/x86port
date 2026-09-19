@@ -159,12 +159,12 @@ static void lower_via_helper(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc
      * the block runs: a zero count writes no flags, leaving whatever was
      * there. Genuinely unknown, so the next carry-in asks the real function.
      */
-    l->last_kind = -1;
+    x86p_wasm_lower_flags_written(l, -1, -1);
   } else {
     /* x86p_alu records Explicit for ADC and SBB unconditionally, so the next
        instruction's predecessor IS known -- treating it as unknown cost a
        helper call per ADC in every block. */
-    l->last_kind = (int)kX86pFlagsExplicit;
+    x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
   }
 }
 
@@ -238,7 +238,7 @@ void x86p_wasm_alu_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
       x86p_wasm_state_store_reg(&l->state, dst->reg, w, kX86pWasmLocalR);
     }
   }
-  l->last_kind = (int)kind;
+  x86p_wasm_lower_flags_written(l, (int)kind, w);
 }
 
 int x86p_wasm_alu_unary_accepts(const X86pInsn *insn) {
@@ -294,9 +294,11 @@ void x86p_wasm_alu_unary_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t 
     x86p_wasm_state_flags_addr(&l->state);
     x86p_wasm_call_import(l, kX86pWasmImportAluUnary);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
-    l->last_kind = (insn->alu == (uint8_t)kX86pAluNeg)   ? (int)kX86pFlagsSub
-                   : (insn->alu == (uint8_t)kX86pAluInc) ? (int)kX86pFlagsInc
-                                                         : (int)kX86pFlagsDec;
+    x86p_wasm_lower_flags_written(l,
+                                  (insn->alu == (uint8_t)kX86pAluNeg)   ? (int)kX86pFlagsSub
+                                  : (insn->alu == (uint8_t)kX86pAluInc) ? (int)kX86pFlagsInc
+                                                                        : (int)kX86pFlagsDec,
+                                  w);
   }
 
   if (dst->kind == kX86pOperandMem) {

@@ -19,6 +19,7 @@
  * block runs -- but they are still lowered, because reading a register or a
  * memory word is something emitted code can do.
  */
+#include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 
 #include <stddef.h>
@@ -79,9 +80,7 @@ int x86p_wasm_jcc_accepts(const X86pInsn *insn) {
 }
 
 void x86p_wasm_jcc_continue(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
-  x86p_wasm_i32_const(l->e, (int32_t)insn->cond);
-  x86p_wasm_state_flags_addr(&l->state);
-  x86p_wasm_call_import(l, kX86pWasmImportCond);
+  x86p_wasm_cond_value(l, (X86pCond)insn->cond);
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_exit_imm(&l->state, relative_target(insn, pc), kX86pJitExitBlockEnd);
   x86p_wasm_end(l->e);

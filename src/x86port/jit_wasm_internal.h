@@ -38,6 +38,13 @@
  * the carry-in be derived inline instead of asked for: the derivation depends
  * only on the KIND, which is known at lowering time everywhere except at the
  * block's first flag write.
+ *
+ * `last_w` is that instruction's operand width in bytes, 1, 2 or 4, and -1
+ * alongside an unknown kind. The carry-in needs only the kind; the CONDITIONS
+ * need the width too, because an 8-bit 0xFF has to compare as -1 and not as
+ * 255 and nothing in the kind says which it is. The two travel together and
+ * are set together, so a site that records one without the other is a bug the
+ * next reader can see.
  */
 typedef struct X86pWasmLower {
   X86pWasmModule *module;
@@ -46,8 +53,23 @@ typedef struct X86pWasmLower {
   const X86pMem *fetch;
   unsigned flag_helper_calls;
   unsigned conds;
+  unsigned cond_inline;
   int last_kind;
+  int last_w;
 } X86pWasmLower;
+
+/*
+ * Record what the instruction just lowered left in the flag state: its kind,
+ * and its operand width in bytes where that has a meaning.
+ *
+ * This is the ONLY way the pair is written. They were two independent fields
+ * for one instruction's worth of history, and the width matters to exactly the
+ * kinds a condition can be derived from, so a site that set the kind and
+ * forgot the width would not fail -- it would silently stop inlining, or worse
+ * inline at the wrong width. Pass -1 for a width that has no meaning, which is
+ * every kind but Add, Sub and Logic.
+ */
+void x86p_wasm_lower_flags_written(X86pWasmLower *l, int kind, int w);
 
 /* One instruction family's entry: whether it accepts a particular instruction,
    how to lower it, and whether lowering it ENDS the block. */

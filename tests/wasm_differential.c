@@ -45,6 +45,25 @@ void wasm_test_case_mem(WasmTest *suite,
                         int branch,
                         const X86pMem *mem,
                         const X86pMem *oracle_mem) {
+  wasm_test_case_mem_insns(suite, name, code, size, cpu, branch, 1u, mem, oracle_mem);
+}
+
+void wasm_test_case_insns(
+    WasmTest *suite, const char *name, const uint8_t *code, size_t size, X86pCpu cpu, int branch, unsigned insns) {
+  X86pMem mem = {.host = suite->guest, .lo = GUEST_BASE, .size = sizeof suite->guest};
+  X86pMem oracle_mem = {.host = suite->reference, .lo = GUEST_BASE, .size = sizeof suite->reference};
+  wasm_test_case_mem_insns(suite, name, code, size, cpu, branch, insns, &mem, &oracle_mem);
+}
+
+void wasm_test_case_mem_insns(WasmTest *suite,
+                              const char *name,
+                              const uint8_t *code,
+                              size_t size,
+                              X86pCpu cpu,
+                              int branch,
+                              unsigned insns,
+                              const X86pMem *mem,
+                              const X86pMem *oracle_mem) {
   X86pCpu oracle = cpu;
   X86pJitEngineStats stats;
   X86pStepReport report;
@@ -58,9 +77,19 @@ void wasm_test_case_mem(WasmTest *suite,
   suite->guest[size] = 0xeb; /* terminate every nonbranch case with JMP $ */
   suite->guest[size + 1u] = 0xfe;
   memcpy(suite->reference, suite->guest, sizeof suite->reference);
-  expected = x86p_step(&oracle, oracle_mem, &report);
-  if (expected == kX86pStepOk && !branch) {
-    expected = x86p_step(&oracle, oracle_mem, &report);
+  /*
+   * The oracle steps the guest instructions in `code`, then the appended
+   * JMP $ that a non-branch case ends on. A case whose whole point is what the
+   * SECOND instruction does with the first one's flags needs more than one, so
+   * the count is the caller's -- but it stops at the first non-Ok result, so a
+   * fault in the middle is still reported as the fault and not stepped past.
+   */
+  {
+    unsigned remaining = insns + (branch ? 0u : 1u);
+    expected = kX86pStepOk;
+    while (remaining-- > 0u && expected == kX86pStepOk) {
+      expected = x86p_step(&oracle, oracle_mem, &report);
+    }
   }
   engine = x86p_jit_engine_create(mem, 65536u, 128u, reason, sizeof reason);
   wasm_test_check(suite, engine != NULL, reason);

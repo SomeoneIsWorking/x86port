@@ -8,6 +8,7 @@
  * whatever wrote flags before them. A move that reset it would cost a helper
  * call for every `mov` between an `add` and an `adc`.
  */
+#include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 
 #include <stddef.h>
@@ -234,9 +235,7 @@ void x86p_wasm_setcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
   if (dst->kind == kX86pOperandMem) {
     x86p_wasm_state_guard(&l->state, dst, pc, 1, kX86pMemWrite);
   }
-  x86p_wasm_i32_const(l->e, (int32_t)insn->cond);
-  x86p_wasm_state_flags_addr(&l->state);
-  x86p_wasm_call_import(l, kX86pWasmImportCond);
+  x86p_wasm_cond_value(l, (X86pCond)insn->cond);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
   if (dst->kind == kX86pOperandMem) {
     x86p_wasm_state_store_mem(&l->state, 1, kX86pWasmLocalR);

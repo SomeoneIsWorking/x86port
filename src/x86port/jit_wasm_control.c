@@ -1,6 +1,7 @@
 /* Conditional writes, flag transfers, multi-access stack operations and
  * architectural exits are emitted independently of the test dispatcher. */
 #include "jit_wasm_control.h"
+#include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 #include "privilege.h"
 
@@ -30,9 +31,7 @@ void x86p_wasm_cmov_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     x86p_wasm_push_operand(l, src, width);
   }
   x86p_wasm_local_set(l->e, kX86pWasmLocalR);
-  x86p_wasm_i32_const(l->e, insn->cond);
-  x86p_wasm_state_flags_addr(&l->state);
-  x86p_wasm_call_import(l, kX86pWasmImportCond);
+  x86p_wasm_cond_value(l, (X86pCond)insn->cond);
   x86p_wasm_if(l->e, kWasmVoid);
   x86p_wasm_state_store_reg(&l->state, dst->reg, width, kX86pWasmLocalR);
   x86p_wasm_end(l->e);
@@ -44,7 +43,7 @@ void x86p_wasm_flags_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
     x86p_wasm_state_cpu(&l->state);
     x86p_wasm_call_import(l, insn->op == kX86pInsnSahf ? kX86pWasmImportSahf : kX86pWasmImportLahf);
     if (insn->op == kX86pInsnSahf) {
-      l->last_kind = kX86pFlagsExplicit;
+      x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
     }
     return;
   }
@@ -64,7 +63,7 @@ void x86p_wasm_flags_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) 
   x86p_wasm_i32_op(l->e, insn->op == kX86pInsnClc ? kWasmI32And : insn->op == kX86pInsnStc ? kWasmI32Or : kWasmI32Xor);
   x86p_wasm_call_import(l, kX86pWasmImportSetFlags);
   x86p_wasm_local_set(l->e, kX86pWasmLocalR);
-  l->last_kind = kX86pFlagsExplicit;
+  x86p_wasm_lower_flags_written(l, (int)kX86pFlagsExplicit, -1);
 }
 
 int x86p_wasm_enter_accepts(const X86pInsn *insn) {

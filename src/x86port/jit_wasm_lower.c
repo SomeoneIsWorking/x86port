@@ -69,13 +69,12 @@ void x86p_wasm_push_operand(X86pWasmLower *l, const X86pOperand *o, int w) {
   x86p_wasm_state_load_reg(&l->state, o->reg, w);
 }
 
+void x86p_wasm_lower_flags_written(X86pWasmLower *l, int kind, int w) {
+  l->last_kind = kind;
+  l->last_w = (kind == (int)kX86pFlagsAdd || kind == (int)kX86pFlagsSub || kind == (int)kX86pFlagsLogic) ? w : -1;
+}
+
 void x86p_wasm_call_import(X86pWasmLower *l, X86pWasmImport which) {
-  /* This backend lowers no condition to a host comparison -- wasm has no flag
-     register to read one off -- so every condition it evaluates is a call to
-     the shared authority, counted here rather than at four call sites. */
-  if (which == kX86pWasmImportCond) {
-    l->conds++;
-  }
   x86p_wasm_call(l->e, (uint32_t)which);
 }
 
@@ -262,7 +261,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   l.module = m;
   l.e = x86p_wasm_module_emitter(m);
   l.fetch = fetch;
-  l.last_kind = -1;
+  x86p_wasm_lower_flags_written(&l, -1, -1);
   x86p_wasm_state_init(&l.state, l.e, plan);
 
   body = x86p_wasm_module_body_begin(m);
@@ -401,8 +400,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->stopper = stopper;
   out->flag_helper_calls = l.flag_helper_calls;
   out->conds = l.conds;
-  out->cond_helper_calls = l.conds;
-  out->cond_inline = 0u;
+  out->cond_helper_calls = l.conds - l.cond_inline;
+  out->cond_inline = l.cond_inline;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }
