@@ -22,6 +22,9 @@ struct X86pJitEngine {
   void *boundary_user;
   int cache_disabled;      /* diagnostic: retranslate every block, never reuse one */
   X86pJitProfile *profile; /* diagnostic: block-entry histogram, or NULL */
+  /* The previous block entry address, for stats.blocks_reentered. A two-entry
+     history, not a successor graph; see where it is read. */
+  uint32_t last_entry;
 };
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
@@ -462,6 +465,22 @@ X86pJitRunStatus x86p_jit_engine_run(
     uint32_t (*fn)(X86pCpu *);
     *(void **)&fn = host;
     exit = (X86pJitExit)fn(cpu);
+    /*
+     * The block just entered was the one just left: a guest loop going round
+     * again, having paid a full dispatch -- the intercept callback, the cache
+     * lookup and an indirect call out of the module -- to do it. This is the
+     * exact population a backend that lowered a self-exit as a WebAssembly
+     * `loop` would remove, counted against blocks_entered rather than against
+     * translations, because a loop's cost is in its iterations.
+     *
+     * It is a two-entry history and not a successor graph on purpose: a
+     * successor graph answers a bigger question and cannot be added to the hot
+     * path for free, and this is the discriminator for the cheapest fix.
+     */
+    if (e->stats.blocks_entered != 0u && before_eip == e->last_entry) {
+      e->stats.blocks_reentered++;
+    }
+    e->last_entry = before_eip;
     e->stats.blocks_entered++;
     if (e->profile) {
       x86p_jit_profile_hit(e->profile, before_eip);

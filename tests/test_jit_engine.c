@@ -949,6 +949,79 @@ static void test_profile_weights_a_block_by_how_often_it_is_entered(void) {
   x86p_jit_engine_destroy(eng);
 }
 
+/*
+ * blocks_reentered sizes the cheapest block-chaining fix there is -- lowering a
+ * block that exits to its own entry as a host loop -- so it is measured per
+ * ENTRY rather than per translation, and it has to be able to say "almost
+ * never" as clearly as "almost always". Both answers are asserted here, from
+ * the same engine, because a counter checked only against a spin would pass
+ * while counting every block entry in the run.
+ */
+static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats spin;
+  X86pJitEngineStats chain;
+  char reason[256];
+
+  /*
+   * A spin: one block whose only exit names its own entry, so every entry after
+   * the first re-enters the block just left.
+   */
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xEB; /* JMP $ */
+  g_guest[1] = 0xFE;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &spin);
+  /* Every entry but the first, and the run entered nothing else. */
+  CHECK(spin.blocks_entered == 200u);
+  CHECK(spin.blocks_reentered == 199u);
+  x86p_jit_engine_destroy(eng);
+
+  /*
+   * THE OTHER ANSWER. Two blocks that jump to each other: the guest is looping
+   * just as tightly, every entry is a dispatch, and NONE of them re-enters the
+   * block just left. A self-exit lowering would not remove one of these, and
+   * the counter must say so rather than report the loop it can see.
+   *
+   *   +0: JMP +2   (to +4, skipping the NOP padding)
+   *   +4: JMP -6   (back to +0)
+   */
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xEB;
+  g_guest[1] = 0x02;
+  g_guest[4] = 0xEB;
+  g_guest[5] = 0xFA;
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &chain);
+  CHECK(chain.blocks_entered == 200u);
+  CHECK(chain.blocks_reentered == 0u);
+  x86p_jit_engine_destroy(eng);
+
+  printf("    self-loop %llu of %llu re-entered; two-block chain %llu of %llu\n",
+         (unsigned long long)spin.blocks_reentered,
+         (unsigned long long)spin.blocks_entered,
+         (unsigned long long)chain.blocks_reentered,
+         (unsigned long long)chain.blocks_entered);
+}
+
 int main(void) {
   if (!x86p_jit_available()) {
     printf("NO x86-64 BACKEND on this host: this suite cannot run and claims nothing\n");
@@ -969,6 +1042,7 @@ int main(void) {
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
   RUN(test_summing_stats_leaves_no_field_behind);
+  RUN(test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   return g_failed == 0 ? 0 : 1;
