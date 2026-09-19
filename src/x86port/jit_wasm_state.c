@@ -430,8 +430,22 @@ void x86p_wasm_state_store_df(X86pWasmState *s, int value) {
 
 void x86p_wasm_state_exit_imm(X86pWasmState *s, uint32_t eip, X86pJitExit exit) {
   if (exit == kX86pJitExitBlockEnd) {
+    unsigned i;
+    int known = 0;
     s->exits.total++;
     s->exits.to_immediate++;
+    for (i = 0u; i < s->exits.target_count; i++) {
+      if (s->exits.targets[i] == eip) {
+        known = 1;
+      }
+    }
+    if (!known) {
+      if (s->exits.target_count < X86P_JIT_CHAIN_TARGETS) {
+        s->exits.targets[s->exits.target_count++] = eip;
+      } else {
+        s->exits.targets_overflowed++;
+      }
+    }
     /* `<= pc` and not `< pc`: a one-instruction loop branches to itself, and
        the instruction at pc is the branch that is being lowered right now. */
     if (eip <= s->pc) {

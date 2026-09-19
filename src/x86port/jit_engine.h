@@ -23,6 +23,7 @@
 #define X86PORT_JIT_ENGINE_H
 
 #include "cpu.h"
+#include "jit_chain_census.h"
 #include "jit_profile.h"
 #include "jit_x64.h"
 
@@ -292,6 +293,17 @@ void x86p_jit_engine_set_cache(X86pJitEngine *e, int enabled);
  * diagnostic and not a shipping default.
  */
 int x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hint, char *reason, unsigned reason_len);
+
+/*
+ * The runtime chain census: of the dispatches actually paid, how many went to
+ * an address the block just left had already emitted as a constant. That is
+ * the population general block chaining removes, and neither the static exit
+ * counts nor blocks_reentered can say how big it is. Off by default; the
+ * census belongs to the engine and lives until the next call or destruction.
+ */
+int x86p_jit_engine_set_chain_census(
+    X86pJitEngine *e, int enabled, uint32_t slot_hint, char *reason, unsigned reason_len);
+const X86pJitChainCensus *x86p_jit_engine_chain_census(const X86pJitEngine *e);
 
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */

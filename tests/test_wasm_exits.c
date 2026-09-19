@@ -42,6 +42,22 @@ static void check(int value, const char *message) {
 }
 
 /*
+ * The ADDRESSES, not just how many there are. A count of known successors
+ * cannot be compared against where a run actually went, and the runtime chain
+ * census does exactly that comparison, so the addresses the block recorded are
+ * part of this contract.
+ */
+static int records_target(const X86pJitBlock *b, uint32_t target) {
+  unsigned i;
+  for (i = 0u; i < b->static_target_count; i++) {
+    if (b->static_targets[i] == target) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
  * Lower `code` as a block at kGuestLo. Unlike the conditions suite, NOTHING is
  * appended: every case here names its own terminator, because what terminates
  * the block and where it goes is the thing under test.
@@ -86,6 +102,8 @@ static void a_jump_to_itself_is_every_tier(void) {
   check(b.exits_backward == 1u, "a jump to itself was not counted as backward");
   check(b.exits_loop == 1u, "a jump to itself was not counted as inside its own block");
   check(b.exits_self == 1u, "a jump to the block's own entry was not counted as such");
+  check(b.static_target_count == 1u, "the one known successor's address was not recorded");
+  check(records_target(&b, kGuestLo), "the recorded successor is not the block's own entry");
 }
 
 static void a_forward_jump_is_no_loop(void) {
@@ -103,6 +121,8 @@ static void a_forward_jump_is_no_loop(void) {
   check(b.exits_backward == 0u, "a forward jump was counted as a loop backedge");
   check(b.exits_loop == 0u, "a forward jump was counted as inside its own block");
   check(b.exits_self == 0u, "a forward jump was counted as reaching the block's entry");
+  check(b.static_target_count == 1u, "the one known successor's address was not recorded");
+  check(records_target(&b, kGuestLo + 4u), "the recorded successor is not the jump's target");
 }
 
 static void a_conditional_does_not_end_the_block(void) {
@@ -131,6 +151,9 @@ static void a_conditional_does_not_end_the_block(void) {
   check(b.exits_backward == 2u, "a backward Jcc inside the body was not counted");
   check(b.exits_loop == 2u, "an exit into the block's own code was not counted");
   check(b.exits_self == 1u, "the JZ targets the entry and the JMP does not; expected one");
+  check(b.static_target_count == 2u, "two distinct known successors were not recorded");
+  check(records_target(&b, kGuestLo), "the JZ's target was not recorded");
+  check(records_target(&b, kGuestLo + 4u), "the JMP's own address was not recorded");
 }
 
 static void a_forward_conditional_adds_a_known_successor(void) {
@@ -168,6 +191,7 @@ static void a_return_is_not_a_known_successor(void) {
   }
   check(b.exits == 1u, "a RET did not count as an exit");
   check(b.exits_static == 0u, "a RET's successor was claimed to be known at translation time");
+  check(b.static_target_count == 0u, "an address was recorded for a successor nobody knows");
   check(b.exits_backward == 0u, "a RET was counted as a loop backedge");
 }
 

@@ -20,8 +20,9 @@ struct X86pJitEngine {
   void *dispatch_user;
   X86pJitBoundaryFn boundary;
   void *boundary_user;
-  int cache_disabled;      /* diagnostic: retranslate every block, never reuse one */
-  X86pJitProfile *profile; /* diagnostic: block-entry histogram, or NULL */
+  int cache_disabled;        /* diagnostic: retranslate every block, never reuse one */
+  X86pJitProfile *profile;   /* diagnostic: block-entry histogram, or NULL */
+  X86pJitChainCensus *chain; /* diagnostic: where dispatches actually went, or NULL */
   /* The previous block entry address, for stats.blocks_reentered. A two-entry
      history, not a successor graph; see where it is read. */
   uint32_t last_entry;
@@ -170,6 +171,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   jc_block_cache_destroy(e->cache);
   x86p_jit_storage_destroy(e->storage);
   x86p_jit_profile_destroy(e->profile);
+  x86p_jit_chain_census_destroy(e->chain);
   free(e);
 }
 
@@ -285,6 +287,31 @@ const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e) {
   return e ? e->profile : NULL;
 }
 
+int x86p_jit_engine_set_chain_census(
+    X86pJitEngine *e, int enabled, uint32_t slot_hint, char *reason, unsigned reason_len) {
+  if (!e) {
+    say(reason, reason_len, "no JIT engine");
+    return 0;
+  }
+  if (!enabled) {
+    x86p_jit_chain_census_destroy(e->chain);
+    e->chain = NULL;
+    return 1;
+  }
+  if (!e->chain) {
+    e->chain = x86p_jit_chain_census_create(slot_hint);
+    if (!e->chain) {
+      say(reason, reason_len, "chain census of %u slots could not be created", slot_hint);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+const X86pJitChainCensus *x86p_jit_engine_chain_census(const X86pJitEngine *e) {
+  return e ? e->chain : NULL;
+}
+
 /*
  * Drop every translation and rewind the code region.
  *
@@ -398,6 +425,10 @@ static void *translate_at(
   e->stats.exits_static += blk.exits_static;
   e->stats.exits_backward += blk.exits_backward;
   e->stats.exits_self += blk.exits_self;
+  if (e->chain) {
+    x86p_jit_chain_census_note_block(
+        e->chain, eip, blk.static_targets, blk.static_target_count, blk.static_targets_overflowed);
+  }
   if (out_blk) {
     *out_blk = blk;
   }
@@ -408,6 +439,8 @@ X86pJitRunStatus x86p_jit_engine_run(
     X86pJitEngine *e, X86pCpu *cpu, void *run_user, uint64_t max_steps, char *reason, unsigned reason_len) {
   uint64_t steps = 0u;
   unsigned consecutive_translate_retries = 0u;
+  uint32_t previous_entry = 0u;
+  int have_previous = 0;
 
   if (!e || !cpu) {
     say(reason, reason_len, "null argument");
@@ -490,6 +523,14 @@ X86pJitRunStatus x86p_jit_engine_run(
     e->stats.blocks_entered++;
     if (e->profile) {
       x86p_jit_profile_hit(e->profile, before_eip);
+    }
+    if (e->chain) {
+      /* Note AFTER the reentry counter above has used last_entry, and with
+         the previous entry rather than this one: the question is whether the
+         block just left already knew this address. */
+      x86p_jit_chain_census_note_entry(e->chain, previous_entry, before_eip, have_previous);
+      previous_entry = before_eip;
+      have_previous = 1;
     }
     steps++;
 

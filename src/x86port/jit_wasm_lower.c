@@ -416,6 +416,11 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->simd_inline = l.simd_inline;
   out->exits = l.state.exits.total;
   out->exits_static = l.state.exits.to_immediate;
+  for (unsigned target = 0u; target < l.state.exits.target_count; target++) {
+    out->static_targets[target] = l.state.exits.targets[target];
+  }
+  out->static_target_count = l.state.exits.target_count;
+  out->static_targets_overflowed = l.state.exits.targets_overflowed;
   out->exits_backward = l.state.exits.backward;
   out->exits_loop = l.state.exits.within_block;
   out->exits_self = l.state.exits.to_entry;
