@@ -1,6 +1,7 @@
 #include "jit_storage.h"
 
 #include "jit_wasm.h"
+#include "jit_wasm_compact.h"
 #include "jit_wasm_host.h"
 #include "jit_wasm_lower.h"
 
@@ -9,15 +10,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * HOW MANY BLOCKS SHARE A MODULE.
+ *
+ * Every published module is a permanent object inside the WebAssembly engine,
+ * and an engine has a limit on those: measured in Firefox 156, instantiation
+ * is refused at about 16,350 live modules, which this port's title reaches
+ * four seconds into its boot. Blocks are still published one to a module so
+ * they can run the moment they are translated, and then this many of them are
+ * rebuilt as one -- see jit_wasm_compact.h.
+ *
+ * 32 rather than the 64 a module may hold, because the batch is lowered into
+ * a buffer of its own and each body's worst case is about 20 KB: 32 costs
+ * ~660 KB per guest thread and turns 16,000 modules into about 500, which is
+ * two orders of magnitude of headroom under the measured ceiling. Doubling it
+ * would double the buffer to halve a number that is already far enough below.
+ */
+#define X86P_WASM_COMPACT_BATCH 32u
+
 typedef struct X86pWasmStoredBlock {
   uint32_t guest;
   uint32_t guest_len;
-  size_t bytes;
+  int token;   /* the module it is published in */
+  void *entry; /* the address it is entered at, which outlives its module */
+  int live;
 } X86pWasmStoredBlock;
+
+/* What a published module costs and how many blocks still need it. A module is
+   released when its last block goes, not when any one of them does. */
+typedef struct X86pWasmStoredModule {
+  size_t bytes;
+  unsigned blocks;
+} X86pWasmStoredModule;
 
 struct X86pJitStorage {
   X86pWasmArena arena;
   X86pWasmStoredBlock *blocks; /* `capacity_blocks` entries, owned */
+  X86pWasmStoredModule *modules;
   unsigned capacity_blocks;
   /*
    * ONE block is lowered at a time, so the scratch buffer holds ONE worst-case
@@ -28,7 +57,20 @@ struct X86pJitStorage {
    */
   unsigned char *buffer;
   size_t buffer_bytes;
-  size_t byte_budget; /* how many bytes of LIVE module may be held at once */
+  /* The batch is lowered into its own buffer, allocated the first time a
+     thread actually fills a batch: a thread that translates a handful of
+     blocks never pays for it. */
+  unsigned char *batch;
+  size_t batch_bytes;
+  /* Blocks published singly and not yet shared into a module. */
+  unsigned pending[X86P_WASM_COMPACT_BATCH];
+  unsigned pending_count;
+  /* Set once the engine has told us it cannot move a block's entry, because
+     then no batch will ever compact and asking again each time is waste. */
+  int cannot_compact;
+  unsigned compactions;         /* batches that became one module */
+  unsigned compaction_refusals; /* batches left as they were, with a reason */
+  size_t byte_budget;           /* how many bytes of LIVE module may be held at once */
   size_t used;
   unsigned next_victim;
 };
@@ -58,9 +100,10 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
     return NULL;
   }
   storage->blocks = calloc(max_blocks, sizeof *storage->blocks);
+  storage->modules = calloc(max_blocks, sizeof *storage->modules);
   storage->buffer_bytes = X86P_WASM_MAX_MODULE_BYTES;
   storage->buffer = malloc(storage->buffer_bytes);
-  if (!storage->blocks || !storage->buffer) {
+  if (!storage->blocks || !storage->modules || !storage->buffer) {
     if (reason && reason_len) {
       snprintf(reason,
                reason_len,
@@ -69,12 +112,14 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
                storage->buffer_bytes);
     }
     free(storage->blocks);
+    free(storage->modules);
     free(storage->buffer);
     free(storage);
     return NULL;
   }
   if (!x86p_wasm_host_create(&host, reason, reason_len)) {
     free(storage->blocks);
+    free(storage->modules);
     free(storage->buffer);
     free(storage);
     return NULL;
@@ -85,6 +130,7 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
     }
     x86p_wasm_host_destroy(&host);
     free(storage->blocks);
+    free(storage->modules);
     free(storage->buffer);
     free(storage);
     return NULL;
@@ -97,6 +143,8 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
 void x86p_jit_storage_reset(X86pJitStorage *storage) {
   x86p_wasm_arena_release_all(&storage->arena);
   memset(storage->blocks, 0, (size_t)storage->capacity_blocks * sizeof *storage->blocks);
+  memset(storage->modules, 0, (size_t)storage->capacity_blocks * sizeof *storage->modules);
+  storage->pending_count = 0u;
   storage->used = 0u;
   storage->next_victim = 0u;
 }
@@ -107,7 +155,9 @@ void x86p_jit_storage_destroy(X86pJitStorage *storage) {
     x86p_wasm_arena_dispose(&storage->arena);
     x86p_wasm_host_destroy(&host);
     free(storage->blocks);
+    free(storage->modules);
     free(storage->buffer);
+    free(storage->batch);
     free(storage);
   }
 }
@@ -124,14 +174,154 @@ size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
 }
 
+/* ---- block and module bookkeeping ---------------------------------------- */
+
+/* Blocks are indexed independently of modules now that several of them share
+   one, so a published block needs a slot of its own. */
+static int take_block_slot(X86pJitStorage *storage) {
+  unsigned i;
+  for (i = 0; i < storage->capacity_blocks; ++i) {
+    if (!storage->blocks[i].live) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
+static void hold_module(X86pJitStorage *storage, int token, size_t bytes) {
+  X86pWasmStoredModule *module = &storage->modules[token];
+  if (module->blocks == 0u) {
+    module->bytes = bytes;
+    storage->used += bytes;
+  }
+  module->blocks++;
+}
+
+/* Drop one block's claim on its module, releasing the module with the last
+   claim. A module outlives any single block in it, which is the whole point of
+   sharing one, so releasing on the first drop would free code still running. */
+static void drop_module(X86pJitStorage *storage, int token) {
+  X86pWasmStoredModule *module = &storage->modules[token];
+  if (module->blocks == 0u) {
+    return;
+  }
+  if (--module->blocks > 0u) {
+    return;
+  }
+  x86p_wasm_arena_release(&storage->arena, token);
+  storage->used -= module->bytes;
+  module->bytes = 0u;
+}
+
+static void forget_pending(X86pJitStorage *storage, unsigned slot) {
+  unsigned i;
+  for (i = 0; i < storage->pending_count; ++i) {
+    if (storage->pending[i] == slot) {
+      storage->pending[i] = storage->pending[--storage->pending_count];
+      return;
+    }
+  }
+}
+
+static void drop_block(X86pJitStorage *storage, unsigned slot) {
+  X86pWasmStoredBlock *block = &storage->blocks[slot];
+  if (!block->live) {
+    return;
+  }
+  forget_pending(storage, slot);
+  drop_module(storage, block->token);
+  memset(block, 0, sizeof *block);
+}
+
+/* ---- sharing a module between blocks -------------------------------------- */
+
+/*
+ * Rebuild the blocks published since the last batch as ONE module.
+ *
+ * Nothing here is allowed to break a run: a refusal leaves every block exactly
+ * where it was, still entered through the same address, and the run carries on
+ * with modules it already has. The batch is cleared either way, because
+ * retrying the same set that just refused would refuse again every time.
+ */
+static void
+share_a_module(X86pJitStorage *storage, const X86pMem *mem, X86pJitBoundaryFn boundary, void *boundary_user) {
+  X86pWasmCompactBlock batch[X86P_WASM_COMPACT_BATCH];
+  X86pWasmCompactResult result;
+  char why[256];
+  unsigned i;
+
+  if (storage->cannot_compact || storage->pending_count == 0u) {
+    return;
+  }
+  if (!storage->batch) {
+    /* Worst case for every body, plus the framing they share. */
+    storage->batch_bytes = (size_t)X86P_WASM_COMPACT_BATCH * X86P_WASM_MAX_MODULE_BYTES;
+    storage->batch = malloc(storage->batch_bytes);
+    if (!storage->batch) {
+      /* No buffer, no compaction -- and no failure either: the run is exactly
+         as correct as it was, just with more modules. */
+      storage->batch_bytes = 0u;
+      storage->cannot_compact = 1;
+      return;
+    }
+  }
+  for (i = 0; i < storage->pending_count; ++i) {
+    const X86pWasmStoredBlock *block = &storage->blocks[storage->pending[i]];
+    batch[i].guest = block->guest;
+    batch[i].guest_len = block->guest_len;
+    batch[i].token = block->token;
+    batch[i].entry = block->entry;
+  }
+  why[0] = '\0';
+  if (!x86p_wasm_compact(&storage->arena,
+                         mem,
+                         storage->batch,
+                         storage->batch_bytes,
+                         boundary,
+                         boundary_user,
+                         batch,
+                         storage->pending_count,
+                         &result,
+                         why,
+                         sizeof why)) {
+    storage->compaction_refusals++;
+    if (!x86p_wasm_arena_can_adopt(&storage->arena)) {
+      storage->cannot_compact = 1;
+    }
+    storage->pending_count = 0u;
+    return;
+  }
+  for (i = 0; i < result.moved; ++i) {
+    X86pWasmStoredBlock *block = &storage->blocks[storage->pending[i]];
+    /* The module each block came from was released BY the compaction, so its
+       claim is dropped here rather than released a second time. A pending
+       block is always the only block in its module -- it was published singly
+       and nothing shares a module until it is compacted -- and if that ever
+       stopped being true this would be silently mis-accounting, so it is
+       checked rather than assumed. */
+    X86pWasmStoredModule *was = &storage->modules[block->token];
+    if (was->blocks == 1u) {
+      storage->used -= was->bytes;
+      was->bytes = 0u;
+      was->blocks = 0u;
+    }
+    block->token = result.token;
+  }
+  storage->modules[result.token].bytes = result.bytes;
+  storage->modules[result.token].blocks = result.moved;
+  storage->used += result.bytes;
+  storage->compactions++;
+  storage->pending_count = 0u;
+}
+
 int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi) {
   unsigned scanned;
   for (scanned = 0u; scanned < storage->capacity_blocks; ++scanned) {
-    unsigned token = storage->next_victim;
-    const X86pWasmStoredBlock *block = &storage->blocks[token];
+    unsigned slot = storage->next_victim;
+    const X86pWasmStoredBlock *block = &storage->blocks[slot];
     uint64_t end = (uint64_t)block->guest + block->guest_len;
-    storage->next_victim = (token + 1u) % storage->capacity_blocks;
-    if (!block->bytes) {
+    storage->next_victim = (slot + 1u) % storage->capacity_blocks;
+    if (!block->live) {
       continue;
     }
     if (end > UINT32_MAX) {
@@ -151,10 +341,8 @@ void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t 
   }
   for (i = 0; i < storage->capacity_blocks; ++i) {
     X86pWasmStoredBlock *block = &storage->blocks[i];
-    if (block->bytes && block->guest < hi && (uint64_t)block->guest + block->guest_len > lo) {
-      x86p_wasm_arena_release(&storage->arena, (int)i);
-      storage->used -= block->bytes;
-      memset(block, 0, sizeof *block);
+    if (block->live && block->guest < hi && (uint64_t)block->guest + block->guest_len > lo) {
+      drop_block(storage, i);
     }
   }
 }
@@ -169,9 +357,21 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
                                          unsigned reason_len) {
   size_t remaining = storage->byte_budget - storage->used;
   size_t room = remaining < storage->buffer_bytes ? remaining : storage->buffer_bytes;
-  X86pJitStatus status =
-      x86p_jit_translate_bounded(mem, eip, storage->buffer, room, boundary, boundary_user, block, reason, reason_len);
+  X86pJitStatus status;
+  int slot;
   int token;
+
+  slot = take_block_slot(storage);
+  if (slot < 0) {
+    /* Every block record is in use. Not a translation failure: the caller
+       evicts and comes back, exactly as it does for a full arena. */
+    if (reason && reason_len) {
+      snprintf(reason, reason_len, "all %u block record(s) are live", storage->capacity_blocks);
+    }
+    return kX86pJitOutOfSpace;
+  }
+  status =
+      x86p_jit_translate_bounded(mem, eip, storage->buffer, room, boundary, boundary_user, block, reason, reason_len);
   if (status != kX86pJitOk) {
     return status;
   }
@@ -190,7 +390,21 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     }
     return kX86pJitOutOfSpace;
   }
-  storage->blocks[token] = (X86pWasmStoredBlock){block->guest_eip, block->guest_len, block->host_bytes};
-  storage->used += block->host_bytes;
+  storage->blocks[slot] = (X86pWasmStoredBlock){block->guest_eip, block->guest_len, token, block->entry, 1};
+  hold_module(storage, token, block->host_bytes);
+  if (storage->pending_count < X86P_WASM_COMPACT_BATCH) {
+    storage->pending[storage->pending_count++] = (unsigned)slot;
+  }
+  if (storage->pending_count == X86P_WASM_COMPACT_BATCH) {
+    share_a_module(storage, mem, boundary, boundary_user);
+  }
   return kX86pJitOk;
+}
+
+unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {
+  return storage ? storage->compactions : 0u;
+}
+
+unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
+  return storage ? storage->compaction_refusals : 0u;
 }

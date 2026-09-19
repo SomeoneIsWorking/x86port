@@ -60,6 +60,20 @@ int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi)
   return 0;
 }
 
+unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {
+  /* Machine code is written into one arena and needs no per-block engine
+     object, so there is nothing here to make fewer of. Zero is the true
+     answer, not a stub: a caller reporting it beside a wasm run's figure is
+     comparing two different resources. */
+  (void)storage;
+  return 0u;
+}
+
+unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
+  (void)storage;
+  return 0u;
+}
+
 void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->used = 0u;
 }

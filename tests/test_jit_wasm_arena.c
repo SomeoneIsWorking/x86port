@@ -46,6 +46,14 @@ typedef struct Stub {
   int resolve_fails;  /* when set, resolve() returns 0 -- the null table slot */
   int engine_ceiling; /* when set, the engine refuses beyond this many live */
   int last_released;
+  int adoptions;
+  int freed_entries;
+  /* The indirect table, as the host really has one: which module owns each
+     entry and which of its exports it points at. */
+  struct {
+    int module;
+    const char *field;
+  } table[64];
 } Stub;
 
 static int stub_instantiate(void *user, const void *bytes, size_t len, char *error, unsigned error_len) {
@@ -71,19 +79,53 @@ static int stub_instantiate(void *user, const void *bytes, size_t len, char *err
 
 static int stub_resolve(void *user, int module, const char *field) {
   Stub *s = (Stub *)user;
-  (void)field;
   if (s->resolve_fails) {
     return 0;
   }
   /* A nonzero, module-specific index, because that is what a table slot is. */
+  if (module + 1 < (int)(sizeof s->table / sizeof s->table[0])) {
+    s->table[module + 1].module = module;
+    s->table[module + 1].field = field;
+  }
   return module + 1;
+}
+
+/*
+ * A stub that models what the real host must do: the entry keeps its value,
+ * what sits behind it changes, and ownership of the entry moves with it. The
+ * table is modelled explicitly so a release that frees an entry the caller is
+ * still entered through is VISIBLE -- that is the defect this operation exists
+ * to avoid, and it cannot be seen from the arena's own counters.
+ */
+static int stub_adopt(void *user, int to, const char *to_field, int from, const char *from_field, int entry) {
+  Stub *s = (Stub *)user;
+  if (entry <= 0 || entry >= (int)(sizeof s->table / sizeof s->table[0])) {
+    return 0;
+  }
+  if (s->table[entry].module != from) {
+    return 0; /* not an entry that module owns */
+  }
+  (void)from_field;
+  s->table[entry].module = to;
+  s->table[entry].field = to_field;
+  s->adoptions++;
+  return 1;
 }
 
 static void stub_release(void *user, int module) {
   Stub *s = (Stub *)user;
+  unsigned i;
   s->releases++;
   s->live--;
   s->last_released = module;
+  /* Freeing the entries this module still owns -- and ONLY those. */
+  for (i = 0; i < sizeof s->table / sizeof s->table[0]; ++i) {
+    if (s->table[i].module == module) {
+      s->table[i].module = -1;
+      s->table[i].field = NULL;
+      s->freed_entries++;
+    }
+  }
 }
 
 /* Small enough that the cap case runs in no time, large enough that the free
@@ -91,10 +133,15 @@ static void stub_release(void *user, int module) {
 enum { kTestCapacity = 64u };
 
 static void bind(X86pWasmArena *arena, Stub *stub, X86pWasmHost *host) {
+  unsigned i;
   memset(stub, 0, sizeof *stub);
+  for (i = 0; i < sizeof stub->table / sizeof stub->table[0]; ++i) {
+    stub->table[i].module = -1;
+  }
   memset(host, 0, sizeof *host);
   host->instantiate = stub_instantiate;
   host->resolve = stub_resolve;
+  host->adopt = stub_adopt;
   host->release = stub_release;
   host->user = stub;
   check("the arena took its capacity", x86p_wasm_arena_init(arena, host, kTestCapacity), 1);
@@ -388,6 +435,96 @@ static void test_a_learned_ceiling_is_worked_below_not_on(void) {
   x86p_wasm_arena_dispose(&arena);
 }
 
+/*
+ * A BLOCK OUTLIVES THE MODULE IT WAS PUBLISHED IN.
+ *
+ * Publishing one module per block is what makes a browser refuse at about
+ * 16,350 live modules, so blocks get rebuilt into shared modules -- and a
+ * block that is already running can only survive that if the address it is
+ * entered at survives. Adoption is that operation. What has to be true after
+ * it: the entry's VALUE is unchanged, it now reaches the new module, and
+ * releasing the module the block came from does not free it.
+ *
+ * The last of those is the one a counter cannot show, so the stub models the
+ * table and this asserts on the table, not on the arena's opinion of it.
+ */
+static void test_a_block_survives_the_release_of_the_module_it_came_from(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int single;
+  int shared;
+  void *entry;
+  bind(&arena, &stub, &host);
+  check("this host can move an entry", x86p_wasm_arena_can_adopt(&arena), 1);
+
+  single = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  shared = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  check("the block's own module was published", single >= 0, 1);
+  check("and the module it is to share", shared >= 0, 1);
+  entry = x86p_wasm_arena_entry(&arena, single, "b0");
+  check("the block has an entry", entry != NULL, 1);
+  check("which the module it came from owns", stub.table[(int)(uintptr_t)entry].module, single);
+
+  check("the entry is adopted", x86p_wasm_arena_adopt(&arena, shared, "b7", single, "b0", entry), 1);
+  check("the arena counted it", x86p_wasm_arena_adoptions(&arena), 1);
+  check("the entry now reaches the shared module", stub.table[(int)(uintptr_t)entry].module, shared);
+  check("at the body it was moved onto", strcmp(stub.table[(int)(uintptr_t)entry].field, "b7"), 0);
+
+  /* THE POINT. */
+  x86p_wasm_arena_release(&arena, single);
+  check("releasing the old module freed no entry", stub.freed_entries, 0);
+  check("and the block is still entered through the same address", stub.table[(int)(uintptr_t)entry].module, shared);
+
+  /* And the shared module still owns it, so releasing THAT does free it. */
+  x86p_wasm_arena_release(&arena, shared);
+  check("releasing the module it moved to frees it", stub.freed_entries, 1);
+  x86p_wasm_arena_dispose(&arena);
+}
+
+/* Adoption refuses rather than half-doing it. Each of these would otherwise
+   leave an entry pointing at something nobody owns. */
+static void test_adoption_refuses_what_it_cannot_do(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int single;
+  int shared;
+  void *entry;
+  bind(&arena, &stub, &host);
+  single = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  shared = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  entry = x86p_wasm_arena_entry(&arena, single, "b0");
+  check("the null table entry is never adopted", x86p_wasm_arena_adopt(&arena, shared, "b7", single, "b0", NULL), 0);
+  check("nor an entry the source does not own", x86p_wasm_arena_adopt(&arena, shared, "b7", shared, "b0", entry), 0);
+  x86p_wasm_arena_release(&arena, shared);
+  check("nor onto a module that is not live", x86p_wasm_arena_adopt(&arena, shared, "b7", single, "b0", entry), 0);
+  check("and none of that was counted as an adoption", x86p_wasm_arena_adoptions(&arena), 0);
+  check("the entry still belongs where it did", stub.table[(int)(uintptr_t)entry].module, single);
+  x86p_wasm_arena_dispose(&arena);
+}
+
+/* A host with no adopt at all: the arena says so instead of pretending. */
+static void test_an_engine_that_cannot_adopt_says_so(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  int single;
+  int shared;
+  void *entry;
+  bind(&arena, &stub, &host);
+  single = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  shared = x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason);
+  entry = x86p_wasm_arena_entry(&arena, single, "b0");
+  arena.host.adopt = NULL;
+  check("an arena whose host cannot adopt says so", x86p_wasm_arena_can_adopt(&arena), 0);
+  check("and refuses to", x86p_wasm_arena_adopt(&arena, shared, "b7", single, "b0", entry), 0);
+  x86p_wasm_arena_dispose(&arena);
+}
+
 int main(void) {
   test_publish_and_release();
   test_cap_refuses_rather_than_evicting();
@@ -399,6 +536,9 @@ int main(void) {
   test_zero_capacity_is_refused();
   test_the_engine_ceiling_is_learned_from_a_refusal();
   test_a_learned_ceiling_is_worked_below_not_on();
+  test_a_block_survives_the_release_of_the_module_it_came_from();
+  test_adoption_refuses_what_it_cannot_do();
+  test_an_engine_that_cannot_adopt_says_so();
   printf("test_jit_wasm_arena: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

@@ -203,6 +203,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_stack.c
   src/x86port/jit_wasm_branch.c
   src/x86port/jit_wasm_arena.c
+  src/x86port/jit_wasm_compact.c
   ${X86P_JIT_BACKEND_SOURCES}
   ${X86P_JIT_STORAGE_SOURCES}
   src/x86port/jit_chain_census.c
@@ -538,6 +539,14 @@ set_tests_properties(test_jit_wasm PROPERTIES
 # Module lifetime: the accounting an engine with no unload makes necessary.
 # A stub host stands in for the engine, which is the point -- the bugs are in
 # the accounting, and the accounting has nothing to do with wasm.
+# Making one module out of many published blocks. Like the arena test, the
+# engine is a stub -- what is being tested is the operation's ALL-OR-NOTHING
+# behaviour, which is exactly what a real engine would make hard to provoke.
+add_executable(test_jit_wasm_compact tests/test_jit_wasm_compact.c)
+target_link_libraries(test_jit_wasm_compact PRIVATE x86port_runtime)
+x86p_strict_target(test_jit_wasm_compact)
+add_test(NAME test_jit_wasm_compact COMMAND test_jit_wasm_compact)
+
 add_executable(test_jit_wasm_arena tests/test_jit_wasm_arena.c)
 target_link_libraries(test_jit_wasm_arena PRIVATE x86port_runtime)
 x86p_strict_target(test_jit_wasm_arena)

@@ -43,15 +43,6 @@ int x86p_jit_available(void) {
   return 1;
 }
 
-static void plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan) {
-  plan->base = (uint32_t)(uintptr_t)mem->host;
-  plan->lo = mem->lo;
-  plan->size = mem->size;
-  plan->memory_context = mem->sparse ? (uint32_t)(uintptr_t)mem : 0u;
-  plan->perms = mem->sparse ? 0u : (uint32_t)(uintptr_t)mem->perms;
-  plan->page_shift = mem->page_shift;
-}
-
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
                                          void *code,
@@ -80,7 +71,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     return kX86pJitOutOfSpace;
   }
 
-  plan_from_mem(mem, &plan);
+  x86p_wasm_plan_from_mem(mem, &plan);
   /* One block per module here. Batching several is what the builder is for and
      what the block cache will want; a caller that has only one block to
      translate is not made to pretend otherwise. */

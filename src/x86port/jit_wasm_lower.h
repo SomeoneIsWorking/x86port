@@ -66,6 +66,16 @@ extern "C" {
    X86P_WASM_EXIT_BYTES)
 
 /*
+ * Where the guest memory a block is lowered against will live in the ENGINE's
+ * linear memory, derived from the host mapping it is lowered FROM.
+ *
+ * One owner, because the two differ only in what a sparse mapping needs and a
+ * second copy of that rule is a second answer to it. Every caller that lowers
+ * a block -- one at a time or a batch into one module -- goes through this.
+ */
+void x86p_wasm_plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan);
+
+/*
  * Lower the basic block at `eip` into the module's next function body.
  *
  * `fetch` is where the guest BYTES are read from at lowering time -- an

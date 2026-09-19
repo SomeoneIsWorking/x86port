@@ -152,6 +152,22 @@ typedef struct X86pJitEngineStats {
   uint64_t eviction_blocks_dropped;
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
+  /*
+   * Batches of singly-published blocks this storage has rebuilt as ONE module,
+   * and batches it left alone.
+   *
+   * On a WebAssembly host every published module is a permanent engine object
+   * and the engine has a limit on those -- measured in Firefox 156, refusal at
+   * about 16,350 live modules, which a real title reaches in seconds. Blocks
+   * are published one to a module so they can run the moment they translate,
+   * and then rebuilt in batches so the count stays far below that. A run whose
+   * compactions stay at zero is holding one module per translated block, and
+   * from the outside it looks exactly like a run that is compacting perfectly;
+   * these two numbers are the only difference. Both are zero on hosts that
+   * write machine code, where there is no per-block engine object to reduce.
+   */
+  uint64_t compactions;
+  uint64_t compaction_refusals;
 } X86pJitEngineStats;
 
 /*

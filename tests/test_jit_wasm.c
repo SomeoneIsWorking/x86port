@@ -57,7 +57,14 @@
 #endif
 
 #define CASE_DIR "wasm_jit_cases"
-#define MODULE_CAP 8192
+/* One block's module is a couple of kilobytes; the shared-module pass below
+   puts a block into the last body of a X86P_WASM_COMPACT_BODIES-body module,
+   so the buffer has to hold that many. */
+#define MODULE_CAP (8192 + 64 * 2048)
+/* The batch size jit_storage_wasm.c compacts at. A pass that ran with two
+   bodies would prove the export naming and nothing about the shape the port
+   actually builds. */
+#define X86P_WASM_COMPACT_BODIES 32u
 
 /* The guest picture, and where it sits in the engine's linear memory. */
 #define GUEST_LO 0x00400000u
@@ -572,6 +579,7 @@ static void run_reference(X86pCpu *cpu, uint32_t insns) {
 
 static int write_job(const char *dir,
                      const Case *c,
+                     unsigned body,
                      const Recording *helper,
                      const Recording *flag_cf,
                      char *job_path,
@@ -602,7 +610,7 @@ static int write_job(const char *dir,
   fprintf(out, "  \"out\": \"%s.out\",\n", c->name);
   fprintf(out, "  \"pages\": %u,\n", (unsigned)IMAGE_PAGES);
   fprintf(out, "  \"imageBytes\": %u,\n", (unsigned)IMAGE_BYTES);
-  fprintf(out, "  \"entry\": \"%s\",\n", x86p_wasm_body_name(0));
+  fprintf(out, "  \"entry\": \"%s\",\n", x86p_wasm_body_name(body));
   fprintf(out, "  \"cpu\": %u,\n", (unsigned)CPU_AT);
   fprintf(out, "  \"helpers\": {\n");
   write_helper(out, "alu", alu, 0);
@@ -724,7 +732,15 @@ static void compare_state(const Case *c, const X86pCpu *want, const X86pCpu *got
   }
 }
 
-static void run_case(const char *node, const char *oracle, const Case *c) {
+/*
+ * `bodies` and `body` are the shape of the module the case's block is lowered
+ * into: one body at index 0 is what a block gets when it is published on its
+ * own, and a later body of a fuller module is what it gets once its batch has
+ * been rebuilt as one shared module (jit_wasm_compact.h). The SAME block has
+ * to produce the same state either way -- if it does not, compaction is
+ * changing what the guest does, which no counter would ever show.
+ */
+static void run_case(const char *node, const char *oracle, const Case *c, unsigned bodies, unsigned body) {
   X86pCpu cpu;
   X86pCpu reference;
   X86pCpu observed;
@@ -740,6 +756,7 @@ static void run_case(const char *node, const char *oracle, const Case *c) {
   char job[512];
   size_t length;
   X86pJitStatus status;
+  unsigned filler;
 
   g_cases++;
   seed_cpu(c, &cpu);
@@ -752,8 +769,18 @@ static void run_case(const char *node, const char *oracle, const Case *c) {
   plan.lo = GUEST_LO;
   plan.size = ARENA_SIZE;
 
-  x86p_wasm_module_init(&module, g_module, sizeof g_module, 1u);
+  x86p_wasm_module_init(&module, g_module, sizeof g_module, bodies);
   reason[0] = '\0';
+  /* The bodies before this one are filled with the same block, so the module
+     is the promised shape and the case's body is genuinely not the first. */
+  for (filler = 0; filler < body; ++filler) {
+    X86pJitBlock ignored;
+    if (x86p_wasm_lower_block(&module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, &ignored, reason, sizeof reason) !=
+        kX86pJitOk) {
+      fail(c->name, "lowering refused a filler body", reason);
+      return;
+    }
+  }
   status = x86p_wasm_lower_block(&module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, &block, reason, sizeof reason);
   g_checks++;
   if (status != kX86pJitOk) {
@@ -806,7 +833,7 @@ static void run_case(const char *node, const char *oracle, const Case *c) {
     fail(c->name, "could not write the memory image", path);
     return;
   }
-  if (!write_job(CASE_DIR, c, &helper, &flag_cf, job, sizeof job)) {
+  if (!write_job(CASE_DIR, c, body, &helper, &flag_cf, job, sizeof job)) {
     fail(c->name, "could not write the oracle job", NULL);
     return;
   }
@@ -875,7 +902,13 @@ int main(void) {
   }
 
   for (i = 0; i < CASE_COUNT; i++) {
-    run_case(node, oracle, &kCases[i]);
+    /* As it is first published: alone in its own module. */
+    run_case(node, oracle, &kCases[i], 1u, 0u);
+  }
+  for (i = 0; i < CASE_COUNT; i++) {
+    /* And as it is after its batch was rebuilt as one shared module: the last
+       body of a full batch, reached by its own export name. */
+    run_case(node, oracle, &kCases[i], X86P_WASM_COMPACT_BODIES, X86P_WASM_COMPACT_BODIES - 1u);
   }
 
   if (g_ran == 0) {

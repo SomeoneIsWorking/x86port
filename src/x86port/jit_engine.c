@@ -220,6 +220,8 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   }
   *out = e->stats;
   out->code_bytes_used = x86p_jit_storage_used(e->storage);
+  out->compactions = x86p_jit_storage_compactions(e->storage);
+  out->compaction_refusals = x86p_jit_storage_compaction_refusals(e->storage);
 }
 
 void x86p_jit_engine_stats_add(X86pJitEngineStats *sum, const X86pJitEngineStats *item) {

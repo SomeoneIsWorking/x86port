@@ -98,6 +98,36 @@ EM_JS(int, host_resolve, (void *key, int id, const char *field), {
   return entry;
 });
 
+/*
+ * Point an existing table entry at another module's export, and move the
+ * entry's ownership with it.
+ *
+ * The entry's INDEX does not change, which is the whole point: it is the
+ * address the block was published at, and compiled code and the block cache
+ * both hold it. Only what sits behind it changes. Ownership moves by adding
+ * the index to the destination's entry map and dropping it from the source's,
+ * so the later release of the source calls neither removeFunction nor
+ * setWasmTableEntry on an index a block is still entered through -- which
+ * would recycle a live index and leave the table's null entry in its place.
+ */
+EM_JS(int, host_adopt, (void *key, int to_id, const char *to_field, int from_id, const char *from_field, int entry), {
+  const host = Module.x86pWasmHosts.get(key);
+  const to = host.modules.get(to_id);
+  const from = host.modules.get(from_id);
+  if (!to || !from) {
+    return 0;
+  }
+  const name = UTF8ToString(to_field);
+  const fn = to.instance.exports[name];
+  if (typeof fn != 'function') {
+    return 0;
+  }
+  setWasmTableEntry(entry, fn);
+  to.entries.set(name, entry);
+  from.entries.delete(UTF8ToString(from_field));
+  return 1;
+});
+
 EM_JS(void, host_release, (void *key, int id), {
   const host = Module.x86pWasmHosts.get(key);
   const module = host.modules.get(id);
@@ -140,6 +170,10 @@ static int resolve(void *user, int module, const char *field) {
   return host_resolve(user, module, field);
 }
 
+static int adopt(void *user, int to, const char *to_field, int from, const char *from_field, int entry) {
+  return host_adopt(user, to, to_field, from, from_field, entry);
+}
+
 static void release(void *user, int module) {
   host_release(user, module);
 }
@@ -168,6 +202,7 @@ int x86p_wasm_host_create(X86pWasmHost *host, char *reason, unsigned reason_len)
   }
   host->instantiate = instantiate;
   host->resolve = resolve;
+  host->adopt = adopt;
   host->release = release;
   host->user = state;
   return 1;

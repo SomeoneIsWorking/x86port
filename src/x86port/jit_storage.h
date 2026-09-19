@@ -26,6 +26,18 @@ size_t x86p_jit_storage_used(const X86pJitStorage *storage);
 /* Return one reclaimable block range on hosts that can release translations
    independently. A zero means the storage requires a whole-cache rewind. */
 int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi);
+/*
+ * How many batches of singly-published blocks this storage has rebuilt as one
+ * module, and how many it left alone.
+ *
+ * Published because the whole point is a number that cannot be seen any other
+ * way: a run whose compactions stay at zero is holding one engine module per
+ * translated block, which is the shape that hits a browser's module limit, and
+ * it looks identical from the outside to a run that is compacting perfectly.
+ */
+unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage);
+unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage);
+
 void x86p_jit_storage_reset(X86pJitStorage *storage);
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi);
 X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
