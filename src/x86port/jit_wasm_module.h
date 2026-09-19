@@ -76,6 +76,7 @@ typedef enum X86pWasmImport {
   kX86pWasmImportRdtsc,
   kX86pWasmImportX87LoadBits,
   kX86pWasmImportX87Store,
+  kX86pWasmImportX87StoreAt,
   kX86pWasmImportX87ArithMemBits,
   kX86pWasmImportX87ArithReg,
   kX86pWasmImportX87CompareMemBits,

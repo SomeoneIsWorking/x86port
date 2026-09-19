@@ -4,6 +4,7 @@
 #include "jit_x87_predicates.h"
 #include "x87_memory.h"
 #include <stddef.h>
+#include <string.h>
 
 /*
  * These are the per-instruction helpers the emitted code calls, and they are
@@ -36,6 +37,26 @@ int x86p_wasm_x87_store(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32
     return 2;
   }
   return x86p_x87_write_value_raw(f, mem, address, width, (int)integer, value) == kX86pX87MemoryOk;
+}
+int x86p_wasm_x87_store_at(X86pX87 *f, uint8_t *at, uint32_t permitted, uint32_t width, uint32_t integer) {
+  uint8_t bytes[X86P_X87_OPERAND_BYTES];
+  X86pX87Reg value;
+  if (!x86p_x87_get_raw(f, 0, &value)) {
+    return 2;
+  }
+  /* The conversion runs BEFORE the verdict is consulted, and that order is the
+     reason the verdict arrives as an argument rather than as a branch in the
+     emitted code: FIST of a value it cannot represent sets the
+     invalid-operation flag even when the destination is not writable, and the
+     interpreter this is checked against sets it too. */
+  if (x86p_x87_operand_bytes_from_reg(f, value, width, (int)integer, bytes) != kX86pX87MemoryOk) {
+    return 0;
+  }
+  if (!permitted) {
+    return 0;
+  }
+  memcpy(at, bytes, width);
+  return 1;
 }
 int x86p_wasm_x87_arith_mem_bits(
     X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse) {
@@ -135,12 +156,39 @@ static void pop_values(X86pWasmLower *l, unsigned count) {
 static uint32_t operand_is_integer(const X86pInsn *insn) {
   return insn->x87_mem_int || insn->x87 == kX86pX87InsnLoadInt || insn->x87 == kX86pX87InsnStoreInt;
 }
-static void memory_arguments(X86pWasmLower *l, const X86pInsn *insn) {
+/*
+ * The arguments for FST/FSTP/FIST, which cannot take the reading forms' shape.
+ *
+ * A store has two results to deliver -- whether it happened, and the bytes --
+ * and an import returns one i32, so the helper does the writing. On the
+ * contiguous mapping it is handed a pointer the emitted code has already
+ * proved, with x86p_wasm_state_check rather than x86p_wasm_state_guard: an
+ * early return on a bad address would skip the conversion, and FIST sets the
+ * invalid-operation flag from that conversion even when the address faults.
+ *
+ * On the sparse mapping the checked write walks the mapping itself, so asking
+ * first would add a walk rather than remove one.
+ */
+static void store_arguments(X86pWasmLower *l, const X86pInsn *insn) {
+  const X86pOperand *operand = &insn->operand[0];
+  const int width = (int)operand->size;
+  if (!x86p_wasm_state_memory_is_direct(&l->state)) {
+    self(l);
+    integer(l, (uint32_t)(uintptr_t)l->fetch);
+    x86p_wasm_state_address(&l->state, operand);
+    integer(l, (uint32_t)width);
+    integer(l, operand_is_integer(insn));
+    x86p_wasm_call_import(l, kX86pWasmImportX87Store);
+    return;
+  }
+  x86p_wasm_state_check(&l->state, operand, width, kX86pMemWrite);
+  x86p_wasm_local_set(l->e, kX86pWasmLocalR);
   self(l);
-  integer(l, (uint32_t)(uintptr_t)l->fetch);
-  x86p_wasm_state_address(&l->state, &insn->operand[0]);
-  integer(l, insn->operand[0].size);
+  x86p_wasm_local_get(l->e, kX86pWasmLocalAddr);
+  x86p_wasm_local_get(l->e, kX86pWasmLocalR);
+  integer(l, (uint32_t)width);
   integer(l, operand_is_integer(insn));
+  x86p_wasm_call_import(l, kX86pWasmImportX87StoreAt);
 }
 
 /*
@@ -241,8 +289,7 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
       copy_value(l, 0, index, 0, insn->x87_pops);
       return;
     }
-    memory_arguments(l, insn);
-    x86p_wasm_call_import(l, kX86pWasmImportX87Store);
+    store_arguments(l, insn);
     memory_result(l, insn, pc);
     return;
   case kX86pX87InsnArith:

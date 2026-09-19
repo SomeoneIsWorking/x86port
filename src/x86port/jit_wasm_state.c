@@ -187,8 +187,12 @@ void x86p_wasm_state_address(X86pWasmState *s, const X86pOperand *o) {
  * than the second load. The table's base rides in the load's own offset
  * immediate, so the whole check is a shift and a load per page.
  */
-static void x86p_wasm_state_guard_perms(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access) {
+static void perms_permitted(X86pWasmState *s, int w, unsigned access) {
   if (!s->plan.perms) {
+    /* A mapping with no table permits everything it covers, so the answer is
+       a constant -- pushed rather than omitted, because a caller that wants
+       the value must get one whatever the mapping looks like. */
+    x86p_wasm_i32_const(s->e, 1);
     return;
   }
   x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
@@ -207,7 +211,15 @@ static void x86p_wasm_state_guard_perms(X86pWasmState *s, uint32_t insn_eip, int
   x86p_wasm_i32_const(s->e, (int32_t)access);
   x86p_wasm_i32_op(s->e, kWasmI32And);
   x86p_wasm_i32_const(s->e, (int32_t)access);
-  x86p_wasm_i32_op(s->e, kWasmI32Ne);
+  x86p_wasm_i32_op(s->e, kWasmI32Eq);
+}
+
+static void x86p_wasm_state_guard_perms(X86pWasmState *s, uint32_t insn_eip, int w, unsigned access) {
+  if (!s->plan.perms) {
+    return;
+  }
+  perms_permitted(s, w, access);
+  x86p_wasm_i32_op(s->e, kWasmI32Eqz);
   x86p_wasm_if(s->e, kWasmVoid);
   x86p_wasm_state_exit_imm(s, insn_eip, kX86pJitExitMemoryFault);
   x86p_wasm_end(s->e);
@@ -264,6 +276,58 @@ void x86p_wasm_state_guard(X86pWasmState *s, const X86pOperand *o, uint32_t insn
   x86p_wasm_state_address(s, o);
   x86p_wasm_local_set(s->e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_state_guard_addr(s, insn_eip, w, access);
+}
+
+int x86p_wasm_state_memory_is_direct(const X86pWasmState *s) {
+  return s->plan.memory_context == 0u;
+}
+
+void x86p_wasm_state_check(X86pWasmState *s, const X86pOperand *o, int w, unsigned access) {
+  x86p_wasm_state_address(s, o);
+  x86p_wasm_local_set(s->e, (uint32_t)kX86pWasmLocalAddr);
+
+  if (s->plan.memory_context) {
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.memory_context);
+    x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(s->e, w);
+    x86p_wasm_i32_const(s->e, (int32_t)access);
+    x86p_wasm_call(s->e, (uint32_t)kX86pWasmImportMemOk);
+    return;
+  }
+
+  /* As in x86p_wasm_state_guard_addr: a mapping narrower than the access has
+     no in-bounds address at all, and subtracting would underflow. */
+  if (s->plan.size < (uint32_t)w) {
+    x86p_wasm_i32_const(s->e, 0);
+    return;
+  }
+  x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+  if (s->plan.lo != 0u) {
+    x86p_wasm_i32_const(s->e, (int32_t)s->plan.lo);
+    x86p_wasm_i32_op(s->e, kWasmI32Sub);
+  }
+  x86p_wasm_local_tee(s->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_i32_const(s->e, (int32_t)(s->plan.size - (uint32_t)w));
+  x86p_wasm_i32_op(s->e, kWasmI32LeU);
+  /*
+   * The permission read lives INSIDE the in-bounds arm, and that placement is
+   * the whole reason this is an if/else rather than two tests ANDed together:
+   * the page index comes from the offset, and an offset the bounds test just
+   * rejected would index past the end of the table. The guard form can put the
+   * two in sequence because its bounds test exits.
+   *
+   * The conversion to a linear-memory offset is in the same arm, so an address
+   * the caller must not use is never turned into one that looks usable.
+   */
+  x86p_wasm_if(s->e, kWasmI32);
+  perms_permitted(s, w, access);
+  x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_i32_const(s->e, (int32_t)s->plan.base);
+  x86p_wasm_i32_op(s->e, kWasmI32Add);
+  x86p_wasm_local_set(s->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_else(s->e);
+  x86p_wasm_i32_const(s->e, 0);
+  x86p_wasm_end(s->e);
 }
 
 /* `byte_offset` bytes past kX86pWasmLocalAddr. The guard ran for the WHOLE
