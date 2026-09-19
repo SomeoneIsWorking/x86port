@@ -30,13 +30,28 @@ void x86p_wasm_x87_lower(struct X86pWasmLower *l, const X86pInsn *insn, uint32_t
  *    early return so the conversion can set the status word first.
  *
  * Both keep the older contract: 0 on fault, 1 on completed operation, 2 on an
- * empty source register (no access and no pop). */
-int x86p_wasm_x87_load_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer);
-int x86p_wasm_x87_store(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer);
-int x86p_wasm_x87_store_at(X86pX87 *f, uint8_t *at, uint32_t permitted, uint32_t width, uint32_t integer);
-int x86p_wasm_x87_arith_mem_bits(
-    X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse);
-int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op, uint32_t reverse);
-int x86p_wasm_x87_compare_mem_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer);
-int x86p_wasm_x87_copy(X86pX87 *f, uint32_t src, uint32_t dst, uint32_t push);
+ * empty source register (no access and no pop).
+ *
+ * `pops` is how many stack slots the instruction retires, and the helper does
+ * them itself, on its success path only. It used to be emitted as a separate
+ * `x87_pop` import call per pop, guarded in wasm by the value the helper had
+ * just returned -- so FSTP, the commonest x87 form the game emits, crossed
+ * twice for one instruction. The helper already knows whether it completed. */
+int x86p_wasm_x87_load_bits(X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t pops);
+int x86p_wasm_x87_store(
+    X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer, uint32_t pops);
+int x86p_wasm_x87_store_at(
+    X86pX87 *f, uint8_t *at, uint32_t permitted, uint32_t width, uint32_t integer, uint32_t pops);
+int x86p_wasm_x87_arith_mem_bits(X86pX87 *f,
+                                 uint32_t lo,
+                                 uint32_t hi,
+                                 uint32_t width,
+                                 uint32_t integer,
+                                 uint32_t op,
+                                 uint32_t reverse,
+                                 uint32_t pops);
+int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op, uint32_t reverse, uint32_t pops);
+int x86p_wasm_x87_compare_mem_bits(
+    X86pX87 *f, uint32_t lo, uint32_t hi, uint32_t width, uint32_t integer, uint32_t pops);
+int x86p_wasm_x87_copy(X86pX87 *f, uint32_t src, uint32_t dst, uint32_t push, uint32_t pops);
 #endif
