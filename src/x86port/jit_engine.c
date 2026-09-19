@@ -230,6 +230,8 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   out->compaction_stopped = (uint64_t)(x86p_jit_storage_compaction_stopped(e->storage) != 0);
   out->code_bytes_limit = (uint64_t)x86p_jit_storage_capacity(e->storage);
   out->block_records = (uint64_t)x86p_jit_storage_block_records(e->storage);
+  out->ceilings_learned = (uint64_t)x86p_jit_storage_ceilings_learned(e->storage);
+  out->ceilings_retired = (uint64_t)x86p_jit_storage_ceilings_retired(e->storage);
 }
 
 void x86p_jit_engine_stats_add(X86pJitEngineStats *sum, const X86pJitEngineStats *item) {

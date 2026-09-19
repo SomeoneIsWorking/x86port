@@ -112,6 +112,16 @@ int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage) {
   return 0;
 }
 
+unsigned x86p_jit_storage_ceilings_learned(const X86pJitStorage *storage) {
+  (void)storage;
+  return 0u;
+}
+
+unsigned x86p_jit_storage_ceilings_retired(const X86pJitStorage *storage) {
+  (void)storage;
+  return 0u;
+}
+
 void x86p_jit_storage_reset(X86pJitStorage *storage) {
   storage->used = 0u;
 }

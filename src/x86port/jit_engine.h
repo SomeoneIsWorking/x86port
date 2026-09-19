@@ -184,6 +184,10 @@ typedef struct X86pJitEngineStats {
   uint64_t evictions_out_of_bytes;
   uint64_t evictions_out_of_slots;
   uint64_t evictions_at_engine_limit;
+  /* Live-module ceilings the WebAssembly engine's refusals put in force, and
+     how many were retired again after backing off below them. */
+  uint64_t ceilings_learned;
+  uint64_t ceilings_retired;
 } X86pJitEngineStats;
 
 /*
