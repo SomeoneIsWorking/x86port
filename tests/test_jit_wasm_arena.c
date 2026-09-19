@@ -42,7 +42,8 @@ typedef struct Stub {
   int live;           /* handles instantiated and not yet released */
   int instantiations; /* calls to instantiate(), successful or not */
   int releases;       /* calls to release() */
-  int refuse;         /* when set, instantiate() fails */
+  int refuse;         /* when set, the engine refuses to take another module */
+  int refuse_module;  /* when set, the engine refuses THIS module */
   int resolve_fails;  /* when set, resolve() returns 0 -- the null table slot */
   int engine_ceiling; /* when set, the engine refuses beyond this many live */
   int last_released;
@@ -67,11 +68,19 @@ static int stub_instantiate(void *user, const void *bytes, size_t len, char *err
     }
     return -1;
   }
-  if (!bytes || len == 0 || s->refuse) {
+  if (!bytes || len == 0 || s->refuse_module) {
+    /* A module this engine will not take, which is a different answer from
+       "not one more module": it must not teach a ceiling. */
+    if (error && error_len) {
+      snprintf(error, error_len, "CompileError: section size mismatch");
+    }
+    return kX86pWasmRefusedModule;
+  }
+  if (s->refuse) {
     if (error && error_len) {
       snprintf(error, error_len, "%s", kEngineWords);
     }
-    return -1;
+    return kX86pWasmRefusedByEngine;
   }
   s->live++;
   return s->next++;
@@ -385,6 +394,37 @@ static void test_the_engine_ceiling_is_learned_from_a_refusal(void) {
 }
 
 /*
+ * A module the engine would not compile must NOT teach a ceiling.
+ *
+ * Measured: one refused module taught a ceiling of 2,363, and the run spent
+ * the next four minutes evicting live code to stay under a limit that did not
+ * exist, holding 21 MB of a 512 MB budget while it did.
+ */
+static void test_a_refused_module_teaches_no_ceiling(void) {
+  X86pWasmArena arena;
+  X86pWasmHost host;
+  Stub stub;
+  char reason[256];
+  bind(&arena, &stub, &host);
+  check("publishing succeeds first",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+        1);
+  stub.refuse_module = 1;
+  reason[0] = '\0';
+  check("a module the engine will not compile is refused",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason),
+        -1);
+  check("no ceiling is learned from it", x86p_wasm_arena_ceiling(&arena), 0);
+  check("the arena still has room", x86p_wasm_arena_has_room(&arena), 1);
+  check("and the reason says the module was the problem", strstr(reason, "MODULE") != NULL, 1);
+  stub.refuse_module = 0;
+  check("so the next good module publishes",
+        x86p_wasm_arena_publish(&arena, kModule, sizeof kModule, reason, sizeof reason) >= 0,
+        1);
+  x86p_wasm_arena_dispose(&arena);
+}
+
+/*
  * A ceiling learned from one refusal is not a line the arena may then sit on.
  * Measured in Firefox: publication was refused a second time with the arena
  * already below the ceiling it had just learned, so a run that evicts one and
@@ -535,6 +575,7 @@ int main(void) {
   test_partial_host_is_no_host();
   test_zero_capacity_is_refused();
   test_the_engine_ceiling_is_learned_from_a_refusal();
+  test_a_refused_module_teaches_no_ceiling();
   test_a_learned_ceiling_is_worked_below_not_on();
   test_a_block_survives_the_release_of_the_module_it_came_from();
   test_adoption_refuses_what_it_cannot_do();

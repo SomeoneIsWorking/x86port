@@ -55,11 +55,26 @@ extern "C" {
  * through. It is optional: a host that cannot do it leaves the pointer NULL
  * and its caller does not compact, rather than compacting incorrectly.
  */
+/*
+ * What a refused instantiation says about the ENGINE, as opposed to about the
+ * module that was offered.
+ *
+ * The distinction decides whether a refusal teaches a ceiling. It must: one
+ * module the engine would not compile taught a ceiling of 2,363 modules, and
+ * the run spent the next four minutes evicting live code to stay under a limit
+ * that did not exist.
+ */
+enum {
+  kX86pWasmRefusedByEngine = -1, /* the engine would not take another module */
+  kX86pWasmRefusedModule = -2    /* this module would not compile or link */
+};
+
 typedef struct X86pWasmHost {
-  /* On refusal, write why into `error` (never longer than `error_len`,
-     always terminated). The arena repeats it: "a bad module" and "the
-     engine is out of memory" are different problems with different fixes,
-     and the one that lost a whole run was the one with no words. */
+  /* Returns the module handle, or one of the negatives above. On refusal, write
+     why into `error` (never longer than `error_len`, always terminated). The
+     arena repeats it: "a bad module" and "the engine is out of memory" are
+     different problems with different fixes, and the one that lost a whole run
+     was the one with no words. */
   int (*instantiate)(void *user, const void *bytes, size_t len, char *error, unsigned error_len);
   int (*resolve)(void *user, int module, const char *field);
   /* Returns 0 without changing anything when either module is gone or `to`

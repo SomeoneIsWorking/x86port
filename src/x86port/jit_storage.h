@@ -79,6 +79,9 @@ unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage);
  * those are different defects.
  */
 unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage);
+/* What the last refused gathering said, or "" when none has been refused.
+   A refusal counted but never read is a reason nobody ever sees. */
+const char *x86p_jit_storage_compaction_refusal_reason(const X86pJitStorage *storage);
 int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage);
 
 void x86p_jit_storage_reset(X86pJitStorage *storage);
