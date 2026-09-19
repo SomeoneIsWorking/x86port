@@ -95,6 +95,9 @@ typedef struct X86pWasmArena {
    */
   unsigned free_head; /* index + 1 of the first free slot, 0 when full */
   unsigned live;
+  /* The largest live count the engine has refused to exceed; 0 until one is
+     observed. Never raised, so a ceiling learned once is honoured for the run. */
+  unsigned ceiling;
   unsigned published; /* modules successfully instantiated over the arena's life */
   unsigned released;  /* modules handed back to the engine */
   unsigned refusals;  /* publications refused because the cap was reached */
@@ -143,6 +146,26 @@ void x86p_wasm_arena_release(X86pWasmArena *a, int token);
 void x86p_wasm_arena_release_all(X86pWasmArena *a);
 
 unsigned x86p_wasm_arena_live(const X86pWasmArena *a);
+
+/*
+ * THE CAP THE CALLER CHOSE IS NOT ALWAYS THE CAP THE ENGINE HAS.
+ *
+ * A browser may hold far fewer live modules than the caller asked for, and it
+ * says so only by refusing one. Measured in Firefox 156: a 65,536-slot arena
+ * was refused at 16,111 live modules with `InternalError: out of memory`,
+ * roughly three seconds into a run, while Chrome held the same working set
+ * without complaint. The arena had room by its own accounting, so nothing
+ * evicted, and the refusal ended the run.
+ *
+ * So the arena LEARNS it: a refused instantiation records the live count as
+ * the engine's observed ceiling, and from then on the arena is full at that
+ * number. The caller's eviction path then does what it already does for a full
+ * arena. Zero means no ceiling has been observed.
+ */
+unsigned x86p_wasm_arena_ceiling(const X86pWasmArena *a);
+/* Whether one more module may be published: below the caller's capacity AND
+   below any ceiling the engine has shown us. */
+int x86p_wasm_arena_has_room(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_published(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_released(const X86pWasmArena *a);
 unsigned x86p_wasm_arena_refusals(const X86pWasmArena *a);

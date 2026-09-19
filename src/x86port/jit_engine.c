@@ -493,6 +493,19 @@ X86pJitRunStatus x86p_jit_engine_run(
       host = translate_at(e, cpu->eip, &st, NULL, why, (unsigned)sizeof why);
       if (!host) {
         if (st == kX86pJitOutOfSpace) {
+          /* The storage may have JUST learned that this host holds fewer live
+             translations than it was created for -- it can only learn that by
+             being refused one. The attempt that discovers the ceiling must not
+             be the one that ends the run: it now has room by a smaller
+             measure, so evict and try again. Exactly once, because a second
+             refusal after eviction is a host that cannot hold one block. */
+          /* Not a has_room() test: right after the refusal the storage is
+             full BY ITS NEW MEASURE, which is exactly the state the retry
+             exists to resolve. translate_at() evicts before it translates, so
+             going round once is what makes room. */
+          if (++consecutive_translate_retries <= 1u) {
+            continue;
+          }
           say(reason, reason_len, "%s", why);
           return kX86pRunOutOfCode;
         }
