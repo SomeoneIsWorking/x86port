@@ -79,6 +79,10 @@ typedef struct X86pJitEngineStats {
      total is published beside the inline count rather than alone. */
   uint64_t conds_translated;
   uint64_t conds_inline;
+  /* Of the rest, those whose flag-writing predecessor was never recorded. See
+     X86pJitBlock::cond_unknown_kind: the remainder, conds_translated minus
+     conds_inline minus this, is the count that a new derivation would win. */
+  uint64_t conds_unknown_kind;
   uint64_t translate_refusals; /* translations that hit an unmodelled entry */
   /* Invalidation, asked and achieved. `invalidations` counts calls to
      x86p_jit_engine_invalidate and `invalidation_bytes` the guest range they

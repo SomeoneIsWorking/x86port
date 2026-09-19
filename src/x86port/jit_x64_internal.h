@@ -71,6 +71,7 @@ typedef struct BlockCtx {
   const X86pMem *mem;
   unsigned flag_helper_calls;
   unsigned conds;
+  unsigned cond_unknown_kind;
   unsigned cond_helper_calls;
   unsigned cond_inline;
   MemPlan plan;

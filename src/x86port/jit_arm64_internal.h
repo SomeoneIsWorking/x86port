@@ -80,6 +80,7 @@ typedef struct BlockCtx {
   unsigned conds;
   unsigned cond_helper_calls;
   unsigned cond_inline;
+  unsigned cond_unknown_kind;
   MemPlan plan;
   X86pA64EmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;

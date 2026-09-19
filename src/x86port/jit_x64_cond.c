@@ -16,7 +16,12 @@
 /* Counted, not left at zero: see cond_helper_calls in jit_x64.h. */
 static void emit_condition_value(BlockCtx *c, uint8_t cond) {
   X86pEmit *e = c->e;
+  /* This backend has no record of the predecessor's flag kind at the
+     condition site at all, so every condition it does not inline is one
+     whose predecessor is unknown. Counted rather than left at zero, which
+     would read as "classified, and none were unknown". */
   c->cond_helper_calls++;
+  c->cond_unknown_kind++;
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG0, (uint32_t)cond);
   x86p_emit_lea64(e, X86P_JIT_HOST_ARG1, CPU_REG, flags_off());
   x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cond);

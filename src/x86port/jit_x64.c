@@ -1773,6 +1773,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->conds = ctx.conds;
   out->cond_helper_calls = ctx.cond_helper_calls;
   out->cond_inline = ctx.cond_inline;
+  out->cond_unknown_kind = ctx.cond_unknown_kind;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

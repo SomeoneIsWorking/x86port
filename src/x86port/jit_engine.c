@@ -384,6 +384,7 @@ static void *translate_at(
   e->stats.guest_insns_translated += blk.insns;
   e->stats.conds_translated += blk.conds;
   e->stats.conds_inline += blk.cond_inline;
+  e->stats.conds_unknown_kind += blk.cond_unknown_kind;
   if (out_blk) {
     *out_blk = blk;
   }
