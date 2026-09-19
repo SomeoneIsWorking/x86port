@@ -37,6 +37,16 @@ int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi)
  */
 unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage);
 unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage);
+/*
+ * How many published blocks are waiting for a batch to fill, and whether this
+ * storage has stopped compacting altogether.
+ *
+ * Both exist because a compaction count that stops rising says only that; it
+ * does not say whether the batches stopped filling or the storage gave up, and
+ * those are different defects.
+ */
+unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage);
+int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage);
 
 void x86p_jit_storage_reset(X86pJitStorage *storage);
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi);

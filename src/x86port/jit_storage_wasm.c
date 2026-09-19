@@ -408,3 +408,11 @@ unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {
 unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
   return storage ? storage->compaction_refusals : 0u;
 }
+
+unsigned x86p_jit_storage_compaction_pending(const X86pJitStorage *storage) {
+  return storage ? storage->pending_count : 0u;
+}
+
+int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage) {
+  return storage ? storage->cannot_compact : 0;
+}
