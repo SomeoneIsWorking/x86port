@@ -159,6 +159,34 @@ void x86p_wasm_state_store_reg(X86pWasmState *s, int index, int w, X86pWasmLocal
 /* SIMD lanes are 32-bit bit patterns; the state owner keeps CPU layout private. */
 void x86p_wasm_state_load_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane);
 void x86p_wasm_state_store_xmm_lane(X86pWasmState *s, unsigned index, unsigned lane, X86pWasmLocal value);
+
+/*
+ * The whole register at once, for the packed lowering. Pushes one v128.
+ *
+ * `xmm` is a contiguous 16-byte field per register, which is what makes this a
+ * single load rather than the four the lane calls above emit; the offset stays
+ * here so that remains the state owner's fact and not the lowering's.
+ */
+void x86p_wasm_state_load_xmm(X86pWasmState *s, unsigned index);
+
+/*
+ * THE ADDRESS OF A REGISTER, PUSHED AHEAD OF THE VALUE. WebAssembly's store
+ * takes its address BENEATH its value, so a caller that computes a v128 and
+ * then wants to store it must have pushed this first. Split from the store
+ * below for exactly that reason, and the register index appears only here so
+ * the pair cannot name two different registers.
+ */
+void x86p_wasm_state_xmm_addr(X86pWasmState *s, unsigned index);
+
+/* Store the v128 on top of the stack at the address beneath it, consuming
+   both. The address is whatever x86p_wasm_state_xmm_addr pushed. */
+void x86p_wasm_state_store_v128(X86pWasmState *s);
+
+/* Push the 16 guest bytes at kX86pWasmLocalAddr as one v128. Only valid on the
+   contiguous mapping -- x86p_wasm_state_memory_is_direct is the question --
+   because the sparse mapping is reachable only through the checked imports,
+   which take and return i32. */
+void x86p_wasm_state_load_mem_v128(X86pWasmState *s);
 void x86p_wasm_state_load_mxcsr(X86pWasmState *s);
 void x86p_wasm_state_store_mxcsr(X86pWasmState *s, X86pWasmLocal value);
 

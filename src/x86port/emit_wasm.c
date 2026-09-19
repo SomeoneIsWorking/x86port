@@ -359,6 +359,39 @@ void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount) {
   x86p_wasm_i64_shr_u(e);
 }
 
+/*
+ * SIMD's prefix byte, then the opcode as a u32 LEB rather than a byte -- the
+ * indices this backend uses run past 127, so a byte would encode a different
+ * instruction. Every SIMD instruction below goes through here.
+ */
+enum { kWasmSimdPrefix = 0xFD };
+
+static void emit_simd_op(X86pWasmEmit *e, uint32_t opcode) {
+  x86p_wasm_byte(e, (uint8_t)kWasmSimdPrefix);
+  x86p_wasm_u32(e, opcode);
+}
+
+void x86p_wasm_v128_op(X86pWasmEmit *e, X86pWasmSimdOp op) {
+  emit_simd_op(e, (uint32_t)op);
+}
+
+void x86p_wasm_v128_load(X86pWasmEmit *e, uint32_t align, uint32_t offset) {
+  emit_simd_op(e, 0u);
+  x86p_wasm_u32(e, align);
+  x86p_wasm_u32(e, offset);
+}
+
+void x86p_wasm_v128_store(X86pWasmEmit *e, uint32_t align, uint32_t offset) {
+  emit_simd_op(e, 11u);
+  x86p_wasm_u32(e, align);
+  x86p_wasm_u32(e, offset);
+}
+
+void x86p_wasm_v128_shuffle(X86pWasmEmit *e, const uint8_t lanes[16]) {
+  emit_simd_op(e, 13u);
+  x86p_wasm_bytes(e, lanes, 16u);
+}
+
 static void open_block(X86pWasmEmit *e, uint8_t opcode, X86pWasmType type) {
   e->blocks_opened++;
   x86p_wasm_byte(e, opcode);

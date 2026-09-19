@@ -410,6 +410,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->cond_unknown_kind = l.cond_unknown_kind;
   out->x87_loads = l.x87_loads;
   out->x87_loads_inline = l.x87_loads_inline;
+  out->simd_ops = l.simd_ops;
+  out->simd_inline = l.simd_inline;
   out->exits = l.state.exits.total;
   out->exits_static = l.state.exits.to_immediate;
   out->exits_backward = l.state.exits.backward;

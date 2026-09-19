@@ -120,6 +120,53 @@ static void arithmetic(void) {
   }
 }
 
+/*
+ * The packed forms the backend emits as WebAssembly SIMD rather than calling
+ * its helper for. See jit_wasm_simd_inline.h.
+ *
+ * WHAT HAS TO BE DRIVEN HERE AND IS NOT DRIVEN BY arithmetic() ABOVE:
+ *
+ *   - A MEMORY SOURCE ON THE CONTIGUOUS MAPPING. arithmetic() reaches a memory
+ *     operand only with a sparse mapping, where the inline form declines by
+ *     design, so the emitted v128 load of guest memory would never run.
+ *   - ANDNPS WITH DISTINCT OPERANDS. It is the one row whose two sources are
+ *     pushed in the other order, because x86 computes ~dst & src and the host
+ *     instruction computes a & ~b. With equal operands both orders give zero
+ *     and the case proves nothing.
+ *   - A SOURCE THAT ALIASES THE DESTINATION, for the same reason the
+ *     lane-at-a-time path reads everything before writing: `shufps xmm0, xmm0`
+ *     selects lanes of the register it is about to overwrite.
+ *   - EVERY OPERAND PATTERN, including the NaN, infinity and sign-bit ones
+ *     `initial` builds, because f32x4 arithmetic and a scalar C loop are the
+ *     same function only if they are the same function on those too.
+ */
+static void packed_inline(void) {
+  /* The second opcode byte of each two-operand packed form, no prefix. */
+  static const uint8_t binary[] = {0x58, 0x5c, 0x59, 0x5e, 0x54, 0x55, 0x56, 0x57};
+  static const uint8_t modrm[] = {0xc1, 0xc0, 0x07};
+  unsigned i, pattern, form, mode;
+  for (i = 0; i < sizeof binary; ++i) {
+    for (form = 0; form < sizeof modrm; ++form) {
+      for (pattern = 0; pattern < 8; ++pattern) {
+        for (mode = 0; mode < 2; ++mode) {
+          const uint8_t code[] = {0x0f, binary[i], modrm[form]};
+          X86pInsn insn;
+          check(x86p_decode(code, sizeof code, &insn) == sizeof code, "packed fixture decode failed");
+          run(x86p_simd_op_name((X86pSimdOp)insn.simd), code, sizeof code, initial(pattern), mode);
+        }
+      }
+    }
+  }
+  for (i = 0; i < 8; ++i) {
+    for (form = 0; form < sizeof modrm; ++form) {
+      for (mode = 0; mode < 2; ++mode) {
+        const uint8_t code[] = {0x0f, 0xc6, modrm[form], (uint8_t)(i * 37u)};
+        run("SHUFPS emitted selector", code, sizeof code, initial(i), mode);
+      }
+    }
+  }
+}
+
 static void movement(void) {
   static const struct {
     const char *name;
@@ -210,16 +257,21 @@ static void refusals(void) {
 int main(void) {
   suite.current = "fixture";
   arithmetic();
+  packed_inline();
   movement();
   conversions();
   refusals();
   suite.current = "denominators";
   check(suite.cases == suite.entered && suite.entered > 700, "translation coverage incomplete");
   check(suite.faults > 10, "faulting forms not exercised");
-  printf("WASM SIMD: cases=%u translated_entries=%u faults=%u checks=%u failures=%u\n",
+  check(suite.simd_inline > 0, "no SIMD instruction was lowered to host SIMD");
+  check(suite.simd_inline < suite.simd_ops, "every SIMD instruction was inlined, so the declined forms went untested");
+  printf("WASM SIMD: cases=%u translated_entries=%u faults=%u simd=%lu inline=%lu checks=%u failures=%u\n",
          suite.cases,
          suite.entered,
          suite.faults,
+         suite.simd_ops,
+         suite.simd_inline,
          suite.checks,
          suite.failures);
   return suite.failures ? 1 : 0;

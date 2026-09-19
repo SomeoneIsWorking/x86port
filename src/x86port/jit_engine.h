@@ -100,6 +100,11 @@ typedef struct X86pJitEngineStats {
      inline form reports the denominator and a zero, rather than nothing. */
   uint64_t x87_loads_translated;
   uint64_t x87_loads_inline;
+  /* SIMD instructions translated, and those the emitted code performs with the
+     host's own 128-bit SIMD. Same contract: the denominator is published so a
+     zero numerator can be told apart from a corpus with no SIMD in it. */
+  uint64_t simd_translated;
+  uint64_t simd_inline;
 
   /*
    * The exit census, over the blocks this engine translated. X86pWasmExitCensus

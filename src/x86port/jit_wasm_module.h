@@ -162,6 +162,19 @@ typedef enum X86pWasmLocal64 {
 #define X86P_WASM_LOCAL64_GROUP ((uint32_t)kX86pWasmLocal64Count - (uint32_t)kX86pWasmLocalCount)
 
 /*
+ * THERE IS NO v128 LOCAL GROUP, AND THAT IS DELIBERATE.
+ *
+ * The packed lowering in jit_wasm_simd_inline.c keeps both of its operands on
+ * the stack between their loads and the one store that consumes them, so it
+ * needs no local of that type. Declaring one anyway would put a zeroed 16-byte
+ * slot in EVERY block body -- including the overwhelming majority that contain
+ * no SSE at all -- and a block body is entered hundreds of millions of times on
+ * a real route. It would also make every translated block require the
+ * fixed-width SIMD feature from the engine, where as things stand only a block
+ * that actually contains a packed instruction does.
+ */
+
+/*
  * The block function's signature, as an index into the module's type section.
  * Published because x86p_jit_enter has to call it and the arena has to describe
  * it to the engine.
