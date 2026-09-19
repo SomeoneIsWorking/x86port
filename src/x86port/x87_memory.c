@@ -6,12 +6,29 @@ static int width_supported(unsigned width, int integer) {
 
 X86pX87MemoryStatus
 x86p_x87_read_value(const X86pMem *mem, uint32_t address, unsigned width, int integer, long double *out) {
-  uint8_t bytes[10];
+  uint8_t copy[10];
+  const uint8_t *bytes;
+  uint8_t *mapped = NULL;
   uint64_t bits = 0;
   if (!out || !width_supported(width, integer)) {
     return kX86pX87MemoryUnsupported;
   }
-  if (!x86p_mem_read_bytes(mem, address, bytes, width)) {
+  /*
+   * One permission walk, not two. x86p_mem_read_bytes asks
+   * x86p_mem_accessible and then backing_span the same question about the
+   * same bytes, and copies the answer onto the stack in between.
+   * x86p_mem_resolve asks once and hands back the mapping.
+   *
+   * It answers only when the whole operand is one span, which an operand
+   * straddling a permission change is not. That case is not refused -- it
+   * takes the copying path, which is what spans are for. Both paths read the
+   * same bytes; this is which question was asked, not which answer was given.
+   */
+  if (x86p_mem_resolve(mem, address, width, &mapped)) {
+    bytes = mapped;
+  } else if (x86p_mem_read_bytes(mem, address, copy, width)) {
+    bytes = copy;
+  } else {
     return kX86pX87MemoryFault;
   }
   if (width == 10) {
