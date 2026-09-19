@@ -237,16 +237,118 @@ static uint32_t count_insns(const X86pMem *mem, uint32_t base, uint32_t len) {
   return count_insns_ex(mem, base, len, 1);
 }
 
+/*
+ * Classify where a translated block goes when it ends, by walking it back the
+ * way the translator walked it forward. The block records its guest length but
+ * not its last instruction, and the difference between "a relative branch" and
+ * "an indirect one" is the whole question, so the walk is the only way to ask.
+ *
+ * A walk that does not land exactly on the block's end is counted as its own
+ * class rather than guessed at: it would mean the decoder and the translator
+ * disagree about this block's instructions, which is a defect and not an exit
+ * kind.
+ */
+static void note_exit(const X86pMem *mem,
+                      uint32_t entry,
+                      const X86pJitBlock *blk,
+                      unsigned long *relative,
+                      unsigned long *fallthrough,
+                      unsigned long *ret,
+                      unsigned long *indirect,
+                      unsigned long *other,
+                      unsigned long *unwalkable) {
+  X86pInsn last;
+  uint32_t walked = 0u;
+  int have = 0;
+
+  if (!blk->ends_in_branch) {
+    /* The instruction cap or the code budget ended it, and execution
+       continues at the address after it, which is known. */
+    ++*fallthrough;
+    return;
+  }
+  while (walked < blk->guest_len) {
+    uint8_t bytes[X86P_MAX_INSN_LEN];
+    X86pInsn in;
+    uint32_t k;
+    uint32_t avail = 0;
+    for (k = 0; k < (uint32_t)X86P_MAX_INSN_LEN; k++) {
+      uint32_t byte;
+      if (!x86p_mem_read(mem, entry + walked + k, 1, &byte)) {
+        break;
+      }
+      bytes[k] = (uint8_t)byte;
+      avail++;
+    }
+    if (!avail || !x86p_decode(bytes, avail, &in) || !in.length) {
+      break;
+    }
+    walked += in.length;
+    last = in;
+    have = 1;
+  }
+  if (!have || walked != blk->guest_len) {
+    ++*unwalkable;
+    return;
+  }
+  switch (last.op) {
+  case kX86pInsnJmp:
+  case kX86pInsnJcc:
+  case kX86pInsnCall:
+    if (last.operands == 1 && last.operand[0].kind == kX86pOperandImm) {
+      ++*relative;
+    } else {
+      ++*indirect;
+    }
+    break;
+  case kX86pInsnRet:
+    ++*ret;
+    break;
+  default:
+    ++*other;
+    break;
+  }
+}
+
 int main(int argc, char **argv) {
   FILE *fp = stdin;
   void *code;
-  char line[MAX_FN_BYTES * 2 + 64];
+  /* Static, not automatic: at two hex digits per byte this is 128 KiB, and a
+     wasm build's default stack is 64 KiB -- as an automatic it overflowed the
+     stack before the first line was read, which surfaced as an out-of-bounds
+     access inside the module with no line of C to blame. */
+  static char line[MAX_FN_BYTES * 2 + 64];
   unsigned long fns = 0;
   unsigned long fns_with_block = 0;
   unsigned long insns_total = 0;
   unsigned long insns_covered = 0;
   unsigned long conds = 0;
   unsigned long conds_inline = 0;
+  unsigned long conds_unknown = 0;
+  /*
+   * WHERE A BLOCK GOES WHEN IT ENDS.
+   *
+   * Block chaining removes the dispatcher's hash lookup and its second
+   * indirect call, and it can only do that for a successor the translator
+   * already knows. A RET or an indirect jump goes back through the dispatcher
+   * whatever else is built, so the ratio between these is what decides whether
+   * chaining is worth building -- and it is a property of the shipped binary,
+   * which no generated program can stand in for.
+   */
+  unsigned long exit_relative = 0;    /* a branch to an immediate: known */
+  unsigned long exit_fallthrough = 0; /* out of room: the next address is known */
+  unsigned long exit_ret = 0;
+  unsigned long exit_indirect = 0;
+  unsigned long exit_other = 0;
+  unsigned long exit_unwalkable = 0;
+  /*
+   * Blocks this build cannot ENTER, which is not the same as blocks it cannot
+   * translate. A backend that produces a WebAssembly module has no host
+   * address to call, so the differential below has nothing to run. Counted so
+   * the report can refuse by name instead of printing zero divergences over
+   * zero comparisons, which reads exactly like agreement.
+   */
+  unsigned long unenterable = 0;
   /*
    * WHERE THE UNTRANSLATED INSTRUCTIONS WENT.
    *
@@ -389,6 +491,16 @@ int main(int argc, char **argv) {
       insns_covered += blk.insns;
       conds += blk.conds;
       conds_inline += blk.cond_inline;
+      conds_unknown += blk.cond_unknown_kind;
+      note_exit(&mem,
+                entry + walked,
+                &blk,
+                &exit_relative,
+                &exit_fallthrough,
+                &exit_ret,
+                &exit_indirect,
+                &exit_other,
+                &exit_unwalkable);
       if (blk.ends_in_branch) {
         note_stopper("(branch: block ended normally)");
       } else if (blk.stopper == NULL) {
@@ -423,7 +535,16 @@ int main(int argc, char **argv) {
        * machine. Coverage without correctness is a number that only sounds
        * like progress.
        */
-      {
+      if (blk.entry == NULL) {
+        /*
+         * There is no host address to call. A WebAssembly backend hands back a
+         * MODULE, not a pointer, so entering this block means instantiating it
+         * -- which this offline census does not do. Entering NULL anyway
+         * produced a divergence for every block and then a fault, which is the
+         * worst kind of diagnostic: one that answers confidently and wrongly.
+         */
+        unenterable++;
+      } else {
         X86pCpu ci;
         X86pCpu cj;
         uint32_t k;
@@ -560,8 +681,47 @@ int main(int argc, char **argv) {
   }
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
+  if (conds == 0u) {
+    printf("  NO Jcc or SETcc was emitted, so the condition census is unmeasured\n");
+  } else {
+    printf("    of the %lu not lowered inline, %lu had no recorded predecessor and\n"
+           "    %lu a kind no derivation covers\n",
+           conds - conds_inline,
+           conds_unknown,
+           conds - conds_inline - conds_unknown);
+  }
+  printf("\n  where a block goes when it ends -- what block chaining could reach:\n");
+  printf("    relative branch (static)  %lu  (%.1f%%)\n",
+         exit_relative,
+         blocks ? 100.0 * (double)exit_relative / (double)blocks : 0.0);
+  printf("    ran out of room (static)  %lu  (%.1f%%)\n",
+         exit_fallthrough,
+         blocks ? 100.0 * (double)exit_fallthrough / (double)blocks : 0.0);
+  printf("    RET                       %lu  (%.1f%%)\n",
+         exit_ret,
+         blocks ? 100.0 * (double)exit_ret / (double)blocks : 0.0);
+  printf("    indirect JMP/CALL         %lu  (%.1f%%)\n",
+         exit_indirect,
+         blocks ? 100.0 * (double)exit_indirect / (double)blocks : 0.0);
+  printf("    other terminator          %lu  (%.1f%%)\n",
+         exit_other,
+         blocks ? 100.0 * (double)exit_other / (double)blocks : 0.0);
+  printf("    the walk did not agree    %lu   <-- a decoder/translator disagreement, not an exit kind\n",
+         exit_unwalkable);
+  printf("    STATIC SUCCESSOR          %lu  (%.1f%%)\n",
+         exit_relative + exit_fallthrough,
+         blocks ? 100.0 * (double)(exit_relative + exit_fallthrough) / (double)blocks : 0.0);
+  printf("    Each block counts ONCE. A hot loop and a function that never runs weigh\n"
+         "    the same here, so this is the static ratio and not the dynamic one.\n");
+
   printf("\n  differential on real code: %lu block(s) compared, %lu divergence(s)\n", compared, diverged);
-  if (compared == 0) {
+  if (unenterable) {
+    printf("  REFUSED: %lu block(s) have no host entry address, so this build's\n"
+           "  backend cannot be run in process and the differential above covers\n"
+           "  only what could be entered. Correctness for those blocks is UNPROVEN\n"
+           "  here; the differential suites are where that backend is checked.\n",
+           unenterable);
+  } else if (compared == 0) {
     printf("  REFUSED: nothing was compared, so correctness here is unproven\n");
   }
 
