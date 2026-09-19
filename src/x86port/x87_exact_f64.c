@@ -23,13 +23,42 @@ static uint64_t f64_to_bits(double value) {
   return bits;
 }
 
-/* Trailing zeros of a nonzero 64-bit word, without a compiler builtin: this
-   file is C11 and builds under MSVC, clang and emcc alike. */
+/*
+ * Trailing zeros of a nonzero 64-bit word, without a compiler builtin: this
+ * file is C11 and builds under MSVC, clang and emcc alike.
+ *
+ * Halving rather than stepping, because the FIRST version of this stepped one
+ * bit at a time and the values this module accepts are precisely the ones with
+ * a long run of trailing zeros -- 1.0 has 52 of them. It made the fast path
+ * slower than the softfloat it replaces: x86p_x87_arith_raw went from 16.80%
+ * of the browser's guest worker to 28.83% while the softfloat frames left the
+ * profile entirely, which is what "taking every operation and costing more"
+ * looks like.
+ */
 static unsigned trailing_zeros(uint64_t v) {
   unsigned n = 0u;
-  while ((v & 1u) == 0u) {
-    v >>= 1;
-    n++;
+  if ((v & 0xFFFFFFFFull) == 0u) {
+    n += 32u;
+    v >>= 32;
+  }
+  if ((v & 0xFFFFull) == 0u) {
+    n += 16u;
+    v >>= 16;
+  }
+  if ((v & 0xFFull) == 0u) {
+    n += 8u;
+    v >>= 8;
+  }
+  if ((v & 0xFull) == 0u) {
+    n += 4u;
+    v >>= 4;
+  }
+  if ((v & 0x3ull) == 0u) {
+    n += 2u;
+    v >>= 2;
+  }
+  if ((v & 0x1ull) == 0u) {
+    n += 1u;
   }
   return n;
 }
