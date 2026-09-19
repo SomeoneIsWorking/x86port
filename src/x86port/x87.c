@@ -566,9 +566,21 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
     }
 #if X86P_X87_BINARY128
     {
-      /* Straight into the softfloat in the format it takes, and straight back
-         out. Nothing here widens to binary128: that round trip was 38% of this
-         path, measured by tests/bench_x87_arith.cpp. */
+      /*
+       * Straight into the softfloat in the format it takes, and straight back
+       * out. Nothing here widens to binary128: that round trip was 38% of this
+       * path, measured by tests/bench_x87_arith.cpp.
+       *
+       * x87_ext80_arith.h holds an ordinary-case multiply that answers the
+       * same operation as integer work on the encoding, and calling it HERE
+       * was measured in the game: 13.84 presents/s against 13.83, which is
+       * nothing. It is 1.3x to 1.8x on the arithmetic alone and only 1.06x
+       * through this entry point, because what surrounds the arithmetic --
+       * this function's own operand fetch, the register-file read and write,
+       * and the call that reached it -- costs more than the arithmetic does.
+       * The rule stays as the thing an inline path in the backend must match;
+       * this path stays as it was.
+       */
       uint16_t status = 0;
       r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
       f->status |= status;
