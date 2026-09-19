@@ -305,6 +305,31 @@ int x86p_jit_engine_set_chain_census(
     X86pJitEngine *e, int enabled, uint32_t slot_hint, char *reason, unsigned reason_len);
 const X86pJitChainCensus *x86p_jit_engine_chain_census(const X86pJitEngine *e);
 
+/*
+ * Report the first few entries to ONE guest address, with the block entered
+ * before it and the live register file.
+ *
+ * "Which block is hot" is answered by the profile; "how did the run first get
+ * HERE, and in what state" is not, and that is the question a wedge leaves
+ * behind. Measured: a title's boot spun on a two-byte `JMP $` its own code
+ * contains, reached by any of three paths -- two conditional branches and the
+ * fall-through from a call that was not supposed to return -- and nothing
+ * could say which.
+ *
+ * `previous` is the block entered immediately before, across dispatch calls;
+ * `have_previous` is 0 for the first block of the run, where there is no
+ * previous block and 0 would be a lie. `cpu` is live: the callback may read
+ * it and must not resume execution through it.
+ *
+ * `reports` bounds how many entries are reported, because a watched address
+ * may be entered twenty million times a second. Passing 0, or a NULL
+ * callback, turns the watch off. Costs one compare against a counter on the
+ * hot path when off.
+ */
+typedef void (*X86pJitEntryWatchFn)(void *user, uint32_t addr, uint32_t previous, int have_previous, X86pCpu *cpu);
+void x86p_jit_engine_set_entry_watch(
+    X86pJitEngine *e, uint32_t guest_addr, uint64_t reports, X86pJitEntryWatchFn fn, void *user);
+
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */
 const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e);

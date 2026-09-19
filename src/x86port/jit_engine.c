@@ -26,6 +26,12 @@ struct X86pJitEngine {
   /* The previous block entry address, for stats.blocks_reentered. A two-entry
      history, not a successor graph; see where it is read. */
   uint32_t last_entry;
+  /* diagnostic: report the first few entries to one address. See
+     x86p_jit_engine_set_entry_watch. */
+  X86pJitEntryWatchFn watch;
+  void *watch_user;
+  uint32_t watch_addr;
+  uint64_t watch_left;
 };
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
@@ -283,6 +289,25 @@ int x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hin
   return 1;
 }
 
+void x86p_jit_engine_set_entry_watch(
+    X86pJitEngine *e, uint32_t guest_addr, uint64_t reports, X86pJitEntryWatchFn fn, void *user) {
+  if (!e) {
+    return;
+  }
+  /* One store order: the count is what the hot path tests, so it goes last on
+     arming and first on disarming. */
+  if (!fn || reports == 0u) {
+    e->watch_left = 0u;
+    e->watch = NULL;
+    e->watch_user = NULL;
+    return;
+  }
+  e->watch = fn;
+  e->watch_user = user;
+  e->watch_addr = guest_addr;
+  e->watch_left = reports;
+}
+
 const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e) {
   return e ? e->profile : NULL;
 }
@@ -518,6 +543,14 @@ X86pJitRunStatus x86p_jit_engine_run(
      */
     if (e->stats.blocks_entered != 0u && before_eip == e->last_entry) {
       e->stats.blocks_reentered++;
+    }
+    if (e->watch_left != 0u && before_eip == e->watch_addr) {
+      e->watch_left--;
+      e->watch(e->watch_user,
+               before_eip,
+               e->stats.blocks_entered != 0u ? e->last_entry : 0u,
+               e->stats.blocks_entered != 0u,
+               cpu);
     }
     e->last_entry = before_eip;
     e->stats.blocks_entered++;
