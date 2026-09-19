@@ -71,7 +71,8 @@ typedef enum X86pWasmType {
   kWasmI64 = 0x7E,
   kWasmF32 = 0x7D,
   kWasmF64 = 0x7C,
-  kWasmVoid = 0x40 /* the empty block type; not a value type */
+  kWasmV128 = 0x7B, /* the fixed-width SIMD proposal's one value type */
+  kWasmVoid = 0x40  /* the empty block type; not a value type */
 } X86pWasmType;
 
 /*
@@ -321,6 +322,52 @@ void x86p_wasm_i64_and(X86pWasmEmit *e);
 void x86p_wasm_i64_or(X86pWasmEmit *e);
 void x86p_wasm_i64_shl(X86pWasmEmit *e);
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount);
+
+/* ---- 128-bit SIMD ------------------------------------------------------ */
+
+/*
+ * The fixed-width SIMD instructions the guest's packed-float family maps onto.
+ *
+ * ENCODED DIFFERENTLY FROM EVERYTHING ABOVE, which is why they are their own
+ * type rather than more entries in X86pWasmI32Op: each is the prefix byte 0xFD
+ * followed by an opcode as a u32 LEB, so the ones past 127 are two bytes and a
+ * caller that wrote the number as a byte would emit a different instruction.
+ * The numbers below are the specification's opcode indices, so this cannot
+ * drift from it, and the emitter owns the encoding.
+ *
+ * ROUNDING IS NOT SELECTABLE. f32x4 arithmetic is IEEE 754 binary32
+ * round-to-nearest-even with no flush-to-zero, which is the one mode SSE's
+ * MXCSR can also name -- so a lowering that uses these is equivalent to the
+ * scalar helper it replaces only while the guest asks for that mode. Whoever
+ * emits them owns that question; see jit_wasm_simd_inline.h.
+ */
+typedef enum X86pWasmSimdOp {
+  kWasmV128Not = 77,
+  kWasmV128And = 78,
+  kWasmV128AndNot = 79, /* a & ~b -- note the operand order against x86's ANDNPS */
+  kWasmV128Or = 80,
+  kWasmV128Xor = 81,
+  kWasmF32x4Add = 228,
+  kWasmF32x4Sub = 229,
+  kWasmF32x4Mul = 230,
+  kWasmF32x4Div = 231
+} X86pWasmSimdOp;
+
+void x86p_wasm_v128_op(X86pWasmEmit *e, X86pWasmSimdOp op);
+
+/* v128.load / v128.store. `align` is the hint, as for the i32 forms above. */
+void x86p_wasm_v128_load(X86pWasmEmit *e, uint32_t align, uint32_t offset);
+void x86p_wasm_v128_store(X86pWasmEmit *e, uint32_t align, uint32_t offset);
+
+/*
+ * i8x16.shuffle: two v128 operands and SIXTEEN immediate byte indices, each
+ * selecting one byte of the 32-byte concatenation. The selection is part of the
+ * INSTRUCTION, so a guest shuffle whose control is a decode-time immediate
+ * becomes one instruction with nothing computed at run time. `lanes` must hold
+ * sixteen indices, each 0..31; a larger one is a validation error in the engine
+ * rather than a wrap, so the caller builds them and this does not clamp.
+ */
+void x86p_wasm_v128_shuffle(X86pWasmEmit *e, const uint8_t lanes[16]);
 
 /* ---- control ----------------------------------------------------------- */
 

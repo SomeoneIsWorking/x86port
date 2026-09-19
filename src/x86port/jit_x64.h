@@ -178,6 +178,15 @@ typedef struct X86pJitBlock {
   unsigned x87_loads_inline;
 
   /*
+   * SIMD instructions lowered, and those the block performs with the host's own
+   * 128-bit SIMD rather than calling out of its module for. Only the
+   * WebAssembly backend emits the inline form; jit_wasm_simd_inline.h says what
+   * it will and will not take. Both counts, for the same reason as above.
+   */
+  unsigned simd_ops;
+  unsigned simd_inline;
+
+  /*
    * How many places the block can leave to, and how many of those the
    * translator already knows the address of. This is what ranks block chaining:
    * an exit to a constant is one a backend could branch to directly, where an

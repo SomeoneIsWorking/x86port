@@ -7,6 +7,11 @@
 typedef struct WasmTest {
   uint8_t guest[GUEST_SIZE], reference[GUEST_SIZE];
   unsigned checks, failures, cases, entered, faults;
+  /* SIMD instructions the cases translated, and how many the backend emitted
+     as host SIMD rather than calling its helper for. Both, so a suite can
+     assert that it exercised BOTH arms: an all-inline total means the declined
+     forms went untested, and a zero means the new path was never reached. */
+  unsigned long simd_ops, simd_inline;
   const char *current;
   X86pCpu last_cpu;
 } WasmTest;

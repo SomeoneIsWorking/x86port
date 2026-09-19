@@ -118,6 +118,22 @@ void x86p_wasm_state_store_xmm_lane(X86pWasmState *s, unsigned index, unsigned l
   x86p_wasm_local_get(s->e, (uint32_t)value);
   store_w(s, xmm_offset(index, lane), 4);
 }
+void x86p_wasm_state_load_xmm(X86pWasmState *s, unsigned index) {
+  x86p_wasm_state_cpu(s);
+  x86p_wasm_v128_load(s->e, ALIGN_NONE, xmm_offset(index, 0));
+}
+void x86p_wasm_state_xmm_addr(X86pWasmState *s, unsigned index) {
+  x86p_wasm_state_cpu(s);
+  x86p_wasm_i32_const(s->e, (int32_t)xmm_offset(index, 0));
+  x86p_wasm_i32_op(s->e, kWasmI32Add);
+}
+void x86p_wasm_state_store_v128(X86pWasmState *s) {
+  x86p_wasm_v128_store(s->e, ALIGN_NONE, 0u);
+}
+void x86p_wasm_state_load_mem_v128(X86pWasmState *s) {
+  x86p_wasm_local_get(s->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_v128_load(s->e, ALIGN_NONE, 0u);
+}
 void x86p_wasm_state_load_mxcsr(X86pWasmState *s) {
   x86p_wasm_state_cpu(s);
   load_w(s, (uint32_t)offsetof(X86pCpu, mxcsr), 4);

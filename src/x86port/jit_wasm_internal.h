@@ -59,6 +59,13 @@ typedef struct X86pWasmLower {
      widening instead of the import call. See jit_wasm_x87_load.h. */
   unsigned x87_loads;
   unsigned x87_loads_inline;
+  /* SIMD instructions lowered, and how many became WebAssembly SIMD instead of
+     the import call. See jit_wasm_simd_inline.h. Both are needed: the share is
+     what says whether a route's packed work is actually taking the new path,
+     and a bare inline count cannot distinguish "none qualified" from "no SIMD
+     ran at all". */
+  unsigned simd_ops;
+  unsigned simd_inline;
   int last_kind;
   int last_w;
 } X86pWasmLower;

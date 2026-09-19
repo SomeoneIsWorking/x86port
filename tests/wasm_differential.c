@@ -126,6 +126,8 @@ void wasm_test_case_mem_insns(WasmTest *suite,
                   stats.translate_refusals == (expected == kX86pStepUnsupported ? 1u : 0u),
                   "runtime refusal count disagrees with the oracle's named unsupported result");
   suite->entered += (unsigned)stats.blocks_entered;
+  suite->simd_ops += (unsigned long)stats.simd_translated;
+  suite->simd_inline += (unsigned long)stats.simd_inline;
   wasm_test_check(suite, cpu.trap_vector == oracle.trap_vector, "trap vector differs");
   suite->last_cpu = cpu;
   x86p_jit_engine_destroy(engine);

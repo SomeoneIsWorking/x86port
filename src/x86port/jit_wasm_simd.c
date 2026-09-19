@@ -4,6 +4,7 @@
 
 #include "diagnostic.h"
 #include "jit_wasm_internal.h"
+#include "jit_wasm_simd_inline.h"
 #include "simd_internal.h"
 #include "x87.h"
 
@@ -229,6 +230,13 @@ void x86p_wasm_simd_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   const X86pOperand *d = &insn->operand[0], *s = &insn->operand[1];
   unsigned i, bytes;
   if (op == kX86pSimdFence || op == kX86pSimdPrefetch) {
+    return;
+  }
+  /* Counted before the attempt and including the forms that have no arithmetic
+     at all, because the denominator this share is read against is "SIMD the
+     block lowered", not "SIMD the inline unit was offered". */
+  l->simd_ops++;
+  if (x86p_wasm_simd_inline(l, insn, pc)) {
     return;
   }
   if (op == kX86pSimdEmms) {

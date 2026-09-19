@@ -187,6 +187,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_x87.c
   src/x86port/jit_wasm_x87_load.c
   src/x86port/jit_wasm_simd.c
+  src/x86port/jit_wasm_simd_inline.c
   src/x86port/x87_memory.c
   src/x86port/stack_ops.c
   src/x86port/jit_wasm_module.c
