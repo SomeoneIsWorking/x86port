@@ -6,36 +6,43 @@
 #include "x87_state.h"
 #include <stddef.h>
 
+/*
+ * These are the per-instruction helpers the emitted code calls, and they are
+ * the reason x87 was 47% of the browser's guest worker: every one of them
+ * used to convert the value into the host's widest float and straight back
+ * out again, because that is what the register file held. They now stay in
+ * the storage type from guest memory to guest memory.
+ */
 int x86p_wasm_x87_load(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer) {
-  long double value;
-  if (x86p_x87_read_value(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
+  X86pX87Reg value;
+  if (x86p_x87_read_value_raw(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
-  x86p_x87_push(f, value);
+  x86p_x87_push_raw(f, value);
   return 1;
 }
 int x86p_wasm_x87_store(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer) {
-  long double value;
-  if (!x86p_x87_get(f, 0, &value)) {
+  X86pX87Reg value;
+  if (!x86p_x87_get_raw(f, 0, &value)) {
     return 2;
   }
-  return x86p_x87_write_value(f, mem, address, width, (int)integer, value) == kX86pX87MemoryOk;
+  return x86p_x87_write_value_raw(f, mem, address, width, (int)integer, value) == kX86pX87MemoryOk;
 }
 int x86p_wasm_x87_arith_mem(
     X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer, uint32_t op, uint32_t reverse) {
-  long double value;
-  if (x86p_x87_read_value(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
+  X86pX87Reg value;
+  if (x86p_x87_read_value_raw(mem, address, width, (int)integer, &value) != kX86pX87MemoryOk) {
     return 0;
   }
-  x86p_x87_arith(f, (X86pX87Op)op, 0, value, (int)reverse);
+  x86p_x87_arith_raw(f, (X86pX87Op)op, 0, value, (int)reverse);
   return 1;
 }
 int x86p_wasm_x87_arith_reg(X86pX87 *f, uint32_t dst, uint32_t src, uint32_t op, uint32_t reverse) {
-  long double value;
-  if (!x86p_x87_get(f, (int)src, &value)) {
+  X86pX87Reg value;
+  if (!x86p_x87_get_raw(f, (int)src, &value)) {
     return 0;
   }
-  x86p_x87_arith(f, (X86pX87Op)op, (int)dst, value, (int)reverse);
+  x86p_x87_arith_raw(f, (X86pX87Op)op, (int)dst, value, (int)reverse);
   return 1;
 }
 int x86p_wasm_x87_compare_mem(X86pX87 *f, const X86pMem *mem, uint32_t address, uint32_t width, uint32_t integer) {
@@ -47,14 +54,14 @@ int x86p_wasm_x87_compare_mem(X86pX87 *f, const X86pMem *mem, uint32_t address, 
   return 1;
 }
 int x86p_wasm_x87_copy(X86pX87 *f, uint32_t src, uint32_t dst, uint32_t push) {
-  long double value;
-  if (!x86p_x87_get(f, (int)src, &value)) {
+  X86pX87Reg value;
+  if (!x86p_x87_get_raw(f, (int)src, &value)) {
     return 0;
   }
   if (push) {
-    x86p_x87_push(f, value);
+    x86p_x87_push_raw(f, value);
   } else {
-    x86p_x87_set(f, (int)dst, value);
+    x86p_x87_set_raw(f, (int)dst, value);
   }
   return 1;
 }

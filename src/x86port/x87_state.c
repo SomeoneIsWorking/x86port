@@ -79,7 +79,9 @@ int x86p_x87_save_state(X86pX87 *fpu, const X86pMem *mem, uint32_t addr) {
        would round-trip correctly through this same pair and disagree with
        every other implementation, which is the kind of bug a self-consistent
        test cannot see. */
-    x86p_x87_to_f80(fpu->reg[i], bytes);
+    /* FNSAVE's ten bytes ARE the storage on a binary128 host, so this is a
+       copy with nothing to round. */
+    x86p_x87_reg_to_f80(fpu->reg[i], bytes);
     for (b = 0; b < 10u; b++) {
       if (!x86p_mem_write(mem, addr + 28u + i * 10u + b, 1, bytes[b])) {
         return 0;
@@ -121,7 +123,7 @@ int x86p_x87_restore_state(X86pX87 *fpu, const X86pMem *mem, uint32_t addr) {
   fpu->top = (uint8_t)((env[1] >> 11) & 7u);
   unpack_tags(fpu, (uint16_t)env[2]);
   for (i = 0; i < X86P_X87_REGS; i++) {
-    fpu->reg[i] = x86p_x87_from_f80(regs[i]);
+    fpu->reg[i] = x86p_x87_reg_from_f80(regs[i]);
   }
   return 1;
 }

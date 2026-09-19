@@ -134,17 +134,67 @@ static int phys(const X86pX87 *f, int i) {
   return (f->top + i) & (X86P_X87_REGS - 1);
 }
 
-static uint8_t classify(long double v) {
-#ifdef X86P_X87_BINARY128
-  /* The same three questions, asked of the fields. On this host each of the
-     comparisons below is a compiler-rt call, and this classifier runs on every
-     write to a register: it was 9.5% of a profiled Android frame. */
-  const X86pF128 bits = x86p_f128_of(v);
-  if (x86p_f128_is_zero(bits)) {
-    return (uint8_t)kX86pX87TagZero;
-  }
-  if (x86p_f128_is_nan(bits) || x86p_f128_is_inf(bits)) {
+/*
+ * The edge between the storage type and `long double`. On a native ext80 host
+ * these are identities the compiler removes; on a binary128 host they are the
+ * exact reassembly in x87_f128_ext80.c, with the general softfloat conversion
+ * behind it for the encodings that reassembly refuses.
+ */
+#if X86P_X87_BINARY128
+/* x86p_x87_reg_from_long_double and x86p_x87_reg_to_long_double live in
+   x87_softfloat.cpp on this host, because the conversion they need is the one
+   widen()/narrow() already own: the exact field reassembly first, the general
+   softfloat conversion only for the encodings it refuses. Reimplementing them
+   here through x86p_x87_to_f80 cost 7% of the wrapper path, measured, because
+   that route always takes the general conversion. */
+
+X86pX87Reg x86p_x87_reg_from_f80(const uint8_t bytes[10]) {
+  X86pX87Reg r;
+  memcpy(&r.signif, bytes, 8);
+  r.sign_exp = (uint16_t)((uint16_t)bytes[8] | ((uint16_t)bytes[9] << 8));
+  return r;
+}
+
+void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]) {
+  memcpy(bytes, &v.signif, 8);
+  bytes[8] = (uint8_t)(v.sign_exp & 0xFFu);
+  bytes[9] = (uint8_t)(v.sign_exp >> 8);
+}
+#else
+X86pX87Reg x86p_x87_reg_from_long_double(long double v) {
+  return v;
+}
+
+long double x86p_x87_reg_to_long_double(X86pX87Reg v) {
+  return v;
+}
+
+X86pX87Reg x86p_x87_reg_from_f80(const uint8_t bytes[10]) {
+  return x86p_x87_from_f80(bytes);
+}
+
+void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]) {
+  x86p_x87_to_f80(v, bytes);
+}
+#endif
+
+static uint8_t classify(X86pX87Reg v) {
+#if X86P_X87_BINARY128
+  /* The same three questions, asked of the architectural fields, which is what
+     the storage now holds. This runs on every write to a register -- on the
+     binary128 form it was 9.5% of a profiled Android frame, because each
+     comparison was a compiler-rt call. Here it is three integer tests.
+
+     An exponent of all ones is infinity or a NaN; a zero exponent with a zero
+     significand is a zero. Everything else -- including a subnormal, an
+     unnormal and a pseudo-denormal -- is what the tag word calls valid, which
+     matches the arithmetic form this replaces. */
+  const uint16_t exponent = (uint16_t)(v.sign_exp & 0x7FFFu);
+  if (exponent == 0x7FFFu) {
     return (uint8_t)kX86pX87TagSpecial;
+  }
+  if (exponent == 0u && v.signif == 0u) {
+    return (uint8_t)kX86pX87TagZero;
   }
   return (uint8_t)kX86pX87TagValid;
 #else
@@ -187,7 +237,7 @@ void x86p_x87_clear_exceptions(X86pX87 *f) {
   f->status &= (uint16_t)~X86P_X87_FNCLEX_MASK;
 }
 
-int x86p_x87_get(const X86pX87 *f, int i, long double *out) {
+int x86p_x87_get_raw(const X86pX87 *f, int i, X86pX87Reg *out) {
   int p;
   if (!f || !out || i < 0 || i >= X86P_X87_REGS) {
     return 0;
@@ -200,7 +250,7 @@ int x86p_x87_get(const X86pX87 *f, int i, long double *out) {
   return 1;
 }
 
-int x86p_x87_set(X86pX87 *f, int i, long double v) {
+int x86p_x87_set_raw(X86pX87 *f, int i, X86pX87Reg v) {
   int p;
   if (!f || i < 0 || i >= X86P_X87_REGS) {
     return 0;
@@ -211,7 +261,20 @@ int x86p_x87_set(X86pX87 *f, int i, long double v) {
   return 1;
 }
 
-int x86p_x87_push(X86pX87 *f, long double v) {
+int x86p_x87_get(const X86pX87 *f, int i, long double *out) {
+  X86pX87Reg raw;
+  if (!out || !x86p_x87_get_raw(f, i, &raw)) {
+    return 0;
+  }
+  *out = x86p_x87_reg_to_long_double(raw);
+  return 1;
+}
+
+int x86p_x87_set(X86pX87 *f, int i, long double v) {
+  return x86p_x87_set_raw(f, i, x86p_x87_reg_from_long_double(v));
+}
+
+int x86p_x87_push_raw(X86pX87 *f, X86pX87Reg v) {
   int p;
   if (!f) {
     return 0;
@@ -228,6 +291,10 @@ int x86p_x87_push(X86pX87 *f, long double v) {
   f->reg[p] = v;
   f->tag[p] = classify(v);
   return 1;
+}
+
+int x86p_x87_push(X86pX87 *f, long double v) {
+  return x86p_x87_push_raw(f, x86p_x87_reg_from_long_double(v));
 }
 
 int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
@@ -264,7 +331,7 @@ int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
   return x86p_x87_push(f, value);
 }
 
-int x86p_x87_pop(X86pX87 *f, long double *out) {
+int x86p_x87_pop_raw(X86pX87 *f, X86pX87Reg *out) {
   int p;
   if (!f) {
     return 0;
@@ -280,6 +347,17 @@ int x86p_x87_pop(X86pX87 *f, long double *out) {
   }
   f->tag[p] = (uint8_t)kX86pX87TagEmpty;
   f->top = (uint8_t)((p + 1) & (X86P_X87_REGS - 1));
+  return 1;
+}
+
+int x86p_x87_pop(X86pX87 *f, long double *out) {
+  X86pX87Reg raw;
+  if (!x86p_x87_pop_raw(f, &raw)) {
+    return 0;
+  }
+  if (out) {
+    *out = x86p_x87_reg_to_long_double(raw);
+  }
   return 1;
 }
 
@@ -441,9 +519,23 @@ long double x86p_x87_arith_portable(uint16_t control, X86pX87Op op, long double 
   return x86p_x87_round(&scratch, r);
 }
 
-int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse) {
-  long double a, r;
-  if (!f || !x86p_x87_get(f, dst, &a)) {
+#if X86P_X87_BINARY128
+/* The divide-by-zero test, asked of the architectural fields rather than of a
+   binary128 value. Each comparison it replaces was a compiler-rt call. */
+static int reg_is_zero(X86pX87Reg v) {
+  return (v.sign_exp & 0x7FFFu) == 0u && v.signif == 0u;
+}
+
+static int reg_is_nan(X86pX87Reg v) {
+  /* Exponent all ones: infinity has the explicit integer bit and nothing
+     below it, so anything else with that exponent is a NaN. */
+  return (v.sign_exp & 0x7FFFu) == 0x7FFFu && (v.signif << 1) != 0u;
+}
+#endif
+
+int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse) {
+  X86pX87Reg a, r;
+  if (!f || !x86p_x87_get_raw(f, dst, &a)) {
     if (f) {
       f->status |= X86P_X87_IE | X86P_X87_SF;
     }
@@ -454,14 +546,13 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
        from FSUB and FDIV in operand order alone, and writing them out
        separately is how one of the four acquires a bug the other three do
        not have. */
-    long double x = reverse ? src : a;
-    long double y = reverse ? a : src;
+    X86pX87Reg x = reverse ? src : a;
+    X86pX87Reg y = reverse ? a : src;
     if ((unsigned)op >= (unsigned)kX86pX87OpCount) {
       return 0;
     }
-#ifdef X86P_X87_BINARY128
-    const int divide_by_zero = op == kX86pX87Div && x86p_f128_is_zero(x86p_f128_of(y)) &&
-                               !x86p_f128_is_zero(x86p_f128_of(x)) && !x86p_f128_is_nan(x86p_f128_of(x));
+#if X86P_X87_BINARY128
+    const int divide_by_zero = op == kX86pX87Div && reg_is_zero(y) && !reg_is_zero(x) && !reg_is_nan(x);
 #else
     const int divide_by_zero = op == kX86pX87Div && y == 0.0L && x != 0.0L && !isnan(x);
 #endif
@@ -471,10 +562,15 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
          by default and expects the infinity. */
       f->status |= X86P_X87_ZE;
     }
-#if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
-    uint16_t status = 0;
-    r = x86p_x87_software_arith(f->control, op, x, y, &status);
-    f->status |= status;
+#if X86P_X87_BINARY128
+    {
+      /* Straight into the softfloat in the format it takes, and straight back
+         out. Nothing here widens to binary128: that round trip was 38% of this
+         path, measured by tests/bench_x87_arith.cpp. */
+      uint16_t status = 0;
+      r = x86p_x87_software_arith_raw(f->control, op, x, y, &status);
+      f->status |= status;
+    }
 #elif defined(X86P_X87_HOST_FPU)
     /* One rounding, at the guest's precision, on the unit that defines it. */
     r = host_arith(op, x, y, f->control);
@@ -485,7 +581,11 @@ int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int rever
     r = x86p_x87_arith_portable(f->control, op, x, y);
 #endif
   }
-  return x86p_x87_set(f, dst, r);
+  return x86p_x87_set_raw(f, dst, r);
+}
+
+int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse) {
+  return x86p_x87_arith_raw(f, op, dst, x86p_x87_reg_from_long_double(src), reverse);
 }
 
 int x86p_x87_compare(X86pX87 *f, long double other) {
@@ -536,6 +636,44 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
 }
 
 /* ---- formats ------------------------------------------------------------ */
+
+/*
+ * Guest memory bits <-> the register's storage, without the detour through the
+ * host's widest float. On a native ext80 host the storage IS that type, so
+ * these are the existing conversions; on a binary128 host they go straight to
+ * and from the ext80 the softfloat already works in.
+ */
+X86pX87Reg x86p_x87_reg_from_f32_bits(uint32_t bits) {
+#if X86P_X87_BINARY128
+  return x86p_x87_software_widen_f32(bits);
+#else
+  return x86p_x87_from_f32(bits);
+#endif
+}
+
+X86pX87Reg x86p_x87_reg_from_f64_bits(uint64_t bits) {
+#if X86P_X87_BINARY128
+  return x86p_x87_software_widen_f64(bits);
+#else
+  return x86p_x87_from_f64(bits);
+#endif
+}
+
+uint64_t x86p_x87_reg_to_f32_bits(const X86pX87 *f, X86pX87Reg v) {
+#if X86P_X87_BINARY128
+  return x86p_x87_software_narrow_raw(f ? f->control : X86P_X87_CW_INIT, v, 0);
+#else
+  return x86p_x87_to_f32(f, v);
+#endif
+}
+
+uint64_t x86p_x87_reg_to_f64_bits(const X86pX87 *f, X86pX87Reg v) {
+#if X86P_X87_BINARY128
+  return x86p_x87_software_narrow_raw(f ? f->control : X86P_X87_CW_INIT, v, 1);
+#else
+  return x86p_x87_to_f64(f, v);
+#endif
+}
 
 long double x86p_x87_from_f32(uint32_t bits) {
 #ifdef X86P_X87_BINARY128
