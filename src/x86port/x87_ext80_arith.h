@@ -65,6 +65,18 @@ int x86p_ext80_control_is_ordinary(uint16_t control);
  */
 int x86p_ext80_mul_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, X86pExt80 *out, uint16_t *flags);
 
+/*
+ * `x` + `y`, or `x` - `y` when `subtract` is non-zero -- which is the only
+ * difference between them, so FSUB is this entry point and not a second one
+ * that could acquire a bug FADD does not have.
+ *
+ * The same contract as the multiply: 1 with *out and the status bits ORed into
+ * *flags, or 0 having written nothing. An exact cancellation to zero is
+ * refused along with everything else non-normal, because a zero's sign is
+ * decided by the rounding mode and that is the softfloat's rule to apply.
+ */
+int x86p_ext80_add_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, int subtract, X86pExt80 *out, uint16_t *flags);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

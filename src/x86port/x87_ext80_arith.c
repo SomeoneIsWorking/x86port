@@ -106,3 +106,178 @@ int x86p_ext80_mul_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, X86pExt8
   *flags |= raised;
   return 1;
 }
+
+/*
+ * The count of leading zeroes, spelled out for the same reason the 128-bit
+ * product is: this is the reference the WebAssembly backend's i64.clz has to
+ * agree with, and a compiler builtin here would hide which one is authority.
+ * Never called with zero -- an exactly cancelled result is refused above it.
+ */
+static int clz64(uint64_t v) {
+  int n = 0;
+  while ((v >> 63) == 0u) {
+    v <<= 1;
+    n++;
+  }
+  return n;
+}
+
+/*
+ * The smaller operand's significand, aligned `shift` places below the larger's,
+ * as a 128-bit pair plus whether anything fell off the bottom.
+ *
+ * The sticky bit is not an optimisation: two operands whose exponents differ by
+ * more than 128 still decide a rounding, and dropping the fact that something
+ * non-zero was there turns a round-up into a tie.
+ */
+static void align_smaller(uint64_t signif, unsigned shift, uint64_t *hi, uint64_t *lo, int *sticky) {
+  if (shift == 0u) {
+    *hi = signif;
+    *lo = 0u;
+    *sticky = 0;
+  } else if (shift < 64u) {
+    *hi = signif >> shift;
+    *lo = signif << (64u - shift);
+    *sticky = 0;
+  } else if (shift == 64u) {
+    *hi = 0u;
+    *lo = signif;
+    *sticky = 0;
+  } else if (shift < 128u) {
+    *hi = 0u;
+    *lo = signif >> (shift - 64u);
+    *sticky = (signif << (128u - shift)) != 0u;
+  } else {
+    /* Every bit is below the pair, and a normal's significand is never zero. */
+    *hi = 0u;
+    *lo = 0u;
+    *sticky = 1;
+  }
+}
+
+int x86p_ext80_add_ordinary(uint16_t control, X86pExt80 x, X86pExt80 y, int subtract, X86pExt80 *out, uint16_t *flags) {
+  X86pExt80 big;
+  X86pExt80 small;
+  unsigned small_sign;
+  unsigned big_exp;
+  uint64_t hi;
+  uint64_t lo;
+  uint64_t shi;
+  uint64_t slo;
+  int sticky = 0;
+  int exponent;
+  unsigned sign;
+  uint16_t raised = 0u;
+  if (!out || !flags) {
+    return 0;
+  }
+  if (!x86p_ext80_control_is_ordinary(control)) {
+    return 0;
+  }
+  if (!x86p_ext80_is_normal(x) || !x86p_ext80_is_normal(y)) {
+    return 0;
+  }
+  /* FSUB is FADD with the subtrahend's sign flipped, and nothing else. */
+  small_sign = (unsigned)(y.sign_exp & 0x8000u);
+  if (subtract) {
+    small_sign ^= 0x8000u;
+  }
+  /*
+   * The larger magnitude first, so the alignment shift is never negative and
+   * the result's sign is always the larger operand's. `small_sign` ends up
+   * holding whichever operand did NOT win, which is what the same-sign test
+   * below needs.
+   */
+  {
+    const unsigned ex = (unsigned)(x.sign_exp & 0x7FFFu);
+    const unsigned ey = (unsigned)(y.sign_exp & 0x7FFFu);
+    if (ey > ex || (ey == ex && y.signif > x.signif)) {
+      big = y;
+      small = x;
+      sign = small_sign;
+      small_sign = (unsigned)(x.sign_exp & 0x8000u);
+    } else {
+      big = x;
+      small = y;
+      sign = (unsigned)(x.sign_exp & 0x8000u);
+    }
+  }
+  big_exp = (unsigned)(big.sign_exp & 0x7FFFu);
+  exponent = (int)big_exp;
+  align_smaller(small.signif, big_exp - (unsigned)(small.sign_exp & 0x7FFFu), &shi, &slo, &sticky);
+
+  if (sign == small_sign) {
+    /*
+     * Same sign: a magnitude add. Two significands below 2^64 sum below 2^65,
+     * so the only normalisation is one place right when the sum carried out,
+     * and the bit that falls off the pair is sticky rather than lost.
+     */
+    lo = slo;
+    hi = big.signif + shi;
+    if (hi < big.signif) {
+      sticky |= (int)(lo & 1u);
+      lo = (lo >> 1) | (hi << 63);
+      hi = (hi >> 1) | 0x8000000000000000ull;
+      exponent++;
+    }
+  } else {
+    /*
+     * Opposite signs: a magnitude subtract. The bits that fell below the pair
+     * are a positive remainder still to be taken off, so one is borrowed from
+     * the bottom and what is left over is non-zero -- which is exactly what a
+     * sticky bit means to the rounding below.
+     */
+    lo = 0u - slo;
+    hi = big.signif - shi - (slo != 0u ? 1u : 0u);
+    if (sticky) {
+      if (lo == 0u) {
+        lo = ~(uint64_t)0u;
+        hi--;
+      } else {
+        lo--;
+      }
+    }
+    if (hi == 0u && lo == 0u) {
+      /* An exact cancellation: the zero's sign is the rounding mode's rule
+         and not this one's. */
+      return 0;
+    }
+    if ((hi >> 63) == 0u) {
+      int shift;
+      if (hi == 0u) {
+        hi = lo;
+        lo = 0u;
+        exponent -= 64;
+      }
+      shift = clz64(hi);
+      if (shift != 0) {
+        hi = (hi << shift) | (lo >> (64 - shift));
+        lo <<= shift;
+        exponent -= shift;
+      }
+    }
+  }
+
+  /* Round to nearest, ties to even, on the 64 bits below the significand. */
+  {
+    const uint64_t half = 0x8000000000000000ull;
+    if (lo != 0u || sticky) {
+      raised |= kInexact;
+    }
+    if (lo > half || (lo == half && (sticky || (hi & 1u) != 0u))) {
+      hi++;
+      if (hi == 0u) {
+        hi = half;
+        exponent++;
+      }
+      raised |= kRoundedUp;
+    }
+  }
+  if (exponent <= 0 || exponent >= kExt80MaxExp) {
+    return 0;
+  }
+  out->signif = hi;
+  out->sign_exp = (uint16_t)(sign | (unsigned)exponent);
+  *flags |= raised;
+  return 1;
+}
