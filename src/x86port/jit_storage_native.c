@@ -53,11 +53,14 @@ size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
 }
 
-int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi) {
+unsigned x86p_jit_storage_evict(X86pJitStorage *storage, X86pJitStorageDropFn drop, void *user) {
+  /* Machine code is written into one arena at a bump pointer, so there is no
+     block in it whose bytes can be handed back on their own. Zero is the
+     answer, not a stub: the caller rewinds the whole arena instead. */
   (void)storage;
-  (void)lo;
-  (void)hi;
-  return 0;
+  (void)drop;
+  (void)user;
+  return 0u;
 }
 
 unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {

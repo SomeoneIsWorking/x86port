@@ -72,7 +72,7 @@ struct X86pJitStorage {
   unsigned compaction_refusals; /* batches left as they were, with a reason */
   size_t byte_budget;           /* how many bytes of LIVE module may be held at once */
   size_t used;
-  unsigned next_victim;
+  unsigned next_victim; /* the module eviction looks at next */
 };
 
 const char *x86p_jit_storage_mechanism(void) {
@@ -314,24 +314,57 @@ share_a_module(X86pJitStorage *storage, const X86pMem *mem, X86pJitBoundaryFn bo
   storage->pending_count = 0u;
 }
 
-int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi) {
+/*
+ * The module to empty next, taken round-robin so the run loses its oldest
+ * translations rather than the ones it just made.
+ *
+ * Round-robin rather than "the module holding the fewest blocks": finding the
+ * smallest means reading every module record on a path that runs whenever the
+ * arena is full, and the modules a sweep is about to reach are the ones a
+ * cursor already prefers.
+ *
+ * Returns -1 when no module is live at all, which is the caller's signal that
+ * evicting cannot help and the cache has to be rewound.
+ */
+static int module_to_empty(X86pJitStorage *storage) {
   unsigned scanned;
   for (scanned = 0u; scanned < storage->capacity_blocks; ++scanned) {
-    unsigned slot = storage->next_victim;
-    const X86pWasmStoredBlock *block = &storage->blocks[slot];
+    const unsigned token = storage->next_victim;
+    storage->next_victim = (token + 1u) % storage->capacity_blocks;
+    if (storage->modules[token].blocks > 0u) {
+      return (int)token;
+    }
+  }
+  return -1;
+}
+
+unsigned x86p_jit_storage_evict(X86pJitStorage *storage, X86pJitStorageDropFn drop, void *user) {
+  const int token = module_to_empty(storage);
+  unsigned dropped = 0u;
+  unsigned i;
+  if (token < 0) {
+    return 0u;
+  }
+  /*
+   * Every block in that module goes, in one call. Half-emptying it would free
+   * nothing -- the module is released with its last block -- and the caller
+   * would read the unmoved used figure as "evicting does not work here".
+   */
+  for (i = 0; i < storage->capacity_blocks && storage->modules[token].blocks > 0u; ++i) {
+    X86pWasmStoredBlock *block = &storage->blocks[i];
     uint64_t end = (uint64_t)block->guest + block->guest_len;
-    storage->next_victim = (slot + 1u) % storage->capacity_blocks;
-    if (!block->live) {
+    if (!block->live || block->token != token) {
       continue;
     }
-    if (end > UINT32_MAX) {
-      return 0;
+    /* The caller forgets the block BEFORE its exec address can be handed to
+       another one, which is why this is told rather than returned. */
+    if (drop && end <= UINT32_MAX) {
+      drop(user, block->guest, (uint32_t)end);
     }
-    *lo = block->guest;
-    *hi = (uint32_t)end;
-    return 1;
+    drop_block(storage, i);
+    dropped++;
   }
-  return 0;
+  return dropped;
 }
 
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi) {

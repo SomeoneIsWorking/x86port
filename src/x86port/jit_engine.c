@@ -389,15 +389,19 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
  *
  * Returns zero only when even a full flush cannot free space.
  */
+/* Forget the engine's record of a block the storage is evicting, before its
+   exec address can be handed to another block. The storage drops its own
+   record; this side owns only the cache. */
+static void forget_evicted(void *user, uint32_t lo, uint32_t hi) {
+  X86pJitEngine *e = (X86pJitEngine *)user;
+  e->stats.eviction_blocks_dropped += (uint64_t)jc_block_invalidate_range(e->cache, lo, hi);
+}
+
 static int evict_for_room(X86pJitEngine *e, char *reason, unsigned reason_len) {
   while (!x86p_jit_storage_has_room(e->storage)) {
-    uint32_t lo, hi;
     const size_t before = x86p_jit_storage_used(e->storage);
-    if (x86p_jit_storage_victim(e->storage, &lo, &hi)) {
-      /* WASM modules and table entries can be released individually. Drop
-         the cache entry before its table index becomes reusable. */
+    if (x86p_jit_storage_evict(e->storage, forget_evicted, e) > 0u) {
       e->stats.evictions++;
-      e->stats.eviction_blocks_dropped += (uint64_t)drop_range(e, lo, hi);
       if (x86p_jit_storage_used(e->storage) < before) {
         continue;
       }
