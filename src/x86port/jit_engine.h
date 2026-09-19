@@ -173,6 +173,11 @@ typedef struct X86pJitEngineStats {
      apart from batches that stopped filling. */
   uint64_t compaction_pending;
   uint64_t compaction_stopped;
+  /* The limits the code arena was created with, so `code_bytes_used` has a
+     denominator and an eviction says WHICH limit it hit. Summed across a pool,
+     these are the pool's total. */
+  uint64_t code_bytes_limit;
+  uint64_t block_records;
 } X86pJitEngineStats;
 
 /*

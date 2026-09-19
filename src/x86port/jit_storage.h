@@ -23,6 +23,10 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
 void x86p_jit_storage_destroy(X86pJitStorage *storage);
 int x86p_jit_storage_has_room(const X86pJitStorage *storage);
 size_t x86p_jit_storage_used(const X86pJitStorage *storage);
+/* The two limits this storage was created with, so a report of what it HOLDS
+   has the denominators that say which one an eviction hit. */
+size_t x86p_jit_storage_capacity(const X86pJitStorage *storage);
+unsigned x86p_jit_storage_block_records(const X86pJitStorage *storage);
 /* Told for each block an eviction drops, before its exec address can be
    handed out again, so the caller can forget its own record of that block. */
 typedef void (*X86pJitStorageDropFn)(void *user, uint32_t lo, uint32_t hi);

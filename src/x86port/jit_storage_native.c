@@ -8,6 +8,7 @@
 struct X86pJitStorage {
   JcCodeRegion code;
   size_t used;
+  size_t capacity;
 };
 
 const char *x86p_jit_storage_mechanism(void) {
@@ -35,6 +36,7 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
     free(storage);
     return NULL;
   }
+  storage->capacity = capacity;
   return storage;
 }
 
@@ -51,6 +53,17 @@ int x86p_jit_storage_has_room(const X86pJitStorage *storage) {
 
 size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
+}
+
+size_t x86p_jit_storage_capacity(const X86pJitStorage *storage) {
+  return storage->capacity;
+}
+
+unsigned x86p_jit_storage_block_records(const X86pJitStorage *storage) {
+  /* Blocks here are bounded by the bytes, not by a record of their own, and
+     saying 0 keeps a report from printing a cap this storage does not have. */
+  (void)storage;
+  return 0u;
 }
 
 unsigned x86p_jit_storage_evict(X86pJitStorage *storage, X86pJitStorageDropFn drop, void *user) {

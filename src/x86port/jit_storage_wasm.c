@@ -174,6 +174,14 @@ size_t x86p_jit_storage_used(const X86pJitStorage *storage) {
   return storage->used;
 }
 
+size_t x86p_jit_storage_capacity(const X86pJitStorage *storage) {
+  return storage->byte_budget;
+}
+
+unsigned x86p_jit_storage_block_records(const X86pJitStorage *storage) {
+  return storage->capacity_blocks;
+}
+
 /* ---- block and module bookkeeping ---------------------------------------- */
 
 /* Blocks are indexed independently of modules now that several of them share
