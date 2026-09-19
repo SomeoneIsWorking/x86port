@@ -23,9 +23,23 @@ X86pJitStorage *x86p_jit_storage_create(size_t capacity, size_t max_blocks, char
 void x86p_jit_storage_destroy(X86pJitStorage *storage);
 int x86p_jit_storage_has_room(const X86pJitStorage *storage);
 size_t x86p_jit_storage_used(const X86pJitStorage *storage);
-/* Return one reclaimable block range on hosts that can release translations
-   independently. A zero means the storage requires a whole-cache rewind. */
-int x86p_jit_storage_victim(X86pJitStorage *storage, uint32_t *lo, uint32_t *hi);
+/* Told for each block an eviction drops, before its exec address can be
+   handed out again, so the caller can forget its own record of that block. */
+typedef void (*X86pJitStorageDropFn)(void *user, uint32_t lo, uint32_t hi);
+/*
+ * Free space for another block, in whatever unit this storage actually frees.
+ *
+ * That unit is NOT always one block: a storage that puts several blocks in one
+ * engine module frees nothing until the last of them goes, so dropping one
+ * block at a time and giving up when the used figure did not move rewinds the
+ * whole cache over and over -- measured in a browser run as 94 full flushes
+ * and a working set that collapsed to two blocks. The storage therefore owns
+ * the choice of what to drop, and reports how many blocks that cost.
+ *
+ * Returns 0 when it has nothing left to drop, which means the caller has to
+ * rewind the whole cache instead.
+ */
+unsigned x86p_jit_storage_evict(X86pJitStorage *storage, X86pJitStorageDropFn drop, void *user);
 /*
  * How many batches of singly-published blocks this storage has rebuilt as one
  * module, and how many it left alone.
