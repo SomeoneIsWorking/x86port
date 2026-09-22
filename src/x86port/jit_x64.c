@@ -1423,6 +1423,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   /* The flag kind the last emitted instruction recorded, or -1 when the
      predecessor is whatever ran before this block. */
   int last_kind = -1;
+  /* The operand width, in bytes, of the operation that recorded last_kind, or
+     -1 when unknown. Together they choose an inline condition lowering. */
+  int last_w = -1;
 
   if (!mem || !out || !code || mem->sparse) {
     say(reason, reason_len, mem && mem->sparse ? "sparse memory requires the WASM backend" : "null argument");
@@ -1536,7 +1539,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       } else if (insn.op != kX86pInsnJcc) {
         emit_loop(&ctx, &insn, target, next);
       } else {
-        x86p_x64_emit_jcc(&ctx, insn.cond, target, next);
+        x86p_x64_emit_jcc(&ctx, insn.cond, target, next, last_kind, last_w);
       }
       pc = next;
       count++;
@@ -1551,6 +1554,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnShrd:
       emit_double_shift(&ctx, &insn, pc);
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnSimd:
       emit_simd_bits(&ctx, &insn, pc);
@@ -1568,7 +1572,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_xchg32(&ctx, &insn, pc);
       break;
     case kX86pInsnSetcc:
-      x86p_x64_emit_setcc(&ctx, &insn, pc);
+      x86p_x64_emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
       int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
@@ -1578,6 +1582,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
          whose tuple was elided: the last stored kind is what memory holds. */
       if (k >= 0 && !dead) {
         last_kind = k;
+        last_w = insn.operand[0].size;
       }
       break;
     }
@@ -1600,6 +1605,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_mul32(&ctx, &insn, pc);
       /* The semantic owner materialises CF/OF into explicit flags. */
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnImul:
       if (insn.operands == 1) {
@@ -1609,11 +1615,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       }
       /* The semantic owner materialises CF/OF into explicit flags. */
       last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnString:
       emit_string(&ctx, &insn, pc);
       if (insn.str == (uint8_t)kX86pStringScas || insn.str == (uint8_t)kX86pStringCmps) {
         last_kind = -1;
+        last_w = -1;
       }
       break;
     case kX86pInsnX87:
@@ -1658,6 +1666,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_cpu_transfer(&ctx, insn.op);
       if (insn.op == kX86pInsnSahf) {
         last_kind = (int)kX86pFlagsExplicit;
+        last_w = -1;
       }
       break;
     case kX86pInsnPushfd:
@@ -1669,6 +1678,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
          like ADC/SBB below -- the next carry-in is statically known rather
          than worth a helper call to ask. */
       last_kind = (int)kX86pFlagsExplicit;
+      last_w = -1;
       break;
     case kX86pInsnAlu: {
       X86pHostAlu host;
@@ -1681,6 +1691,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
            carry-in is still the last kind actually written to memory. */
         if (!dead) {
           last_kind = (int)kind;
+          last_w = insn.operand[0].size;
         }
       } else {
         emit_alu_helper(&ctx, &insn, pc);
@@ -1690,12 +1701,14 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
              whatever was there. Genuinely unknown, so the next carry-in asks
              the real function. */
           last_kind = -1;
+          last_w = -1;
         } else {
           /* x86p_alu records Explicit for ADC and SBB, unconditionally -- so
              the next instruction's predecessor IS statically known, and
              treating it as unknown cost a helper call per ADC in every
              block. */
           last_kind = (int)kX86pFlagsExplicit;
+          last_w = -1;
         }
       }
       break;
@@ -1715,6 +1728,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   if (!terminated) {
     emit_epilogue(&e, pc, exit);
   }
+
+  x86p_x64_emit_cond_slow_path(&ctx);
 
   /*
    * The shared fault stub, AFTER the normal return so it is never fallen into.

@@ -104,7 +104,10 @@ const char *x86p_jit_status_name(X86pJitStatus s);
  * at or above it, a block of at least one instruction always comes back.
  */
 #define X86P_JIT_WORST_CASE_INSN_BYTES 224u
-#define X86P_JIT_EPILOGUE_BYTES 64u
+/* The block tail: the normal exit, the fault stubs, and the one out-of-line
+   x86p_cond path a Jcc's inline condition can need (a Jcc ends its block, so
+   there is never more than one; about 30 bytes). */
+#define X86P_JIT_EPILOGUE_BYTES 96u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {
