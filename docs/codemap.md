@@ -94,8 +94,11 @@ The backend `jit_*_alu.c`, `jit_*_simd.c`, `jit_*_branch.c` and
 host operations or calls to narrow CPU semantic functions, never the test
 interpreter dispatcher. `cpu.c` owns status transfers and counted-loop state;
 `simd_packed.c` owns default-environment packed arithmetic shared with the
-oracle. `x87_integer.c`, `x87_register.c`, and `x87_fn_stack.c` own conversion,
-register and stack rules. `x87_softfloat.cpp` owns the binary80 software math
+oracle. `x87_stack.c` owns the register file itself -- reading ST(i), writing it,
+pushing, popping, and the tag every write derives -- with `x87_stack.h`
+holding the one ST(i)-to-physical mapping its callers share.
+`x87_integer.c`, `x87_register.c`, and `x87_fn_stack.c` own conversion,
+instruction-level register operations and the transcendental stack rules. `x87_softfloat.cpp` owns the binary80 software math
 bridge, and `x87_softfloat_atan.cpp` is the attributed approximation extension.
 `cmake/softfloat.cmake` pins and builds that math dependency without Bochs's CPU
 or instruction dispatcher; provenance and limitations live in

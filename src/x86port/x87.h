@@ -40,6 +40,7 @@
 #include "flags.h"
 #include "x87_binary128.h"
 #include "x87_transcendental.h"
+#include <float.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -221,6 +222,20 @@ void x86p_x87_emms(X86pX87 *f);
 
 /* Reset to the state a process starts in: empty stack, CW_INIT, clear status. */
 void x86p_x87_reset(X86pX87 *f);
+
+/*
+ * WHETHER THIS HOST'S `long double` IS THE TEN-BYTE x87 OBJECT.
+ *
+ * One definition, because more than one translation unit decides from it what
+ * a register may be read as: the tag classifier reads the significand and
+ * exponent fields straight out of the object, and the arithmetic executes the
+ * real instruction. x86p_x87_precision_is_exact() below returns exactly this.
+ */
+#if LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
+#define X86P_EXACT_LONG_DOUBLE 1
+#else
+#define X86P_EXACT_LONG_DOUBLE 0
+#endif
 
 /* Whether host long double has the native x87 object layout. This controls
    raw register-byte/MMX alias access, independently of numeric support. */

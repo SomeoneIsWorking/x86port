@@ -1,6 +1,8 @@
 /* x87.c -- see x87.h for why ST(i) is a position and not a register. */
 #include "x87.h"
 
+#include "x87_stack.h"
+
 #include "x87_binary128.h"
 #include "x87_ext80_arith.h"
 #include "x87_ext80_narrow.h"
@@ -13,12 +15,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-
-#if LDBL_MANT_DIG == 64 && LDBL_MAX_EXP == 16384
-#define X86P_EXACT_LONG_DOUBLE 1
-#else
-#define X86P_EXACT_LONG_DOUBLE 0
-#endif
 
 static const char *kOpNames[] = {"add", "sub", "mul", "div"};
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pX87OpCount, "every X86pX87Op needs a name");
@@ -133,11 +129,6 @@ void x86p_x87_reset(X86pX87 *f) {
   f->control = X86P_X87_CW_INIT;
 }
 
-/* ST(i) -> physical register. The whole point of the module in one line. */
-static int phys(const X86pX87 *f, int i) {
-  return (f->top + i) & (X86P_X87_REGS - 1);
-}
-
 /*
  * The edge between the storage type and `long double`. On a native ext80 host
  * these are identities the compiler removes; on a binary128 host they are the
@@ -182,76 +173,6 @@ void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]) {
 }
 #endif
 
-/*
- * THE TAG, FROM THE ARCHITECTURAL FIELDS. One rule, whatever the storage is.
- *
- * An exponent of all ones is an infinity or a NaN; a zero exponent with a zero
- * significand is a zero; everything else -- including a subnormal, an unnormal
- * and a pseudo-denormal -- is what the tag word calls valid. That is what the
- * hardware tags, and asking it of the fields also classifies the unsupported
- * encodings the way the hardware does, which `isnan`/`isinf` do not promise.
- */
-static uint8_t classify_fields(uint64_t significand, uint16_t sign_exponent) {
-  const uint16_t exponent = (uint16_t)(sign_exponent & 0x7FFFu);
-  if (exponent == 0x7FFFu) {
-    return (uint8_t)kX86pX87TagSpecial;
-  }
-  if (exponent == 0u && significand == 0u) {
-    return (uint8_t)kX86pX87TagZero;
-  }
-  return (uint8_t)kX86pX87TagValid;
-}
-
-static uint8_t classify(X86pX87Reg v) {
-#if X86P_X87_BINARY128
-  /* The storage already holds those fields. This runs on every write to a
-     register -- on the binary128 form the arithmetic phrasing below was 9.5%
-     of a profiled Android frame, because each comparison was a compiler-rt
-     call. Here it is three integer tests. */
-  return classify_fields(v.signif, v.sign_exp);
-#elif X86P_EXACT_LONG_DOUBLE
-  /*
-   * The same three tests, on a host whose `long double` IS the ten-byte x87
-   * object: significand in bytes 0-7, sign and exponent in bytes 8-9.
-   *
-   * The arithmetic phrasing below costs more than it looks. `v == 0.0L`,
-   * `isnan` and `isinf` are three x87 compares, and reaching them means the
-   * value -- which the caller usually has in memory already -- is loaded into
-   * the FPU and the answer branched on. Every register write pays it:
-   * x86p_x87_push and x86p_x87_set together were 9.0% of a profiled Dead Zone
-   * gameplay frame.
-   */
-  uint64_t significand;
-  uint16_t sign_exponent;
-  memcpy(&significand, (const unsigned char *)&v, 8);
-  memcpy(&sign_exponent, (const unsigned char *)&v + 8, 2);
-  return classify_fields(significand, sign_exponent);
-#else
-  /* No exact layout to read: ask the arithmetic. A host whose `long double` is
-     a double or a binary128 has no ten-byte object here to take fields from. */
-  if (v == 0.0L) {
-    return (uint8_t)kX86pX87TagZero;
-  }
-  if (isnan(v) || isinf(v)) {
-    return (uint8_t)kX86pX87TagSpecial;
-  }
-  return (uint8_t)kX86pX87TagValid;
-#endif
-}
-
-int x86p_x87_depth(const X86pX87 *f) {
-  int i, n = 0;
-  if (!f) {
-    return 0;
-  }
-  for (i = 0; i < X86P_X87_REGS; i++) {
-    if (f->tag[i] != (uint8_t)kX86pX87TagEmpty) {
-      n++;
-    }
-  }
-  return n;
-}
-
 uint16_t x86p_x87_status(const X86pX87 *f) {
   if (!f) {
     return 0;
@@ -266,66 +187,6 @@ void x86p_x87_clear_exceptions(X86pX87 *f) {
     return;
   }
   f->status &= (uint16_t)~X86P_X87_FNCLEX_MASK;
-}
-
-int x86p_x87_get_raw(const X86pX87 *f, int i, X86pX87Reg *out) {
-  int p;
-  if (!f || !out || i < 0 || i >= X86P_X87_REGS) {
-    return 0;
-  }
-  p = phys(f, i);
-  if (f->tag[p] == (uint8_t)kX86pX87TagEmpty) {
-    return 0; /* reading an empty register is a fact, not a zero */
-  }
-  *out = f->reg[p];
-  return 1;
-}
-
-int x86p_x87_set_raw(X86pX87 *f, int i, X86pX87Reg v) {
-  int p;
-  if (!f || i < 0 || i >= X86P_X87_REGS) {
-    return 0;
-  }
-  p = phys(f, i);
-  f->reg[p] = v;
-  f->tag[p] = classify(v);
-  return 1;
-}
-
-int x86p_x87_get(const X86pX87 *f, int i, long double *out) {
-  X86pX87Reg raw;
-  if (!out || !x86p_x87_get_raw(f, i, &raw)) {
-    return 0;
-  }
-  *out = x86p_x87_reg_to_long_double(raw);
-  return 1;
-}
-
-int x86p_x87_set(X86pX87 *f, int i, long double v) {
-  return x86p_x87_set_raw(f, i, x86p_x87_reg_from_long_double(v));
-}
-
-int x86p_x87_push_raw(X86pX87 *f, X86pX87Reg v) {
-  int p;
-  if (!f) {
-    return 0;
-  }
-  p = (f->top - 1) & (X86P_X87_REGS - 1);
-  if (f->tag[p] != (uint8_t)kX86pX87TagEmpty) {
-    /* STACK OVERFLOW. Reported, because the guest is entitled to find out and
-       because silently wrapping TOP produces an engine that drifts from
-       hardware with no symptom for thousands of instructions. */
-    f->status |= X86P_X87_IE | X86P_X87_SF | X86P_X87_C1;
-    return 0;
-  }
-  f->top = (uint8_t)p;
-  f->reg[p] = v;
-  f->tag[p] = classify(v);
-  return 1;
-}
-
-int x86p_x87_push(X86pX87 *f, long double v) {
-  return x86p_x87_push_raw(f, x86p_x87_reg_from_long_double(v));
 }
 
 int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
@@ -360,36 +221,6 @@ int x86p_x87_push_constant(X86pX87 *f, X86pX87Insn instruction) {
   value = x86p_x87_software_constant(f ? f->control : X86P_X87_CW_INIT, value);
 #endif
   return x86p_x87_push(f, value);
-}
-
-int x86p_x87_pop_raw(X86pX87 *f, X86pX87Reg *out) {
-  int p;
-  if (!f) {
-    return 0;
-  }
-  p = f->top & (X86P_X87_REGS - 1);
-  if (f->tag[p] == (uint8_t)kX86pX87TagEmpty) {
-    f->status |= X86P_X87_IE | X86P_X87_SF;
-    f->status &= (uint16_t)~X86P_X87_C1; /* C1 clear distinguishes underflow */
-    return 0;
-  }
-  if (out) {
-    *out = f->reg[p];
-  }
-  f->tag[p] = (uint8_t)kX86pX87TagEmpty;
-  f->top = (uint8_t)((p + 1) & (X86P_X87_REGS - 1));
-  return 1;
-}
-
-int x86p_x87_pop(X86pX87 *f, long double *out) {
-  X86pX87Reg raw;
-  if (!x86p_x87_pop_raw(f, &raw)) {
-    return 0;
-  }
-  if (out) {
-    *out = x86p_x87_reg_to_long_double(raw);
-  }
-  return 1;
 }
 
 /*
@@ -645,7 +476,7 @@ int x86p_x87_ext80_of_st(const X86pX87 *f, int i, X86pExt80 *out) {
   if (!f || !out || i < 0 || i >= X86P_X87_REGS) {
     return 0;
   }
-  p = phys(f, i);
+  p = x86p_x87_phys(f, i);
   if (f->tag[p] == (uint8_t)kX86pX87TagEmpty) {
     return 0;
   }
@@ -692,7 +523,7 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
    * from the long path on bytes no value depends on. This is the same store
    * reg_of_ext80 makes, and jit_wasm_x87_load.c's emitted one.
    */
-  p = phys(f, dst);
+  p = x86p_x87_phys(f, dst);
   f->reg[p] = reg_of_ext80(r);
   /* Neither rule can produce an infinity or a NaN, and a zero result is the
      only non-valid tag they can reach. */
@@ -1076,6 +907,7 @@ long double x86p_x87_from_f80(const uint8_t bytes[10]) {
 #if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
   return x86p_x87_software_decode(bytes);
 #elif X86P_EXACT_LONG_DOUBLE
+  /* Read from the caller's object, which is what `value` points at. */
   {
     long double v = 0.0L;
     memcpy(&v, bytes, 10);
@@ -1111,6 +943,7 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]) {
 #if LDBL_MANT_DIG == 113 && LDBL_MAX_EXP == 16384
   x86p_x87_software_encode(v, bytes);
 #elif X86P_EXACT_LONG_DOUBLE
+  /* Read from the caller's object, which is what `value` points at. */
   {
     memcpy(bytes, &v, 10);
     return;
