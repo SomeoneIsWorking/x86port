@@ -197,6 +197,14 @@ typedef struct X86pJitEngineStats {
      how many were retired again after backing off below them. */
   uint64_t ceilings_learned;
   uint64_t ceilings_retired;
+  /* The block cache's own counters (jit-common JcBlockStats): lookups, the
+     hits its direct-mapped front cache answered, and the table slots probed
+     for the rest. A front cache too small for the run's hot set shows here as
+     a front-hit share far below the hit rate, and nowhere else. */
+  uint64_t cache_lookups;
+  uint64_t cache_hits;
+  uint64_t cache_front_hits;
+  uint64_t cache_table_probes;
 } X86pJitEngineStats;
 
 /*
