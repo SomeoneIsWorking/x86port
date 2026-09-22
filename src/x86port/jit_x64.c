@@ -66,8 +66,6 @@ static int32_t flag_off(size_t field) {
 #define FLAG_A flag_off(offsetof(X86pFlags, a))
 #define FLAG_B flag_off(offsetof(X86pFlags, b))
 #define FLAG_R flag_off(offsetof(X86pFlags, r))
-#define FLAG_KIND flag_off(offsetof(X86pFlags, kind))
-#define FLAG_W flag_off(offsetof(X86pFlags, w))
 #define FLAG_CARRY_IN flag_off(offsetof(X86pFlags, carry_in))
 
 /* ---- can this instruction be emitted? ----------------------------------- */
@@ -873,8 +871,7 @@ static void emit_alu_inline(BlockCtx *c,
     x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
     x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
     x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
   }
 
   if (writes_dest) {
@@ -1216,8 +1213,7 @@ static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kin
       x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
     }
     x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-    x86p_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
   }
 
   if (is_mem) {

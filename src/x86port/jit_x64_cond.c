@@ -38,13 +38,9 @@
 
 #include <stddef.h>
 
-_Static_assert(offsetof(X86pFlags, w) == offsetof(X86pFlags, kind) + 1u,
-               "the inline guard reads kind and width as one 16-bit value");
-
 #define FLAG_A (flags_off() + (int32_t)offsetof(X86pFlags, a))
 #define FLAG_B (flags_off() + (int32_t)offsetof(X86pFlags, b))
 #define FLAG_R (flags_off() + (int32_t)offsetof(X86pFlags, r))
-#define FLAG_KIND (flags_off() + (int32_t)offsetof(X86pFlags, kind))
 
 /* How a condition is read after one recorded kind. */
 typedef enum CondLowering {
@@ -170,8 +166,8 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
     return;
   }
   c->cond_inline++;
-  x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, FLAG_KIND);
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, (uint32_t)last_kind | ((uint32_t)last_w << 8));
+  x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, flag_kind_off());
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, flag_kind_word((unsigned)last_kind, (unsigned)last_w));
   slow = x86p_emit_jcc_rel32(e, (unsigned)kX86pCondNZ);
   emit_inline_value(e, cond, lowering, last_w);
   if (out_of_line && !c->has_cond_slow) {

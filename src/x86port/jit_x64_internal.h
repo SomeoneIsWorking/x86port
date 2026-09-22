@@ -112,6 +112,23 @@ static inline int32_t flags_off(void) {
 }
 
 /*
+ * The recorded flag kind and operand width, as ONE 16-bit field: the inline
+ * condition guard reads them with one load, so they are written with one
+ * store. Two byte stores cannot forward to that wider load, and on the Dead
+ * Zone route waiting for them to retire was 7% of translated-code samples.
+ */
+_Static_assert(offsetof(X86pFlags, w) == offsetof(X86pFlags, kind) + 1u,
+               "kind and width are stored and read as one 16-bit value");
+
+static inline int32_t flag_kind_off(void) {
+  return flags_off() + (int32_t)offsetof(X86pFlags, kind);
+}
+
+static inline uint16_t flag_kind_word(unsigned kind, unsigned w) {
+  return (uint16_t)(kind | (w << 8));
+}
+
+/*
  * Where a guest register operand of width `w` lives, as a byte offset.
  *
  * The host is little-endian and the guest slot is a dword, so the low byte of a
