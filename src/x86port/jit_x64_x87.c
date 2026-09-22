@@ -53,6 +53,40 @@ static int jit_x87_arith(X86pX87 *x87, uint32_t operation_destination_reverse, c
   return x86p_x87_arith(x87, operation, destination, *source, reverse);
 }
 
+/*
+ * FADD/FSUB/FMUL/FDIV with a STACK-REGISTER source, as one call.
+ *
+ * The three steps this replaces -- read ST(i), do the arithmetic, pop -- were
+ * three emitted `mov rax, imm64; call rax` pairs around a 16-byte stack slot
+ * the value was written to and read straight back out of. Register-source
+ * arithmetic is most of the x87 this engine runs (FMULP and FADDP dominate the
+ * Dead Zone route), so that call-per-step shape was paying host call overhead
+ * and an 80-bit memory round trip for work that is one instruction.
+ *
+ * It is composition, not a second implementation: the same x86p_x87_get,
+ * x86p_x87_arith and x86p_x87_pop run in the same order, so the stack-fault
+ * rule below and every status bit stay those owners' business. jit.verify
+ * compares the whole x87 state at each block end and would name the first
+ * divergence.
+ *
+ * AN EMPTY SOURCE REGISTER IS A WHOLE NO-OP -- no arithmetic AND no pop, which
+ * is what the emitted skip branch did by jumping past both.
+ */
+static int jit_x87_arith_reg(X86pX87 *x87, uint32_t operation_destination_reverse, uint32_t source_and_pops) {
+  const int source = (int)(source_and_pops & 0xFFu);
+  unsigned pops = (source_and_pops >> 8) & 0xFFu;
+  long double value;
+  int ok;
+  if (!x86p_x87_get(x87, source, &value)) {
+    return 0;
+  }
+  ok = jit_x87_arith(x87, operation_destination_reverse, &value);
+  while (pops--) {
+    x86p_x87_pop(x87, NULL);
+  }
+  return ok;
+}
+
 static int jit_x87_compare(X86pX87 *x87, const long double *value) {
   return x86p_x87_compare(x87, *value);
 }
@@ -173,55 +207,50 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 }
 
 /*
- * FADD / FSUB / FMUL / FDIV (+R, +P). The source operand is widened to 80 bits
- * into a 16-byte stack slot -- from memory with a host `fld`, or from a stack
- * register with x86p_x87_get -- and x86p_x87_arith runs the real op under the
- * guest control word. A pointer-valued adapter keeps the host's by-value long
- * double convention out of emitted code on both ABIs.
+ * FADD / FSUB / FMUL / FDIV (+R, +P), in two shapes that want different code.
  *
- * A named source register that is empty is a stack fault that arith_operands
- * turns into a whole no-op -- no arithmetic, no pop -- so that path jumps
- * straight to the stack cleanup.
+ * A MEMORY source is widened to 80 bits by a host `fld` into a 16-byte stack
+ * slot, and a pointer-valued adapter hands it to x86p_x87_arith -- which keeps
+ * the host's by-value long double convention, different on each ABI, out of
+ * emitted code.
+ *
+ * A REGISTER source has no value to carry at all, only an index, so the whole
+ * instruction is one call to jit_x87_arith_reg. That is where the empty-source
+ * rule now lives too: an empty ST(i) is a whole no-op, no arithmetic and no
+ * pop, which the emitted code used to express as a branch past both.
  */
 void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
   const int two_op = (insn->operands == 2);
   const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
-  X86pEmitSite skip;
-  uint32_t operation_destination_reverse;
-  int have_skip = 0;
+  const uint32_t operation_destination_reverse =
+      (uint32_t)insn->x87_op | ((uint32_t)dst << 8) | ((uint32_t)insn->x87_reverse << 16);
   int i;
 
-  if (o0->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, o0, insn_eip, o0->size);
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-    x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
-  } else {
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  if (o0->kind != kX86pOperandMem) {
+    /* Read ST(i), operate and pop in ONE call -- see jit_x87_arith_reg. The
+       16-byte scratch slot the memory form opens is not needed: the source is
+       a register INDEX, so no 80-bit value crosses the emitted boundary. */
+    const uint32_t source = (uint32_t)(two_op ? insn->operand[1].reg : o0->reg);
     x87_lea_self(e);
-    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
-    x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
-    x87_call(e, (const void *)&x86p_x87_get);
-    x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-    skip = x86p_emit_jcc_rel32(e, 0x4u); /* jz: empty source register */
-    have_skip = 1;
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
+    x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG2, source | ((uint32_t)insn->x87_pops << 8));
+    x87_call(e, (const void *)&jit_x87_arith_reg);
+    return;
   }
 
+  emit_mem_prepare_w(c, o0, insn_eip, o0->size);
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
+  x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
   x87_lea_self(e);
-  operation_destination_reverse = (uint32_t)insn->x87_op | ((uint32_t)dst << 8) | ((uint32_t)insn->x87_reverse << 16);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
   x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
   x87_call(e, (const void *)&jit_x87_arith);
-
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
     x87_call(e, (const void *)&x86p_x87_pop);
-  }
-
-  if (have_skip) {
-    x86p_emit_bind(e, skip);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
 }
