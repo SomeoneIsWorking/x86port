@@ -241,7 +241,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
     out->cache_hits = cache.hits;
     out->cache_front_hits = cache.front_hits;
     out->cache_table_probes = cache.probe_length_total;
-    out->cache_guarded = cache.guarded;
+    out->cache_refused = cache.refused;
   }
 }
 
