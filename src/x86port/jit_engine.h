@@ -201,10 +201,20 @@ typedef struct X86pJitEngineStats {
      hits its direct-mapped front cache answered, and the table slots probed
      for the rest. A front cache too small for the run's hot set shows here as
      a front-hit share far below the hit rate, and nowhere else. */
+  /* Calls to the intercept predicate, beside blocks_entered: under the
+     intercept contract (x86p_jit_engine_set_run_stop) the predicate is asked
+     only on misses, at guarded blocks and at the run's stop address, and this
+     is how a reader tells a contract that works from one never installed.
+     blocks_guarded is how many translations were marked to be asked about. */
+  uint64_t intercept_calls;
+  uint64_t blocks_guarded;
   uint64_t cache_lookups;
   uint64_t cache_hits;
   uint64_t cache_front_hits;
   uint64_t cache_table_probes;
+  /* Lookups that found a GUARDED block and refused it to the dispatcher's fast
+     path; each is followed by the intercept call and a second lookup. */
+  uint64_t cache_guarded;
 } X86pJitEngineStats;
 
 /*
@@ -306,6 +316,31 @@ typedef enum X86pJitDispatchResult {
 typedef X86pJitDispatchResult (*X86pJitDispatchFn)(X86pCpu *cpu, void *user, void *run_user);
 
 void x86p_jit_engine_set_dispatch(X86pJitEngine *e, X86pJitDispatchFn fn, void *user);
+
+/*
+ * THE INTERCEPT CONTRACT. Without it the intercept predicate is asked before
+ * every block, which on a title's gameplay is an indirect call out of the
+ * framework per block entered -- a few percent of all cycles spent hearing
+ * "no". Installing a stop function declares that the predicate can return
+ * non-zero ONLY:
+ *
+ *   - at an address the boundary predicate reports, or
+ *   - at the address `fn(run_user)` returns for the current run -- the one
+ *     address whose interception depends on run-time state, such as the
+ *     return address that ends a call the consumer made into guest code.
+ *
+ * The engine then asks the predicate only on a block-cache miss, before a
+ * block translated at a boundary address (such blocks are cached GUARDED), and
+ * at the stop address. `fn` is called once per x86p_jit_engine_run.
+ *
+ * Refused (returns 0, with `reason`) when an intercept predicate is installed
+ * without a boundary predicate, and when blocks are already cached: those
+ * were never checked against the boundary predicate, so nothing marks the
+ * ones the contract must still ask about. Null clears it.
+ */
+typedef uint32_t (*X86pJitRunStopFn)(void *run_user);
+
+int x86p_jit_engine_set_run_stop(X86pJitEngine *e, X86pJitRunStopFn fn, char *reason, unsigned reason_len);
 
 /*
  * A predicate consulted DURING translation: it must return non-zero for any
