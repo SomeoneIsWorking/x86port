@@ -291,6 +291,10 @@ X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e);
 /* Point a site at the current end of the buffer. */
 void x86p_emit_bind(X86pEmit *e, X86pEmitSite site);
 
+/* Point a site at an offset already emitted, from x86p_emit_here(): the jump
+   back from an out-of-line path to the instruction after the one it serves. */
+void x86p_emit_bind_to(X86pEmit *e, X86pEmitSite site, size_t target);
+
 /* Were all sites bound? Ask before publishing; an unbound jump is a branch to
    an arbitrary offset. */
 int x86p_emit_sites_bound(const X86pEmit *e);

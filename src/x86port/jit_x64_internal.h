@@ -79,7 +79,18 @@ typedef struct BlockCtx {
   unsigned nfaults;
   X86pEmitSite divide_faults[MAX_INSNS];
   unsigned ndivide_faults;
+  /* A Jcc's inline condition whose recorded-kind guard failed is completed by
+     x86p_cond out of line, after the block's exits, and jumps back. A Jcc ends
+     its block, so there is at most one, and X86P_JIT_EPILOGUE_BYTES holds it. */
+  int has_cond_slow;
+  X86pEmitSite cond_slow_guard;
+  size_t cond_slow_resume;
+  uint8_t cond_slow_cond;
 } BlockCtx;
+
+/* Emit the out-of-line x86p_cond path recorded in `c`, if any; after the
+   exits. */
+void x86p_x64_emit_cond_slow_path(BlockCtx *c);
 
 /*
  * Leave HOSTPTR_REG pointing at the guest operand of width `w`, or record a

@@ -498,6 +498,34 @@ static void test_push_pop_every_register(void) {
   }
 }
 
+/* A jump bound to an offset already emitted lands there: the way back from
+   an out-of-line path, and one onto that jump. Checked by decoding the
+   displacement, not by restating the arithmetic. */
+static void test_bind_to_earlier_offset(void) {
+  uint8_t buf[64];
+  X86pEmit e;
+  X86pEmitSite back, again;
+  size_t target, jmp_at;
+  Decoded d;
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_ret(&e);
+  target = x86p_emit_here(&e);
+  x86p_emit_ret(&e);
+  x86p_emit_ret(&e);
+  jmp_at = x86p_emit_here(&e);
+  back = x86p_emit_jmp_rel32(&e);
+  x86p_emit_bind_to(&e, back, target);
+  again = x86p_emit_jmp_rel32(&e);
+  x86p_emit_bind_to(&e, again, jmp_at);
+  CHECK(x86p_emit_ok(&e) && x86p_emit_sites_bound(&e));
+  d = decode64(buf + jmp_at, back.end - jmp_at);
+  CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_JMP &&
+        (long long)back.end + d.ops[0].imm.value.s == (long long)target);
+  d = decode64(buf + back.end, again.end - back.end);
+  CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_JMP &&
+        (long long)again.end + d.ops[0].imm.value.s == (long long)jmp_at);
+}
+
 static void test_ret(void) {
   uint8_t buf[16];
   X86pEmit e;
@@ -855,6 +883,7 @@ int main(void) {
   RUN(test_win64_executable_pointer_argument);
   RUN(test_or_m16_imm16_sets_status_bits);
   RUN(test_x87_forms);
+  RUN(test_bind_to_earlier_offset);
   RUN(test_ret);
   RUN(test_overflow_is_sticky_and_never_writes_past_the_end);
 

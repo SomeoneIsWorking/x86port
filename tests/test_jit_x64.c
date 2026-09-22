@@ -1517,6 +1517,14 @@ int main(void) {
     printf("NO Jcc or SETcc was emitted: this run says nothing about condition lowering\n");
     return 1;
   }
+  if (g_cond_inline == 0u || g_cond_helper_calls == 0u) {
+    /* Both lowerings must have run against the interpreter: a suite whose
+       conditions all took one path claims nothing about the other. */
+    printf("REFUSED: %lu inline and %lu helper condition(s); both paths must be exercised\n",
+           g_cond_inline,
+           g_cond_helper_calls);
+    return 1;
+  }
   if (g_branch_blocks == 0u) {
     /* The generator emits branches; zero here means it stopped, or that every
        branch was refused before emission. Either way the branch path was never

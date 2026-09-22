@@ -386,6 +386,13 @@ X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e) {
 }
 
 void x86p_emit_bind(X86pEmit *e, X86pEmitSite site) {
+  if (!e) {
+    return;
+  }
+  x86p_emit_bind_to(e, site, e->len);
+}
+
+void x86p_emit_bind_to(X86pEmit *e, X86pEmitSite site, size_t target) {
   long long rel;
   if (!e) {
     return;
@@ -396,7 +403,7 @@ void x86p_emit_bind(X86pEmit *e, X86pEmitSite site) {
        already marked overflowed and the block will be discarded. */
     return;
   }
-  rel = (long long)e->len - (long long)site.end;
+  rel = (long long)target - (long long)site.end;
   e->buf[site.at + 0u] = (uint8_t)((unsigned long long)rel & 0xFFu);
   e->buf[site.at + 1u] = (uint8_t)(((unsigned long long)rel >> 8) & 0xFFu);
   e->buf[site.at + 2u] = (uint8_t)(((unsigned long long)rel >> 16) & 0xFFu);
