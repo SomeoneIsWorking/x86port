@@ -709,6 +709,122 @@ static void test_boundary_ends_a_block_before_a_flagged_address(void) {
   x86p_jit_engine_destroy(eng);
 }
 
+/*
+ * THE INTERCEPT CONTRACT. Two blocks loop: [+0, +5) ends at a boundary address,
+ * [+5, +12) jumps back to +0. The predicate declines everything unless armed.
+ *
+ * Without the contract it is asked before every block entered -- the other
+ * answer, run first, so the count below cannot pass by the predicate never
+ * being asked at all. With it, it is asked on the two misses and before every
+ * entry to the guarded block at +5, and never before the block at +0. And the
+ * two places the contract still asks are proven to still be able to say yes:
+ * the guarded block after it has been cached, and the run's stop address,
+ * which no boundary reports.
+ */
+typedef struct ContractIntercept {
+  uint32_t boundary;
+  uint32_t take; /* the address the predicate says yes to, or 0 */
+} ContractIntercept;
+
+static int contract_boundary(uint32_t eip, void *user) {
+  return eip == ((const ContractIntercept *)user)->boundary;
+}
+
+static int contract_intercept(const X86pCpu *cpu, void *user, void *run_user) {
+  (void)run_user;
+  return cpu->eip == ((const ContractIntercept *)user)->take;
+}
+
+static uint32_t contract_stop(void *run_user) {
+  return *(const uint32_t *)run_user;
+}
+
+static X86pJitEngine *contract_engine(X86pMem *mem, ContractIntercept *policy, int install, char *reason) {
+  X86pJitEngine *eng = x86p_jit_engine_create(mem, 1u << 16, 256u, reason, 256u);
+  if (!eng) {
+    return NULL;
+  }
+  x86p_jit_engine_set_intercept(eng, contract_intercept, policy);
+  x86p_jit_engine_set_boundary(eng, contract_boundary, policy);
+  if (install && !x86p_jit_engine_set_run_stop(eng, contract_stop, reason, 256u)) {
+    x86p_jit_engine_destroy(eng);
+    return NULL;
+  }
+  return eng;
+}
+
+static void test_intercept_contract_asks_only_where_it_can_fire(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  ContractIntercept policy = {GUEST_BASE + 5u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  uint32_t stop_at_top = GUEST_BASE;
+  char reason[256];
+
+  memset(g_guest, 0x40, sizeof g_guest); /* INC EAX */
+  g_guest[10] = 0xEB;                    /* +10: JMP +0 */
+  g_guest[11] = (uint8_t)(0u - 12u);
+
+  /* The other answer: no contract, so every block entered asks. */
+  reason[0] = '\0';
+  eng = contract_engine(&mem, &policy, 0, reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    printf("    (%s)\n", reason);
+    return;
+  }
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(st.blocks_entered == 200u);
+  CHECK(st.intercept_calls == 200u);
+  CHECK(st.blocks_guarded == 0u);
+  x86p_jit_engine_destroy(eng);
+
+  eng = contract_engine(&mem, &policy, 1, reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    printf("    (%s)\n", reason);
+    return;
+  }
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 200u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(st.blocks_entered == 200u);
+  CHECK(st.blocks_guarded == 1u);
+  /* One miss at +0, and all 100 entries to +5: its miss, then 99 guarded. */
+  CHECK(st.intercept_calls == 101u);
+  CHECK(st.cache_guarded == 99u);
+
+  /* The guarded block, long cached, is still asked about and can be taken. */
+  policy.take = GUEST_BASE + 5u;
+  cpu.eip = GUEST_BASE;
+  CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 200u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(cpu.eip == GUEST_BASE + 5u);
+
+  /* The stop address is asked about although no boundary reports it and its
+     block is cached unguarded. */
+  policy.take = GUEST_BASE;
+  cpu.eip = GUEST_BASE + 5u;
+  CHECK(x86p_jit_engine_run(eng, &cpu, &stop_at_top, 200u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(cpu.eip == GUEST_BASE);
+
+  /* Refusals: after a translation, and with an intercept but no boundary. */
+  CHECK(!x86p_jit_engine_set_run_stop(eng, contract_stop, reason, sizeof reason));
+  CHECK(strstr(reason, "before the first translation") != NULL);
+  x86p_jit_engine_destroy(eng);
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (eng) {
+    x86p_jit_engine_set_intercept(eng, contract_intercept, &policy);
+    CHECK(!x86p_jit_engine_set_run_stop(eng, contract_stop, reason, sizeof reason));
+    CHECK(strstr(reason, "boundary predicate") != NULL);
+    x86p_jit_engine_destroy(eng);
+  }
+}
+
 /* The product must refuse an instruction with no emitter without changing the
  * machine or entering the separately linked oracle. */
 static void test_unsupported_instruction_is_a_product_refusal(void) {
@@ -1238,6 +1354,7 @@ int main(void) {
   RUN(test_the_same_run_through_dual_mapping);
   RUN(test_intercept_stops_before_block);
   RUN(test_boundary_ends_a_block_before_a_flagged_address);
+  RUN(test_intercept_contract_asks_only_where_it_can_fire);
   RUN(test_unsupported_instruction_is_a_product_refusal);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);

@@ -20,6 +20,8 @@ struct X86pJitEngine {
   void *dispatch_user;
   X86pJitBoundaryFn boundary;
   void *boundary_user;
+  /* The intercept contract, when installed: see x86p_jit_engine_set_run_stop. */
+  X86pJitRunStopFn run_stop;
   int cache_disabled;        /* diagnostic: retranslate every block, never reuse one */
   X86pJitProfile *profile;   /* diagnostic: block-entry histogram, or NULL */
   X86pJitChainCensus *chain; /* diagnostic: where dispatches actually went, or NULL */
@@ -239,6 +241,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
     out->cache_hits = cache.hits;
     out->cache_front_hits = cache.front_hits;
     out->cache_table_probes = cache.probe_length_total;
+    out->cache_guarded = cache.guarded;
   }
 }
 
@@ -278,6 +281,30 @@ void x86p_jit_engine_set_dispatch(X86pJitEngine *e, X86pJitDispatchFn fn, void *
     e->dispatch = fn;
     e->dispatch_user = user;
   }
+}
+
+int x86p_jit_engine_set_run_stop(X86pJitEngine *e, X86pJitRunStopFn fn, char *reason, unsigned reason_len) {
+  if (!e) {
+    say(reason, reason_len, "null engine");
+    return 0;
+  }
+  if (fn && e->intercept && !e->boundary) {
+    say(reason,
+        reason_len,
+        "the intercept contract needs a boundary predicate: without one, no block could be told apart from an "
+        "interception point");
+    return 0;
+  }
+  if (fn && jc_block_count(e->cache) != 0u) {
+    say(reason,
+        reason_len,
+        "the intercept contract must be installed before the first translation: %zu block(s) were cached "
+        "without being checked against the boundary predicate",
+        jc_block_count(e->cache));
+    return 0;
+  }
+  e->run_stop = fn;
+  return 1;
 }
 
 void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *user) {
@@ -470,6 +497,14 @@ static void *translate_at(
     *st = kX86pJitOk;
     return NULL;
   }
+  /* Under the intercept contract, a block at an address the consumer may take
+     over is entered only after asking it. The block exists at all because the
+     consumer declined once (a native body entered on purpose), and it may not
+     decline the next time. */
+  if (e->run_stop && e->boundary && e->boundary(eip, e->boundary_user)) {
+    (void)jc_block_guard(e->cache, eip);
+    e->stats.blocks_guarded++;
+  }
 
   e->stats.blocks_translated++;
   e->stats.guest_insns_translated += blk.insns;
@@ -508,17 +543,31 @@ X86pJitRunStatus x86p_jit_engine_run(
     return kX86pRunTranslateFailed;
   }
 
+  /* Under the intercept contract the predicate can fire only at a guarded
+     block, on a miss, or at this run's stop address; everything else skips it. */
+  const int contract = e->run_stop != NULL && !e->cache_disabled;
+  const uint32_t stop = contract ? e->run_stop(run_user) : 0u;
+
   while (steps < max_steps) {
-    if (e->intercept && e->intercept(cpu, e->intercept_user, run_user)) {
-      if (e->dispatch && e->dispatch(cpu, e->dispatch_user, run_user) == kX86pDispatchContinue) {
-        /* Handled in place; the run stays on this stack. Counts as a step so a
-           handler that does not advance eip still ends the slice. */
-        steps++;
-        continue;
-      }
-      return kX86pRunIntercept;
+    void *host = NULL;
+    if (contract && cpu->eip != stop) {
+      host = jc_block_lookup_refusing(e->cache, cpu->eip, JC_BLOCK_GUARDED);
     }
-    void *host = e->cache_disabled ? NULL : jc_block_lookup(e->cache, cpu->eip);
+    if (!host) {
+      if (e->intercept) {
+        e->stats.intercept_calls++;
+        if (e->intercept(cpu, e->intercept_user, run_user)) {
+          if (e->dispatch && e->dispatch(cpu, e->dispatch_user, run_user) == kX86pDispatchContinue) {
+            /* Handled in place; the run stays on this stack. Counts as a step
+               so a handler that does not advance eip still ends the slice. */
+            steps++;
+            continue;
+          }
+          return kX86pRunIntercept;
+        }
+      }
+      host = e->cache_disabled ? NULL : jc_block_lookup(e->cache, cpu->eip);
+    }
     X86pJitExit exit;
     uint32_t before_eip = cpu->eip;
 
