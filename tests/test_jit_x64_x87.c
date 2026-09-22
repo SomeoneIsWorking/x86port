@@ -189,6 +189,7 @@ static void run_case(const Case *k, void *code) {
 #define FST_ST(i) 0xDD, (0xD0 + (i))
 #define FSTP_ST(i) 0xDD, (0xD8 + (i))
 #define FADD_ST0_ST(i) 0xD8, (0xC0 + (i))
+#define FMUL_ST0_ST(i) 0xD8, (0xC8 + (i))
 #define FSUB_ST0_ST(i) 0xD8, (0xE0 + (i))
 #define FSUBR_ST_ST0(i) 0xDC, (0xE8 + (i))
 #define FDIV_ST0_ST(i) 0xD8, (0xF0 + (i))
@@ -252,6 +253,21 @@ static const Case kCases[] = {
      CODE(FLD_M32(0), FLD_M32(4), FLD_M32(8), FLD_M32(12), FLD_M32(16), FLD_M32(20), FADD_ST0_ST(1), FMULP_ST_ST0(2)),
      8,
      {F32_INF, F32_QNAN, F32_SNAN, F32_DENORMAL, F32_NEG_ZERO, F32_ZERO},
+     0},
+    /* 1e-300 squared four times is 1e-4800, and times 1e-140 is below the
+       ten-byte format's smallest normal: a denormal, whose zero exponent and
+       nonzero significand the tag word calls valid. */
+    {"a result below the normal range is tagged valid",
+     CODE(FLD_M64(0),
+          FMUL_ST0_ST(0),
+          FMUL_ST0_ST(0),
+          FMUL_ST0_ST(0),
+          FMUL_ST0_ST(0),
+          FMUL_M64(8),
+          FLD_M32(16),
+          FMUL_ST0_ST(1)),
+     8,
+     {0xC2F8F359u, 0x01A56E1Fu, 0x127BD87Eu, 0x22DE7C5Fu, F32_ONE},
      0},
     {"overflow to infinity",
      CODE(FLD_M32(0), FMUL_M64(8), FMUL_M64(8), FMUL_M64(8), FSTP_M32(4)),
