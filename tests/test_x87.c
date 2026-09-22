@@ -343,6 +343,70 @@ static void test_empty_register_is_not_zero(void) {
   CHECK((f.status & X86P_X87_SF) != 0);
 }
 
+/*
+ * THE TAG A WRITTEN REGISTER GETS, for one value of every class.
+ *
+ * Nothing else in this suite looked at the tag word for anything but empty,
+ * measured: changing the zero rule to fire on a significand of one left all
+ * 51 tests passing. So the classification was free to drift, and it is read
+ * on every push and every set.
+ *
+ * The four encodings after the ordinary ones are the reason this is asked of
+ * the architectural fields rather than of `isnan`/`isinf`: a pseudo-denormal,
+ * an unnormal, a pseudo-infinity and a pseudo-NaN are shapes no arithmetic
+ * predicate is required to have an opinion about, and the hardware tags them
+ * by exponent and significand exactly like everything else. They are built
+ * here as bytes, because no C literal produces one.
+ */
+static void test_every_encoding_class_gets_its_tag(void) {
+  static const struct {
+    const char *what;
+    uint8_t bytes[10];
+    X86pX87Tag tag;
+  } kCases[] = {
+      {"+0", {0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00}, kX86pX87TagZero},
+      {"-0", {0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x80}, kX86pX87TagZero},
+      {"+1.0", {0, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0x3F}, kX86pX87TagValid},
+      {"-1.0", {0, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0xBF}, kX86pX87TagValid},
+      /* Exponent 0, significand non-zero, leading bit clear: a subnormal. */
+      {"smallest subnormal", {1, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00}, kX86pX87TagValid},
+      {"+inf", {0, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0x7F}, kX86pX87TagSpecial},
+      {"-inf", {0, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0xFF}, kX86pX87TagSpecial},
+      {"quiet NaN", {0, 0, 0, 0, 0, 0, 0, 0xC0, 0xFF, 0x7F}, kX86pX87TagSpecial},
+      {"signalling NaN", {1, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0x7F}, kX86pX87TagSpecial},
+      /* Exponent 0 with the leading significand bit SET: pseudo-denormal. */
+      {"pseudo-denormal", {0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x00}, kX86pX87TagValid},
+      /* A normal exponent with the leading bit CLEAR: unnormal. */
+      {"unnormal", {0, 0, 0, 0, 0, 0, 0, 0x40, 0xFF, 0x3F}, kX86pX87TagValid},
+      /* Exponent all ones with the leading bit clear: pseudo-infinity and
+         pseudo-NaN, which the 387 stopped producing and still tags special. */
+      {"pseudo-infinity", {0, 0, 0, 0, 0, 0, 0, 0x00, 0xFF, 0x7F}, kX86pX87TagSpecial},
+      {"pseudo-NaN", {1, 0, 0, 0, 0, 0, 0, 0x00, 0xFF, 0x7F}, kX86pX87TagSpecial},
+  };
+  size_t i;
+
+  if (!x86p_x87_precision_is_exact()) {
+    printf("  (skipped: this host's long double is not the ten-byte x87 object, "
+           "so these encodings cannot be built)\n");
+    return;
+  }
+  for (i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
+    X86pX87 f;
+    x86p_x87_reset(&f);
+    CHECK(x86p_x87_push_raw(&f, x86p_x87_reg_from_f80(kCases[i].bytes)));
+    if (f.tag[f.top] != (uint8_t)kCases[i].tag) {
+      printf("  FAIL %s: tag %u, expected %u\n", kCases[i].what, f.tag[f.top], (unsigned)kCases[i].tag);
+      g_failed++;
+    }
+    g_checks++;
+    /* And through the position-named write, which is the other caller. */
+    x86p_x87_reset(&f);
+    CHECK(x86p_x87_push(&f, 1.0L));
+    CHECK(x86p_x87_set_raw(&f, 0, x86p_x87_reg_from_f80(kCases[i].bytes)));
+    CHECK(f.tag[f.top] == (uint8_t)kCases[i].tag);
+  }
+}
+
 /* Precision control rounds every RESULT, not just stores. */
 static void test_precision_control_rounds_results(void) {
   X86pX87 f;
@@ -936,6 +1000,7 @@ int main(void) {
   RUN(test_the_op_census_counts_what_a_run_performs);
   RUN(test_the_fused_arith_path_matches_the_long_one);
   RUN(test_empty_register_is_not_zero);
+  RUN(test_every_encoding_class_gets_its_tag);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);
   if (x86p_x87_precision_is_exact()) {

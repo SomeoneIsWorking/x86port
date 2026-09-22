@@ -182,26 +182,53 @@ void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]) {
 }
 #endif
 
-static uint8_t classify(X86pX87Reg v) {
-#if X86P_X87_BINARY128
-  /* The same three questions, asked of the architectural fields, which is what
-     the storage now holds. This runs on every write to a register -- on the
-     binary128 form it was 9.5% of a profiled Android frame, because each
-     comparison was a compiler-rt call. Here it is three integer tests.
-
-     An exponent of all ones is infinity or a NaN; a zero exponent with a zero
-     significand is a zero. Everything else -- including a subnormal, an
-     unnormal and a pseudo-denormal -- is what the tag word calls valid, which
-     matches the arithmetic form this replaces. */
-  const uint16_t exponent = (uint16_t)(v.sign_exp & 0x7FFFu);
+/*
+ * THE TAG, FROM THE ARCHITECTURAL FIELDS. One rule, whatever the storage is.
+ *
+ * An exponent of all ones is an infinity or a NaN; a zero exponent with a zero
+ * significand is a zero; everything else -- including a subnormal, an unnormal
+ * and a pseudo-denormal -- is what the tag word calls valid. That is what the
+ * hardware tags, and asking it of the fields also classifies the unsupported
+ * encodings the way the hardware does, which `isnan`/`isinf` do not promise.
+ */
+static uint8_t classify_fields(uint64_t significand, uint16_t sign_exponent) {
+  const uint16_t exponent = (uint16_t)(sign_exponent & 0x7FFFu);
   if (exponent == 0x7FFFu) {
     return (uint8_t)kX86pX87TagSpecial;
   }
-  if (exponent == 0u && v.signif == 0u) {
+  if (exponent == 0u && significand == 0u) {
     return (uint8_t)kX86pX87TagZero;
   }
   return (uint8_t)kX86pX87TagValid;
+}
+
+static uint8_t classify(X86pX87Reg v) {
+#if X86P_X87_BINARY128
+  /* The storage already holds those fields. This runs on every write to a
+     register -- on the binary128 form the arithmetic phrasing below was 9.5%
+     of a profiled Android frame, because each comparison was a compiler-rt
+     call. Here it is three integer tests. */
+  return classify_fields(v.signif, v.sign_exp);
+#elif X86P_EXACT_LONG_DOUBLE
+  /*
+   * The same three tests, on a host whose `long double` IS the ten-byte x87
+   * object: significand in bytes 0-7, sign and exponent in bytes 8-9.
+   *
+   * The arithmetic phrasing below costs more than it looks. `v == 0.0L`,
+   * `isnan` and `isinf` are three x87 compares, and reaching them means the
+   * value -- which the caller usually has in memory already -- is loaded into
+   * the FPU and the answer branched on. Every register write pays it:
+   * x86p_x87_push and x86p_x87_set together were 9.0% of a profiled Dead Zone
+   * gameplay frame.
+   */
+  uint64_t significand;
+  uint16_t sign_exponent;
+  memcpy(&significand, (const unsigned char *)&v, 8);
+  memcpy(&sign_exponent, (const unsigned char *)&v + 8, 2);
+  return classify_fields(significand, sign_exponent);
 #else
+  /* No exact layout to read: ask the arithmetic. A host whose `long double` is
+     a double or a binary128 has no ten-byte object here to take fields from. */
   if (v == 0.0L) {
     return (uint8_t)kX86pX87TagZero;
   }
