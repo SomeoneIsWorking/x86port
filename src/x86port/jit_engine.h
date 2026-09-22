@@ -212,9 +212,10 @@ typedef struct X86pJitEngineStats {
   uint64_t cache_hits;
   uint64_t cache_front_hits;
   uint64_t cache_table_probes;
-  /* Lookups that found a GUARDED block and refused it to the dispatcher's fast
-     path; each is followed by the intercept call and a second lookup. */
-  uint64_t cache_guarded;
+  /* Lookups refused to the dispatcher's fast path -- a GUARDED block, or an
+     address the block cache remembers as needing the question -- and each
+     followed by the intercept call. Neither a hit nor a miss. */
+  uint64_t cache_refused;
 } X86pJitEngineStats;
 
 /*

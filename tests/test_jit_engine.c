@@ -796,7 +796,7 @@ static void test_intercept_contract_asks_only_where_it_can_fire(void) {
   CHECK(st.blocks_guarded == 1u);
   /* One miss at +0, and all 100 entries to +5: its miss, then 99 guarded. */
   CHECK(st.intercept_calls == 101u);
-  CHECK(st.cache_guarded == 99u);
+  CHECK(st.cache_refused == 99u);
 
   /* The guarded block, long cached, is still asked about and can be taken. */
   policy.take = GUEST_BASE + 5u;
