@@ -572,6 +572,116 @@ static const struct {
 };
 #define NCONTROLS ((int)(sizeof kControls / sizeof kControls[0]))
 
+/*
+ * THE TWO ARMS OF host_arith MUST BE ONE OPERATION.
+ *
+ * x87.c performs the arithmetic with the C operator when the host's control
+ * word already equals the guest's, on the argument that loading a control word
+ * the unit already holds and restoring it afterwards are both no-ops -- so the
+ * fast arm is the same instruction under the same mode, not an approximation
+ * of it. That argument is worth nothing untested: it claims identical RESULTS
+ * and identical raised STATUS, and a fast path with the right number and the
+ * wrong status word would be wrong exactly where a guest can see a rounding.
+ *
+ * So each swept control word is run twice over the same operands -- once with
+ * the host unit set to it, which takes the fast arm, and once with the host
+ * unit left alone, which takes the sequence with the FLDCW pair -- and the two
+ * must agree bit for bit in both.
+ *
+ * The host's own control word is put back before returning, whatever happens:
+ * this framework is a library inside someone else's process.
+ */
+static void test_the_control_word_fast_arm_is_the_same_operation(void) {
+  static const X86pX87Op ops[] = {kX86pX87Add, kX86pX87Sub, kX86pX87Mul, kX86pX87Div};
+  const int nops = (int)(sizeof ops / sizeof ops[0]);
+  uint16_t host_saved;
+  int c, k, i, j, reverse;
+  unsigned long compared = 0, value_differs = 0, status_differs = 0, fast_taken = 0;
+
+  __asm__ volatile("fnstcw %0" : "=m"(host_saved));
+  for (c = 0; c < NCONTROLS; c++) {
+    const uint16_t cw = kControls[c].cw;
+    for (k = 0; k < nops; k++) {
+      for (reverse = 0; reverse < 2; reverse++) {
+        for (i = 0; i < NVALS; i++) {
+          for (j = 0; j < NVALS; j++) {
+            X86pX87 fast, slow;
+            long double a = 0.0L, b = 0.0L;
+            /* The fast arm: the host unit is put into the guest's mode, so
+               host_arith's test succeeds and the C operator runs. */
+            __asm__ volatile("fldcw %0" : : "m"(cw));
+            x86p_x87_reset(&fast);
+            fast.control = cw;
+            if (!x86p_x87_push(&fast, g_vals[i]) || !x86p_x87_arith(&fast, ops[k], 0, g_vals[j], reverse)) {
+              __asm__ volatile("fldcw %0" : : "m"(host_saved));
+              CHECK(0);
+              return;
+            }
+            fast_taken++;
+            /* The other arm: the host unit holds ITS mode, so the test fails
+               and the FLDCW sequence runs. A control word that happens to
+               equal the host's takes the fast arm both times, which is
+               counted below rather than pretended away. */
+            __asm__ volatile("fldcw %0" : : "m"(host_saved));
+            if (cw == host_saved) {
+              fast_taken--;
+            }
+            x86p_x87_reset(&slow);
+            slow.control = cw;
+            if (!x86p_x87_push(&slow, g_vals[i]) || !x86p_x87_arith(&slow, ops[k], 0, g_vals[j], reverse)) {
+              CHECK(0);
+              return;
+            }
+            if (!x86p_x87_get(&fast, 0, &a) || !x86p_x87_get(&slow, 0, &b)) {
+              CHECK(0);
+              return;
+            }
+            compared++;
+            if (!(a == b || (isnan(a) && isnan(b)))) {
+              value_differs++;
+              if (value_differs <= 3) {
+                printf("    VALUE %s op%d rev%d (%.21Lg, %.21Lg): fast=%.21Lg slow=%.21Lg\n",
+                       kControls[c].name,
+                       (int)ops[k],
+                       reverse,
+                       g_vals[i],
+                       g_vals[j],
+                       a,
+                       b);
+              }
+            }
+            if (fast.status != slow.status) {
+              status_differs++;
+              if (status_differs <= 3) {
+                printf("    STATUS %s op%d rev%d (%.21Lg, %.21Lg): fast=%#x slow=%#x\n",
+                       kControls[c].name,
+                       (int)ops[k],
+                       reverse,
+                       g_vals[i],
+                       g_vals[j],
+                       fast.status,
+                       slow.status);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  __asm__ volatile("fldcw %0" : : "m"(host_saved));
+  printf("    %lu comparison(s), %lu with a different value, %lu with a different status word\n",
+         compared,
+         value_differs,
+         status_differs);
+  /* THE DESIGNED NEGATIVE: if the host mode were never actually changed, every
+     pair above would be the same arm run twice and would agree for a reason
+     this test is not about. */
+  printf("    %lu of them took the fast arm on one side only\n", fast_taken);
+  CHECK(fast_taken > 0u);
+  CHECK_EQ_U(value_differs, 0u);
+  CHECK_EQ_U(status_differs, 0u);
+}
+
 static void test_hw_arithmetic(void) {
   struct {
     const char *name;
@@ -847,6 +957,7 @@ int main(void) {
     g_test_failed++;
   }
   RUN(test_hw_arithmetic);
+  RUN(test_the_control_word_fast_arm_is_the_same_operation);
   RUN(test_portable_path_divergence);
   RUN(test_hw_compare_flags);
   RUN(test_fst_rounds_by_the_control_word);
