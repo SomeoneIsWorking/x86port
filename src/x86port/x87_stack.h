@@ -48,32 +48,17 @@ static inline uint8_t x86p_x87_tag_of_fields(uint64_t significand, uint16_t sign
 }
 
 /*
- * BY ADDRESS, not by value. The caller already has the value in memory -- the
- * System V ABI passes a `long double` argument there, and the register file is
- * memory -- so taking its address lets the fields be read with two integer
- * loads from where it already is. Taking it by value made the compiler spill
- * it a SECOND time with `fstpt` purely to have somewhere to read bytes from,
- * and a ten-byte store cannot forward to the loads that follow it: that spill
- * and its two loads were 46% of x86p_x87_push, measured.
+ * The class of an occupied register, for the tag word x87_state.c writes. The
+ * register file itself records only whether a register is occupied: the class
+ * is derived here, from the contents, when a guest asks for the word.
  */
 static inline uint8_t x86p_x87_tag_of(const X86pX87Reg *value) {
 #if X86P_X87_BINARY128
-  /* The storage already holds those fields. This runs on every write to a
-     register -- on the binary128 form the arithmetic phrasing below was 9.5%
-     of a profiled Android frame, because each comparison was a compiler-rt
-     call. Here it is three integer tests. */
+  /* The storage already holds those fields. */
   return x86p_x87_tag_of_fields(value->signif, value->sign_exp);
 #elif X86P_EXACT_LONG_DOUBLE
-  /*
-   * The same three tests, on a host whose `long double` IS the ten-byte x87
-   * object: significand in bytes 0-7, sign and exponent in bytes 8-9, read
-   * where the caller already has them.
-   *
-   * The arithmetic phrasing below costs more than it looks. `v == 0.0L`,
-   * `isnan` and `isinf` are three x87 compares, so the value has to be in the
-   * FPU and the answer branched on. Measured: x86p_x87_push and x86p_x87_set
-   * were 9.8% of a profiled Dead Zone gameplay frame.
-   */
+  /* A host whose `long double` IS the ten-byte x87 object: significand in
+     bytes 0-7, sign and exponent in bytes 8-9. */
   uint64_t significand;
   uint16_t sign_exponent;
   memcpy(&significand, (const unsigned char *)value, 8);
@@ -114,7 +99,7 @@ static inline int x86p_x87_write(X86pX87 *f, int i, X86pX87Reg v) {
   }
   p = x86p_x87_phys(f, i);
   f->reg[p] = v;
-  f->tag[p] = x86p_x87_tag_of(&v);
+  f->tag[p] = (uint8_t)kX86pX87TagValid;
   return 1;
 }
 
@@ -133,7 +118,7 @@ static inline int x86p_x87_push_value(X86pX87 *f, X86pX87Reg v) {
   }
   f->top = (uint8_t)p;
   f->reg[p] = v;
-  f->tag[p] = x86p_x87_tag_of(&v);
+  f->tag[p] = (uint8_t)kX86pX87TagValid;
   return 1;
 }
 

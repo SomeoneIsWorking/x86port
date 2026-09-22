@@ -525,9 +525,7 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
    */
   p = x86p_x87_phys(f, dst);
   f->reg[p] = reg_of_ext80(r);
-  /* Neither rule can produce an infinity or a NaN, and a zero result is the
-     only non-valid tag they can reach. */
-  f->tag[p] = (uint8_t)((r.signif == 0u && (r.sign_exp & 0x7FFFu) == 0u) ? kX86pX87TagZero : kX86pX87TagValid);
+  f->tag[p] = (uint8_t)kX86pX87TagValid;
   f->status |= raised;
   return 1;
 }

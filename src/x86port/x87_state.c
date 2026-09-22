@@ -1,21 +1,31 @@
 /* x87_state.c -- see x87_state.h. */
 #include "x87_state.h"
 
+#include "x87_stack.h"
+
 #include <string.h>
 
 /*
- * The model keeps one BYTE of tag per register; the architecture packs TWO BITS
- * per register into a single word, register 0 in the low pair. The encodings
- * are the same four values, so this is a repacking rather than a translation --
- * but it is the repacking, done twice in opposite directions, that a
- * hand-written save/restore pair gets subtly wrong and only notices when a
- * restored FPU reports a stack fault on a register that was valid.
+ * The model keeps one BYTE per register saying only whether it is occupied;
+ * the architecture packs TWO BITS per register into a single word, register 0
+ * in the low pair, and those bits also say zero, special or valid.
+ *
+ * That class is taken from the register's contents HERE, when the word is
+ * written, and not kept alongside every value. The hardware keeps one bit per
+ * register as well -- FXSAVE's abridged tag word is that bit -- and derives the
+ * two-bit class from the contents when it writes the full word. A restored
+ * word therefore contributes only which registers are empty. Keeping the class
+ * eagerly made every register write classify the value it
+ * stored -- on the Dead Zone route the JIT's FXAM and FNSTSW for that were a
+ * third of all translated-code samples -- for an answer only this word reads.
  */
 static uint16_t pack_tags(const X86pX87 *fpu) {
   uint16_t w = 0;
   unsigned i;
   for (i = 0; i < X86P_X87_REGS; i++) {
-    w = (uint16_t)(w | ((uint16_t)(fpu->tag[i] & 3u) << (2u * i)));
+    const unsigned tag =
+        fpu->tag[i] == (uint8_t)kX86pX87TagEmpty ? (unsigned)kX86pX87TagEmpty : (unsigned)x86p_x87_tag_of(&fpu->reg[i]);
+    w = (uint16_t)(w | (tag << (2u * i)));
   }
   return w;
 }
@@ -23,7 +33,8 @@ static uint16_t pack_tags(const X86pX87 *fpu) {
 static void unpack_tags(X86pX87 *fpu, uint16_t w) {
   unsigned i;
   for (i = 0; i < X86P_X87_REGS; i++) {
-    fpu->tag[i] = (uint8_t)((w >> (2u * i)) & 3u);
+    const unsigned tag = (w >> (2u * i)) & 3u;
+    fpu->tag[i] = (uint8_t)(tag == (unsigned)kX86pX87TagEmpty ? kX86pX87TagEmpty : kX86pX87TagValid);
   }
 }
 
