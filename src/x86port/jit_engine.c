@@ -254,6 +254,10 @@ void x86p_jit_engine_stats_add(X86pJitEngineStats *sum, const X86pJitEngineStats
   }
 }
 
+uint32_t x86p_jit_engine_last_block_entry(const X86pJitEngine *e) {
+  return e ? e->last_entry : 0u;
+}
+
 void x86p_jit_engine_set_intercept(X86pJitEngine *e, X86pJitInterceptFn fn, void *user) {
   if (e) {
     e->intercept = fn;

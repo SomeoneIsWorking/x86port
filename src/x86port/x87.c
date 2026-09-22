@@ -5,6 +5,7 @@
 #include "x87_ext80_arith.h"
 #include "x87_ext80_narrow.h"
 #include "x87_ext80_widen.h"
+#include "x87_op_census.h"
 #include "x87_softfloat.h"
 
 #include <fenv.h>
@@ -559,77 +560,6 @@ static X86pX87Reg reg_of_ext80(X86pExt80 wide) {
 }
 #endif
 
-/*
- * The op census, which counts and never decides. Its second column asks the
- * SAME predicates x86p_ext80_mul_ordinary asks, so a run cannot report more
- * reachable operations than an inline path would accept.
- */
-#if X86P_X87_BINARY128
-static X86pExt80 census_ext80_of_reg(X86pX87Reg v) {
-  X86pExt80 w;
-  w.signif = v.signif;
-  w.sign_exp = v.sign_exp;
-  return w;
-}
-
-static void census_note_ext80(X86pX87 *f, X86pX87Op op, X86pExt80 ex, X86pExt80 ey) {
-  const unsigned i = (unsigned)op;
-  X86pExt80 ignored;
-  uint16_t ignored_flags = 0u;
-  f->op_census->ordinary_measured = 1;
-  f->op_census->total[i]++;
-  if (!x86p_ext80_control_is_ordinary(f->control)) {
-    f->op_census->refused_control[i]++;
-    return;
-  }
-  if (!x86p_ext80_is_normal_or_zero(ex) || !x86p_ext80_is_normal_or_zero(ey)) {
-    f->op_census->refused_other[i]++;
-    return;
-  }
-  /*
-   * Everything from here is an operand shape the rules are written for, and
-   * whether one TAKES it is asked by calling it rather than by repeating its
-   * preconditions -- a second copy of those is how a census comes to report
-   * headroom that does not exist.
-   *
-   * The gap between this count and the eligible ones (the total less the two
-   * refusal columns) is the work not done: an operation with no rule at all,
-   * an exponent that leaves the normal range, an exact cancellation.
-   */
-  switch (op) {
-  case kX86pX87Mul:
-    if (x86p_ext80_mul_ordinary(f->control, ex, ey, &ignored, &ignored_flags)) {
-      f->op_census->taken[i]++;
-    }
-    return;
-  case kX86pX87Add:
-  case kX86pX87Sub:
-    if (x86p_ext80_add_ordinary(f->control, ex, ey, op == kX86pX87Sub, &ignored, &ignored_flags)) {
-      f->op_census->taken[i]++;
-    }
-    return;
-  case kX86pX87Div:
-  case kX86pX87OpCount:
-  default:
-    return;
-  }
-}
-
-static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
-  census_note_ext80(f, op, census_ext80_of_reg(x), census_ext80_of_reg(y));
-}
-
-#else
-static void census_note(X86pX87 *f, X86pX87Op op, X86pX87Reg x, X86pX87Reg y) {
-  /* The register file is the host's own long double here, so the encoding the
-     predicates read is not the storage. Counting totals is still honest;
-     claiming to have measured the second column would not be. */
-  (void)x;
-  (void)y;
-  f->op_census->total[(unsigned)op]++;
-}
-#endif
-
 void x86p_x87_set_op_census(X86pX87 *f, X86pX87OpCensus *census) {
   if (f) {
     f->op_census = census;
@@ -676,7 +606,7 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
      answers never reaches x86p_x87_arith_raw, so counting only there would
      make the instrument quietly under-report the moment this landed. */
   if (f->op_census) {
-    census_note_ext80(f, op, x, y);
+    x86p_x87_census_note_ext80(f, op, x, y);
   }
   if (op == kX86pX87Mul) {
     answered = x86p_ext80_mul_ordinary(f->control, x, y, &r, &raised);
@@ -745,7 +675,7 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
       return 0;
     }
     if (f->op_census) {
-      census_note(f, op, x, y);
+      x86p_x87_census_note_reg(f, op, x, y);
     }
 #if X86P_X87_BINARY128
     const int divide_by_zero = op == kX86pX87Div && reg_is_zero(y) && !reg_is_zero(x) && !reg_is_nan(x);
@@ -764,7 +694,7 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
        * The ordinary cases -- two operands that are each a normal or a zero,
        * round to nearest, 80-bit precision, a normal or zero result -- as
        * integer work on the encoding. On the game's Dead Zone route that is
-       * 99% of the arithmetic performed: measured, by the census in this file,
+       * 99% of the arithmetic performed: measured, by the op census (x87_op_census.c),
        * which asks these same rules rather than guessing at their
        * preconditions.
        *

@@ -68,6 +68,15 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s);
  * translated/entered/refusal counts are what is published, and the budget is
  * counted in the same units it is charged in.
  */
+/*
+ * EVERY FIELD IS A uint64_t RUNNING TOTAL, and x86p_jit_engine_stats_add sums
+ * this struct as an array of them so a field added later cannot be silently
+ * left out of a pool's total. The cost of that is that a field which is not a
+ * summable total -- an address, a flag, a most-recent sample -- would be added
+ * to its neighbours and produce a number that looks like a measurement.
+ * Anything of that shape belongs on the engine behind its own accessor, as
+ * x86p_jit_engine_last_block_entry is.
+ */
 typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
   /*
@@ -368,6 +377,25 @@ void x86p_jit_engine_set_entry_watch(
 
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */
+/*
+ * The guest address of the MOST RECENT block entry this engine made.
+ *
+ * blocks_reentered says a run is going round a block and cannot say which one,
+ * and the block-entry histogram cannot answer it either once its table is
+ * full: a spin that begins after the table fills has its key refused, so the
+ * histogram ranks whatever was early. Measured on the API 35 x86_64 emulator,
+ * a wedged run reported 1,761,605,419 entries of which 1,761,478,604 were
+ * dropped and a top entry with 11,630 hits -- 0.0%.
+ *
+ * This is already tracked on the hot path for blocks_reentered, so reading it
+ * costs nothing. IT IS A SAMPLE OF ONE: it says nothing about where a healthy
+ * run spends its time, and it is not summable across a pool, which is why it
+ * is not in X86pJitEngineStats. It is the address to aim
+ * x86p_jit_engine_set_entry_watch at when a run has stopped making progress.
+ * Zero when the engine has entered no block.
+ */
+uint32_t x86p_jit_engine_last_block_entry(const X86pJitEngine *e);
+
 const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e);
 
 /* Which code-memory mechanism this build resolved. "It worked on my machine"
