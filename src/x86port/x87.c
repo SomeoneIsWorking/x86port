@@ -157,11 +157,11 @@ void x86p_x87_reg_to_f80(X86pX87Reg v, uint8_t bytes[10]) {
 }
 #else
 X86pX87Reg x86p_x87_reg_from_long_double(long double v) {
-  return v;
+  return x86p_x87_reg_of(v);
 }
 
 long double x86p_x87_reg_to_long_double(X86pX87Reg v) {
-  return v;
+  return x86p_x87_long_double_of(v);
 }
 
 X86pX87Reg x86p_x87_reg_from_f80(const uint8_t bytes[10]) {
@@ -556,7 +556,7 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
 
 int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int reverse) {
   X86pX87Reg a, r;
-  if (!f || !x86p_x87_get_raw(f, dst, &a)) {
+  if (!f || !x86p_x87_read(f, dst, &a)) {
     if (f) {
       f->status |= X86P_X87_IE | X86P_X87_SF;
     }
@@ -640,11 +640,11 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
     r = x86p_x87_arith_portable(f->control, op, x, y);
 #endif
   }
-  return x86p_x87_set_raw(f, dst, r);
+  return x86p_x87_write(f, dst, r);
 }
 
 int x86p_x87_arith(X86pX87 *f, X86pX87Op op, int dst, long double src, int reverse) {
-  return x86p_x87_arith_raw(f, op, dst, x86p_x87_reg_from_long_double(src), reverse);
+  return x86p_x87_arith_raw(f, op, dst, x86p_x87_reg_of(src), reverse);
 }
 
 int x86p_x87_compare(X86pX87 *f, long double other) {
