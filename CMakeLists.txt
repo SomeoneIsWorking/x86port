@@ -280,6 +280,11 @@ target_link_libraries(test_memory_perms PRIVATE x86port_runtime)
 x86p_strict_target(test_memory_perms)
 add_test(NAME test_memory_perms COMMAND test_memory_perms)
 
+add_executable(test_x87_state tests/test_x87_state.c)
+target_link_libraries(test_x87_state PRIVATE x86port_runtime)
+x86p_strict_target(test_x87_state)
+add_test(NAME test_x87_state COMMAND test_x87_state)
+
 add_executable(test_x87_memory tests/test_x87_memory.c)
 target_link_libraries(test_x87_memory PRIVATE x86port_runtime)
 x86p_strict_target(test_x87_memory)
