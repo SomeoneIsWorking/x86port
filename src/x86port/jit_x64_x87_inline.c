@@ -5,12 +5,14 @@
  * instruction, and no call is made, so every caller-saved register is free
  * except HOSTPTR_REG while a prepared memory operand is still to be read:
  *
- *   RAX  physical index, then the tag being computed (FNSTSW writes AX)
- *   RCX  tag byte / exponent under test
+ *   RAX  physical index
+ *   RCX  tag byte / operand bits under test
  *   RDX  destination register slot:  [RDX + reg0_off()] is ST(dst)
  *   RSI  destination tag slot:       [RSI + tag0_off()] is its tag
  *   RDI  source register slot
- *   R8, R9  tag computation
+ *
+ * A tag byte records only whether a register is occupied (x87.h), so a write
+ * stores kTagValid and never classifies the value it wrote.
  *
  * THE HOST x87 STACK is empty on entry -- the ABI requires it at every call
  * boundary and these sequences are only ever between them -- and every
@@ -38,9 +40,8 @@ _Static_assert(sizeof(X86pX87Reg) == 16, "x87 register slots are addressed as in
 
 #define kCcE 0x4u
 #define kCcNe 0x5u
+#define kCcP 0xAu
 #define kTagValid ((unsigned)kX86pX87TagValid)
-#define kTagZero ((unsigned)kX86pX87TagZero)
-#define kTagSpecial ((unsigned)kX86pX87TagSpecial)
 #define kTagEmpty ((unsigned)kX86pX87TagEmpty)
 
 static int32_t x87_field(size_t field) {
@@ -142,59 +143,9 @@ static void guard_census_disarmed(X86pEmit *e, X87Inline *fast) {
   note_slow(e, fast, kCcNe);
 }
 
-/*
- * The tag of the ten-byte value at [slot], written to [tag]: the three field
- * tests of x86p_x87_tag_of_fields, without a branch.
- *   exponent == 0x7FFF                 -> special
- *   exponent == 0 && significand == 0  -> zero
- *   otherwise                          -> valid
- *
- * For a register-to-register copy only, and asked of the SOURCE slot: the
- * copy's own ten-byte store cannot forward to these narrower loads, and on
- * the Dead Zone route reading the tag back from a just-stored destination was
- * about a third of all translated-code samples.
- */
-static void emit_store_tag(X86pEmit *e, X86pHostReg slot, X86pHostReg tag) {
-  x86p_emit_load16_zx(e, kX64Rcx, slot, reg0_off() + 8);
-  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, 0x7FFFu);
-  x86p_emit_load32(e, kX64R8, slot, reg0_off());
-  x86p_emit_alu_r32_mem(e, kX64Or, kX64R8, slot, reg0_off() + 4);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, kTagValid);
-  x86p_emit_mov_r32_imm32(e, kX64R9, kTagSpecial);
-  x86p_emit_alu_r32_r32(e, kX64Or, kX64R8, kX64Rcx);
-  x86p_emit_setcc_r8(e, kCcE, kX64Rax); /* kTagZero == 1 */
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, 0x7FFFu);
-  x86p_emit_cmovcc_r32_r32(e, kCcE, kX64Rax, kX64R9);
-  x86p_emit_store8_reg(e, tag, tag0_off(), kX64Rax);
-}
-
-/* FXAM's condition codes in the status word: C3, C2 and C0. */
-#define kFxamClass 0x4500u
-#define kFxamZero 0x4000u
-#define kFxamNanOrInfinity 0x0100u
-
-/*
- * EAX = the tag of the value in the HOST's ST(0), asked of the FPU with FXAM
- * before it is stored, so no load ever waits on the ten-byte store.
- *
- * Only for a value the host FPU produced -- a widened FLD/FILD operand or an
- * arithmetic result -- which is always a normal, a denormal, a zero, an
- * infinity or a NaN, never one of the unsupported encodings FXAM cannot tell
- * apart. For those five classes this IS x86p_x87_tag_of_fields: a denormal
- * (C3 and C2) has a zero exponent and a nonzero significand, so it is valid;
- * zero is C3 alone; an infinity or a NaN (C0) has the all-ones exponent.
- */
-static void emit_host_tag(X86pEmit *e) {
-  x86p_emit_x87_reg(e, 0xD9u, 0xE5u); /* fxam */
-  x86p_emit_x87_reg(e, 0xDFu, 0xE0u); /* fnstsw ax */
-  x86p_emit_mov_r32_r32(e, kX64Rcx, kX64Rax);
-  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, kFxamClass);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, kTagValid);
-  x86p_emit_mov_r32_imm32(e, kX64R9, kTagSpecial);
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, kFxamZero);
-  x86p_emit_setcc_r8(e, kCcE, kX64Rax); /* kTagZero == 1 */
-  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, kFxamNanOrInfinity);
-  x86p_emit_cmovcc_r32_r32(e, kCcNe, kX64Rax, kX64R9);
+/* The register whose tag byte is at [tag] is now occupied. */
+static void emit_occupied(X86pEmit *e, X86pHostReg tag) {
+  x86p_emit_store8_imm(e, tag, tag0_off(), (uint8_t)kTagValid);
 }
 
 /* One pop: ST(0) becomes empty and TOP moves up. Emitted only where ST(0) is
@@ -247,13 +198,30 @@ static uint8_t host_arith_modrm(X86pX87Op op) {
 }
 
 /* Compute into the host ST(0) from two operands already loaded as x (ST(0))
-   and y (ST(1)), store over ST(dst) at [RDX], drop y, and tag the result. */
+   and y (ST(1)), store over ST(dst) at [RDX] and drop y. ST(dst) was guarded
+   occupied, so its tag already says so. */
 static void finish_arith(X86pEmit *e, X86pX87Op op) {
   x86p_emit_x87_reg(e, 0xD8u, host_arith_modrm(op));
-  emit_host_tag(e);
   fstp_ext80(e, kX64Rdx);
   x86p_emit_x87_reg(e, 0xDDu, 0xD8u); /* fstp st(0) */
-  x86p_emit_store8_reg(e, kX64Rsi, tag0_off(), kX64Rax);
+}
+
+/*
+ * Jump to the slow path when the register divisor at [slot] is a zero of
+ * either sign -- the helper's `y == 0.0L` -- asked of the host FPU. FUCOMIP
+ * writes EFLAGS directly: equal is ZF with PF clear, and unordered (a NaN)
+ * sets PF as well. The divisor is dropped again before the branch, so the
+ * host stack is empty on both paths, and FSTP leaves EFLAGS alone.
+ */
+static void guard_register_nonzero(X86pEmit *e, X87Inline *fast, X86pHostReg slot) {
+  X86pEmitSite unordered;
+  fld_ext80(e, slot);
+  x86p_emit_x87_reg(e, 0xD9u, 0xEEu); /* fldz */
+  x86p_emit_x87_reg(e, 0xDFu, 0xE9u); /* fucomip st(0), st(1) */
+  x86p_emit_x87_reg(e, 0xDDu, 0xD8u); /* fstp st(0) */
+  unordered = x86p_emit_jcc_rel32(e, kCcP);
+  note_slow(e, fast, kCcE);
+  x86p_emit_bind(e, unordered);
 }
 
 /*
@@ -322,14 +290,11 @@ void x87_inline_load(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
     if (o->kind == kX86pOperandMem) {
       fld_guest(e, o->size, insn->x87 == kX86pX87InsnLoadInt);
-      emit_host_tag(e);
-      fstp_ext80(e, kX64Rdx);
-      x86p_emit_store8_reg(e, kX64Rsi, tag0_off(), kX64Rax);
     } else {
       fld_ext80(e, kX64Rdi);
-      fstp_ext80(e, kX64Rdx);
-      emit_store_tag(e, kX64Rdi, kX64Rsi);
     }
+    fstp_ext80(e, kX64Rdx);
+    emit_occupied(e, kX64Rsi);
     finish_fast(e, fast);
   }
 #else
@@ -364,17 +329,14 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       emit_phys(e, src);
       emit_tag_slot(e, kX64Rsi);
       guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-      if (divide && !reverse) {
-        guard_tag_is(e, fast, kX64Rsi, kTagZero);
-      }
       emit_reg_slot(e, kX64Rdi);
       emit_phys(e, dst);
       emit_tag_slot(e, kX64Rsi);
       guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-      if (divide && reverse) {
-        guard_tag_is(e, fast, kX64Rsi, kTagZero);
-      }
       emit_reg_slot(e, kX64Rdx);
+      if (divide) {
+        guard_register_nonzero(e, fast, reverse ? kX64Rdx : kX64Rdi);
+      }
       /* x = reverse ? src : ST(dst), y = the other; x on top. */
       fld_ext80(e, reverse ? kX64Rdx : kX64Rdi);
       fld_ext80(e, reverse ? kX64Rdi : kX64Rdx);
@@ -389,14 +351,14 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
     guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    emit_reg_slot(e, kX64Rdx);
     if (divide) {
       if (reverse) {
-        guard_tag_is(e, fast, kX64Rsi, kTagZero);
+        guard_register_nonzero(e, fast, kX64Rdx);
       } else {
         guard_memory_nonzero(e, fast, o0->size, insn->x87_mem_int);
       }
     }
-    emit_reg_slot(e, kX64Rdx);
     if (reverse) {
       fld_ext80(e, kX64Rdx);
       fld_guest(e, o0->size, insn->x87_mem_int);
@@ -429,7 +391,7 @@ void x87_inline_store_reg(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     emit_reg_slot(e, kX64Rdx);
     fld_ext80(e, kX64Rdi);
     fstp_ext80(e, kX64Rdx);
-    emit_store_tag(e, kX64Rdi, kX64Rsi);
+    emit_occupied(e, kX64Rsi);
     emit_pops(e, insn->x87_pops);
     finish_fast(e, fast);
   }

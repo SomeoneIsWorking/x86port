@@ -181,6 +181,8 @@ typedef struct X86pX87OpCensus {
 
 typedef struct X86pX87 {
   X86pX87Reg reg[X86P_X87_REGS]; /* PHYSICAL registers; ST(i) is reg[(top+i)&7] */
+  /* kX86pX87TagEmpty or kX86pX87TagValid (occupied). The zero and special
+     classes exist only in the architectural tag word, derived from `reg`. */
   uint8_t tag[X86P_X87_REGS];
   uint8_t top;
   uint16_t control;
