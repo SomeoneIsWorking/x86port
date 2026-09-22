@@ -159,6 +159,22 @@ typedef struct X86pX87OpCensus {
    */
   uint64_t refused_control[X86P_X87_OPS];
   uint64_t refused_other[X86P_X87_OPS];
+  /*
+   * THE GUEST'S MODE, WHICH IS MEASURABLE ON EVERY HOST, and which decides
+   * whether an encoding-level rule can reach this title at all.
+   *
+   * `refused_control` above is the same question asked only where the register
+   * file is the ext80 encoding; on a host with a real x87 unit the column is
+   * zero and a reader cannot tell "the mode is fine" from "the mode was never
+   * looked at". These two are indexed by the control word's own fields --
+   * precision control in bits 8-9 and rounding control in bits 10-11 -- so
+   * they are counted the same way whatever the storage is.
+   *
+   * A title that runs at PC=53 (index 2), which is what the MSVC CRT sets, is
+   * one an 80-bit-only rule cannot answer however ordinary its operands are.
+   */
+  uint64_t by_precision[4];
+  uint64_t by_rounding[4];
   int ordinary_measured;
 } X86pX87OpCensus;
 

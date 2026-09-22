@@ -1081,6 +1081,8 @@ static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(voi
   X86pJitEngine *eng;
   X86pJitEngineStats spin;
   X86pJitEngineStats chain;
+  uint32_t spin_last;
+  uint32_t chain_last;
   char reason[256];
 
   /*
@@ -1100,6 +1102,7 @@ static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(voi
   seed(&cpu);
   CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
   x86p_jit_engine_stats(eng, &spin);
+  spin_last = x86p_jit_engine_last_block_entry(eng);
   /* Every entry but the first, and the run entered nothing else. */
   CHECK(spin.blocks_entered == 200u);
   CHECK(spin.blocks_reentered == 199u);
@@ -1129,15 +1132,35 @@ static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(voi
   seed(&cpu);
   CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
   x86p_jit_engine_stats(eng, &chain);
+  chain_last = x86p_jit_engine_last_block_entry(eng);
   CHECK(chain.blocks_entered == 200u);
   CHECK(chain.blocks_reentered == 0u);
   x86p_jit_engine_destroy(eng);
 
-  printf("    self-loop %llu of %llu re-entered; two-block chain %llu of %llu\n",
+  /*
+   * And WHICH block. A run that has stopped making progress needs an address
+   * to aim a watch at, and the block-entry histogram cannot supply one once
+   * its table is full -- a spin that starts after that has its key refused
+   * outright. This is the last entry the loop made, so on the spin it is the
+   * spinning block's own entry.
+   */
+  CHECK(spin_last == GUEST_BASE);
+  /*
+   * THE OTHER ANSWER, and the reason this is a sample rather than a census:
+   * the two-block chain alternates, so the last entry is whichever of the two
+   * the budget stopped on -- +4 here, not the entry address the run started
+   * at. A field that always reported where the run began would pass the spin
+   * above and be useless.
+   */
+  CHECK(chain_last == GUEST_BASE + 4u);
+
+  printf("    self-loop %llu of %llu re-entered at 0x%08x; two-block chain %llu of %llu, last 0x%08x\n",
          (unsigned long long)spin.blocks_reentered,
          (unsigned long long)spin.blocks_entered,
+         spin_last,
          (unsigned long long)chain.blocks_reentered,
-         (unsigned long long)chain.blocks_entered);
+         (unsigned long long)chain.blocks_entered,
+         chain_last);
 }
 
 /*
