@@ -306,10 +306,17 @@ static unsigned transcendental_precision_checks(unsigned *checks, unsigned *orac
         long double expected = 0, expected_extra = 0;
         uint16_t saved_control, expected_status;
         int expected_pushed;
-        __asm__ volatile("fnstcw %0\n\tfldcw %1" : "=m"(saved_control) : "m"(control) : "memory");
-        const int oracle_evaluated = x86p_x87_fn(
-            cases[i].fn, cases[i].a, cases[i].b, &expected, &expected_extra, &expected_pushed, &expected_status);
-        __asm__ volatile("fldcw %0" : : "m"(saved_control) : "memory");
+        /* x86p_x87_fn loads this control word itself now; the manual FLDCW
+           pair that used to be here is what the shipping path was missing. */
+        (void)saved_control;
+        const int oracle_evaluated = x86p_x87_fn(cases[i].fn,
+                                                 control,
+                                                 cases[i].a,
+                                                 cases[i].b,
+                                                 &expected,
+                                                 &expected_extra,
+                                                 &expected_pushed,
+                                                 &expected_status);
         (*checks)++;
         (*oracle_cases)++;
         const int matches = cases[i].fn == kX86pX87FnSqrt
@@ -355,7 +362,7 @@ int main(void) {
       uint16_t osw;
       int opushed;
       oracle_cases++;
-      if (!x86p_x87_fn((X86pX87Fn)fn, a, b, &o0, &o1, &opushed, &osw) || pushed != opushed ||
+      if (!x86p_x87_fn((X86pX87Fn)fn, X86P_X87_CW_INIT, a, b, &o0, &o1, &opushed, &osw) || pushed != opushed ||
           fabsl(r0 - o0) > 8 * DBL_EPSILON * fmaxl(1, fabsl(o0)) ||
           (pushed && fabsl(r1 - o1) > 8 * DBL_EPSILON * fmaxl(1, fabsl(o1))) || ((sw ^ osw) & X86P_X87_C2)) {
         if (failed < 8) {

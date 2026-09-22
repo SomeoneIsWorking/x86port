@@ -86,10 +86,35 @@ int x86p_x87_fn_available(void) {
                    : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)")
 #endif
 
-int x86p_x87_fn(
-    X86pX87Fn fn, long double a, long double b, long double *r0, long double *r1, int *pushed, uint16_t *status) {
+/*
+ * THE GUEST'S CONTROL WORD GOVERNS A TRANSCENDENTAL TOO.
+ *
+ * The arithmetic path has loaded it for a long time -- x87 rounds once, at the
+ * precision the control word selects -- and this path did not, so FYL2X,
+ * FSQRT, FSIN and the rest ran at whatever precision and rounding the HOST
+ * process happened to be in. The software path beside it has always taken
+ * `control`; only the host-FPU arm was left asking a different machine.
+ *
+ * It is not a rounding curiosity. The value that comes out is usually
+ * converted to an integer by the guest's own FISTP, and a result a fraction
+ * below an integer becomes the integer below it. Issue #172: a Cg hash table
+ * on the Android x86_64 emulator was built with a per-step bit count of ZERO
+ * where the desktop computes ten, and the loop that consumes it terminates by
+ * subtracting that count from 32. A step of zero never terminates, and the run
+ * wedged in one compiled block before any touch event could be pumped.
+ */
+int x86p_x87_fn(X86pX87Fn fn,
+                uint16_t control,
+                long double a,
+                long double b,
+                long double *r0,
+                long double *r1,
+                int *pushed,
+                uint16_t *status) {
 #if HAVE_X87
   uint16_t sw = 0u;
+  uint16_t host_control = 0u;
+  int restore_control = 0;
   long double scratch = 0.0L;
 
   if (!r0 || !pushed) {
@@ -97,6 +122,14 @@ int x86p_x87_fn(
   }
   if (!r1) {
     r1 = &scratch;
+  }
+  /* Only when it differs, and restored before returning. This framework is a
+     library inside someone else's process and must not leave the FPU
+     configured for the guest. */
+  __asm__ volatile("fnstcw %0" : "=m"(host_control));
+  if (host_control != control) {
+    __asm__ volatile("fldcw %0" : : "m"(control));
+    restore_control = 1;
   }
   *pushed = 0;
   *r1 = 0.0L;
@@ -158,14 +191,20 @@ int x86p_x87_fn(
     break;
   case kX86pX87FnCount:
   default:
+    if (restore_control) {
+      __asm__ volatile("fldcw %0" : : "m"(host_control));
+    }
     return 0;
   }
 
+  if (restore_control) {
+    __asm__ volatile("fldcw %0" : : "m"(host_control));
+  }
   if (status) {
     *status = sw;
   }
   return 1;
 #else
-  return x86p_x87_fn_software(fn, a, b, r0, r1, pushed, status);
+  return x86p_x87_fn_software_control(fn, control, a, b, r0, r1, pushed, status);
 #endif
 }

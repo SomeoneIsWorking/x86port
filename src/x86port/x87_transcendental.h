@@ -53,9 +53,20 @@ typedef enum X86pX87Fn {
  * how FPREM reports that its reduction is incomplete and how the comparisons
  * report unordered. Returns 0 for unsupported functions; the caller must
  * refuse the instruction by name. Software FXTRACT remains unsupported.
+ *
+ * `control` is the GUEST's control word, and the operation is performed under
+ * it: x87 rounds once, at the precision that word selects, and a result a
+ * fraction below an integer becomes a different integer once the guest's own
+ * FISTP converts it. The host's control word is restored before returning.
  */
-int x86p_x87_fn(
-    X86pX87Fn fn, long double a, long double b, long double *r0, long double *r1, int *pushed, uint16_t *status);
+int x86p_x87_fn(X86pX87Fn fn,
+                uint16_t control,
+                long double a,
+                long double b,
+                long double *r0,
+                long double *r1,
+                int *pushed,
+                uint16_t *status);
 
 /* Whether this build has a numerical implementation. Individual operation
    support is still checked by x86p_x87_fn. */

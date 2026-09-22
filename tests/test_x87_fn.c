@@ -256,6 +256,82 @@ static void run_case(const Case *c, long double a, long double b) {
 #endif
 }
 
+/*
+ * THE GUEST'S CONTROL WORD, NOT THE HOST'S.
+ *
+ * These instructions run on the host FPU, and until issue #172 they ran under
+ * whatever rounding the host process was in. Nothing else in this file could
+ * see it: every other case sets the host and the model up identically, so a
+ * path that read the host's word agreed with a path that read the guest's.
+ *
+ * ROUNDING CONTROL, not precision control: the precision-control field governs
+ * FADD, FSUB, FMUL, FDIV and FSQRT and nothing else, so asking a
+ * transcendental to narrow itself proves nothing. Rounding control governs
+ * every one of them.
+ *
+ * So: the host is held at round-to-nearest and x86p_x87_fn is asked for the
+ * same FYL2X at round-to-nearest and at round-toward-zero. log2(3) is
+ * irrational, so the two modes land on different neighbours of it. If the
+ * host's word governed, the answers would be identical.
+ */
+static void test_the_guest_control_word_governs_a_transcendental(void) {
+#if HAVE_ORACLE
+  const long double y = 1.0L;
+  const long double x = 3.0L;
+  long double nearest = 0.0L;
+  long double toward_zero = 0.0L;
+  long double ignored = 0.0L;
+  uint16_t saved = 0u;
+  uint16_t nearest_cw;
+  uint16_t zero_cw;
+  int pushed = 0;
+  uint16_t status = 0u;
+
+  __asm__ volatile("fnstcw %0" : "=m"(saved));
+  nearest_cw = (uint16_t)(saved & ~X86P_X87_RC_MASK);
+  zero_cw = (uint16_t)((saved & ~X86P_X87_RC_MASK) | X86P_X87_RC_TRUNCATE);
+  /* The host stays at round-to-nearest for both calls, so a path that reads
+     the host word cannot produce two different answers. */
+  __asm__ volatile("fldcw %0" : : "m"(nearest_cw));
+
+  g_checks++;
+  if (!x86p_x87_fn(kX86pX87FnYl2x, nearest_cw, x, y, &nearest, &ignored, &pushed, &status)) {
+    printf("FAIL: FYL2X was refused at round-to-nearest\n");
+    g_failed++;
+  }
+  g_checks++;
+  if (!x86p_x87_fn(kX86pX87FnYl2x, zero_cw, x, y, &toward_zero, &ignored, &pushed, &status)) {
+    printf("FAIL: FYL2X was refused at round-toward-zero\n");
+    g_failed++;
+  }
+
+  g_checks++;
+  {
+    uint16_t now = 0u;
+    __asm__ volatile("fnstcw %0" : "=m"(now));
+    if (now != nearest_cw) {
+      printf("FAIL: x86p_x87_fn left the host control word at %04X, not the %04X it found\n", now, nearest_cw);
+      g_failed++;
+    }
+  }
+  __asm__ volatile("fldcw %0" : : "m"(saved));
+
+  g_checks++;
+  if (nearest == toward_zero) {
+    printf("FAIL: FYL2X gave the same %.20Lg at RC=nearest and RC=zero with the host "
+           "at nearest -- the HOST's control word governed, not the guest's\n",
+           nearest);
+    g_failed++;
+  }
+  /* And the truncated one is the smaller: log2(3) is positive. */
+  g_checks++;
+  if (toward_zero > nearest) {
+    printf("FAIL: rounding toward zero gave %.20Lg, above the nearest answer %.20Lg\n", toward_zero, nearest);
+    g_failed++;
+  }
+#endif
+}
+
 int main(void) {
   unsigned i;
   unsigned v;
@@ -265,6 +341,7 @@ int main(void) {
       run_case(&kCases[i], kInputs[v][0], kInputs[v][1]);
     }
   }
+  test_the_guest_control_word_governs_a_transcendental();
 #if HAVE_ORACLE
   if (g_oracle_runs == 0u) {
     printf("REFUSED: the host oracle never ran, so nothing here was verified\n");
