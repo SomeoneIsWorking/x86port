@@ -23,11 +23,7 @@ int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
        here do. */
     return 1;
   }
-#if defined(__x86_64__) || defined(__i386__)
-  const int evaluated = x86p_x87_fn(fn, a, b, &r0, &r1, &pushed, &sw);
-#else
-  const int evaluated = x86p_x87_fn_software_control(fn, f->control, a, b, &r0, &r1, &pushed, &sw);
-#endif
+  const int evaluated = x86p_x87_fn(fn, f->control, a, b, &r0, &r1, &pushed, &sw);
   if (!evaluated) {
     /* No x87 unit on this host. Refused by name rather than substituted. */
     return 0;
