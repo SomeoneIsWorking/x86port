@@ -171,6 +171,7 @@ add_library(x86port_runtime STATIC
   src/x86port/x87_binary128.c
   src/x86port/x87_ext80_arith.c
   src/x86port/x87_op_census.c
+  src/x86port/x87_stack.c
   src/x86port/x87_ext80_narrow.c
   src/x86port/x87_ext80_widen.c
   src/x86port/x87_transcendental.c
