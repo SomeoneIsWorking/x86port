@@ -1106,6 +1106,13 @@ static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(voi
   /* Every entry but the first, and the run entered nothing else. */
   CHECK(spin.blocks_entered == 200u);
   CHECK(spin.blocks_reentered == 199u);
+  /* The block cache's counters reach the engine's stats: the first lookup
+     misses and translates, the second finds the table -- one slot probed
+     each -- and every one after that is answered by the front cache. */
+  CHECK(spin.cache_lookups == 200u);
+  CHECK(spin.cache_hits == 199u);
+  CHECK(spin.cache_front_hits == 198u);
+  CHECK(spin.cache_table_probes == 2u);
   x86p_jit_engine_destroy(eng);
 
   /*
