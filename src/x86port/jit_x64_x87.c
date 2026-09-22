@@ -1,6 +1,10 @@
 /*
  * jit_x64_x87.c -- native x87 emission for the x86-64 JIT backend.
  *
+ * The hottest forms first try jit_x64_x87_inline.c's inline register-file
+ * sequence; every case it guards against jumps to the helper sequence emitted
+ * here, which remains the complete implementation.
+ *
  * See jit_x64_x87.h for the scope. Every emitted sequence widens its operands
  * inline and then calls the same x86p_x87_* helper the interpreter calls, so
  * the reverse flag, the ZE/IE/SF status bits, the divide-by-zero infinity, the
@@ -8,6 +12,7 @@
  * full x87 state on every block end and would fail on the first divergence.
  */
 #include "jit_x64_x87.h"
+#include "jit_x64_x87_inline.h"
 
 #include "cpu.h"
 #include "emit_x64.h"
@@ -171,10 +176,13 @@ static void x87_widen_mem_to_scratch(X86pEmit *e, int w, int integer) {
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   const X86pOperand *o = &insn->operand[0];
+  X87Inline fast;
 
   if (o->kind == kX86pOperandMem) {
     const int w = o->size; /* 4 or 8 -- can_emit gate */
     emit_mem_prepare_w(c, o, insn_eip, w);
+    x87_inline_load(c, insn, &fast);
+    x87_inline_begin_slow(e, &fast);
     x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
     if (insn->x87 == kX86pX87InsnLoadInt) {
       x86p_emit_x87_m(e, w == 4 ? 0xDB : 0xDF, w == 8 ? 5 : 0, HOSTPTR_REG, 0);
@@ -186,10 +194,13 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
     x87_call(e, (const void *)&jit_x87_push);
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+    x87_inline_end(e, &fast);
     return;
   }
 
   /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
+  x87_inline_load(c, insn, &fast);
+  x87_inline_begin_slow(e, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)o->reg);
@@ -204,6 +215,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_emit_bind(e, skip);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+  x87_inline_end(e, &fast);
 }
 
 /*
@@ -226,6 +238,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
   const uint32_t operation_destination_reverse =
       (uint32_t)insn->x87_op | ((uint32_t)dst << 8) | ((uint32_t)insn->x87_reverse << 16);
+  X87Inline fast;
   int i;
 
   if (o0->kind != kX86pOperandMem) {
@@ -233,14 +246,19 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
        16-byte scratch slot the memory form opens is not needed: the source is
        a register INDEX, so no 80-bit value crosses the emitted boundary. */
     const uint32_t source = (uint32_t)(two_op ? insn->operand[1].reg : o0->reg);
+    x87_inline_arith(c, insn, &fast);
+    x87_inline_begin_slow(e, &fast);
     x87_lea_self(e);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG2, source | ((uint32_t)insn->x87_pops << 8));
     x87_call(e, (const void *)&jit_x87_arith_reg);
+    x87_inline_end(e, &fast);
     return;
   }
 
   emit_mem_prepare_w(c, o0, insn_eip, o0->size);
+  x87_inline_arith(c, insn, &fast);
+  x87_inline_begin_slow(e, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
   x87_lea_self(e);
@@ -253,6 +271,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+  x87_inline_end(e, &fast);
 }
 
 /*
@@ -291,8 +310,11 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   X86pEmit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
   X86pEmitSite skip;
+  X87Inline fast;
   int i;
 
+  x87_inline_store_reg(c, insn, &fast);
+  x87_inline_begin_slow(e, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
@@ -311,6 +333,7 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   }
   x86p_emit_bind(e, skip);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+  x87_inline_end(e, &fast);
 }
 
 /*
@@ -332,8 +355,11 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const int w = o0->size; /* 4 or 8 -- gate */
   X86pEmitSite empty;
   X86pEmitSite done;
+  X87Inline fast;
   int i;
 
+  x87_inline_store_mem(c, insn, insn_eip, &fast);
+  x87_inline_begin_slow(e, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
@@ -371,6 +397,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_emit_bind(e, empty);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
   x86p_emit_bind(e, done);
+  x87_inline_end(e, &fast);
 }
 
 void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {

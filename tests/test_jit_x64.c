@@ -26,22 +26,15 @@
  * supported set reaches those; a fixed seed keeps a failure reproducible.
  */
 #include "alu.h"
-#include "code_memory.h"
 #include "cpu.h"
 #include "decode.h"
 #include "exec.h"
 #include "jit_x64.h"
+#include "jit_x64_harness.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#include <unistd.h>
-#endif
 
 static int g_checks;
 static int g_failed;
@@ -81,129 +74,10 @@ static unsigned long g_helper_calls;
 static unsigned long g_cond_inline;
 static unsigned long g_cond_helper_calls;
 
-#define GUEST_BASE 0x00010000u
-#define GUEST_SIZE 4096u
-
-/*
- * The guest mapping sits at the END of a page, with an unreadable page after
- * it.
- *
- * A static array would let an over-wide HOST read run past the guest mapping
- * into memory that happens to be readable, and the store that follows would
- * still write the right number of bytes -- so a one-byte guest load emitted as
- * a four-byte host load passes every comparison while reading three bytes it
- * has no right to. Measured: that mutation SURVIVED until this guard page
- * existed. Here the same code takes SIGSEGV at the mapping's last address.
- */
+/* The guard-paged guest mapping and code region live in jit_x64_harness.c. */
 static uint8_t *g_guest;
 static uint8_t g_before[GUEST_SIZE];
 static uint8_t g_after_interp[GUEST_SIZE];
-
-static void guest_mem_init(void) {
-#if defined(_WIN32)
-  SYSTEM_INFO info;
-  size_t page;
-  size_t span;
-  DWORD old_protection;
-  uint8_t *base;
-  GetSystemInfo(&info);
-  page = (size_t)info.dwPageSize;
-  span = page * 2u;
-  base = (uint8_t *)VirtualAlloc(NULL, span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-  if (!base) {
-    printf("FATAL: could not reserve %zu bytes for the guest mapping and its guard\n", span);
-    exit(1);
-  }
-  if (!VirtualProtect(base + page, page, PAGE_NOACCESS, &old_protection)) {
-    printf("FATAL: could not make the guard page unreadable; an over-wide read would go unnoticed\n");
-    exit(1);
-  }
-#else
-  long page = sysconf(_SC_PAGESIZE);
-  size_t span;
-  uint8_t *base;
-  if (page <= 0) {
-    printf("FATAL: cannot determine the page size, so no guard page can be placed\n");
-    exit(1);
-  }
-  span = (size_t)page * 2u;
-  base = (uint8_t *)mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (base == MAP_FAILED) {
-    printf("FATAL: could not map %zu bytes for the guest mapping and its guard\n", span);
-    exit(1);
-  }
-  if (mprotect(base + page, (size_t)page, PROT_NONE) != 0) {
-    printf("FATAL: could not make the guard page unreadable; an over-wide read would go unnoticed\n");
-    exit(1);
-  }
-#endif
-  if (GUEST_SIZE > (size_t)page) {
-    printf("FATAL: the guest mapping is larger than a page and cannot end on one\n");
-    exit(1);
-  }
-  g_guest = base + page - GUEST_SIZE;
-}
-
-static X86pMem guest_mem(void) {
-  X86pMem m = {0};
-  m.host = g_guest;
-  m.lo = GUEST_BASE;
-  m.size = GUEST_SIZE;
-  return m;
-}
-
-/* ---- host code memory ---------------------------------------------------- */
-
-static JcCodeRegion g_code_region;
-static int g_code_published;
-
-static void *code_alloc(size_t n) {
-  char reason[192] = {0};
-  memset(&g_code_region, 0, sizeof g_code_region);
-  g_code_published = 0;
-  if (jc_code_region_create(n, &g_code_region, reason, (unsigned)sizeof reason) != kJcCodeOk) {
-    printf("    REFUSED: code memory: %s\n", reason);
-    return NULL;
-  }
-  return g_code_region.write;
-}
-
-static void code_free(void *code, size_t n) {
-  (void)code;
-  (void)n;
-  jc_code_region_destroy(&g_code_region);
-  g_code_published = 0;
-}
-
-static X86pJitStatus translate(const X86pMem *mem,
-                               uint32_t eip,
-                               void *code,
-                               size_t code_cap,
-                               X86pJitBlock *block,
-                               char *reason,
-                               unsigned reason_len) {
-  X86pJitStatus status;
-  if (code != g_code_region.write) {
-    snprintf(reason, reason_len, "code pointer is not the active writable region");
-    return kX86pJitOutOfSpace;
-  }
-  if (g_code_published && jc_code_begin_write(&g_code_region) != kJcCodeOk) {
-    snprintf(reason, reason_len, "could not reopen code region for writing");
-    return kX86pJitOutOfSpace;
-  }
-  g_code_published = 0;
-  status = x86p_jit_translate(mem, eip, code, code_cap, block, reason, reason_len);
-  if (status != kX86pJitOk) {
-    return status;
-  }
-  if (jc_code_publish(&g_code_region, block->host_bytes) != kJcCodeOk) {
-    snprintf(reason, reason_len, "could not publish translated code");
-    return kX86pJitOutOfSpace;
-  }
-  block->entry = g_code_region.exec;
-  g_code_published = 1;
-  return status;
-}
 
 /* ---- guest program generation -------------------------------------------- */
 
@@ -1067,7 +941,7 @@ static int exit_agrees(X86pJitExit got, X86pStepStatus interp, const char *stopp
 /* ---- the differential ---------------------------------------------------- */
 
 static void test_jit_matches_interpreter_on_generated_programs(void) {
-  void *code = code_alloc(65536);
+  void *code = jit_x64_harness_code_alloc(65536);
   uint64_t rng = 0x5EED1234ABCDull;
   int round;
 
@@ -1077,7 +951,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
   }
 
   for (round = 0; round < 1500; round++) {
-    X86pMem mem = guest_mem();
+    X86pMem mem = jit_x64_harness_mem(g_guest);
     X86pCpu ci;
     X86pCpu cj;
     X86pJitBlock blk;
@@ -1101,7 +975,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
-    st = translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       /* The generator produced a shape this backend refuses BY NAME -- a
          memory-form ADC, say. Refusing is the designed behaviour, not a
@@ -1335,7 +1209,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
              blk.host_bytes);
     }
   }
-  code_free(code, 65536);
+  jit_x64_harness_code_free(code, 65536);
 }
 
 /* ---- the negatives: refusals are named and are not silent ---------------- */
@@ -1360,7 +1234,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
 static unsigned long g_single_compares;
 
 static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
-  void *code = code_alloc(65536);
+  void *code = jit_x64_harness_code_alloc(65536);
   uint64_t rng = 0xA5A5C0FFEEull;
   int round;
 
@@ -1370,7 +1244,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
   }
 
   for (round = 0; round < 4000; round++) {
-    X86pMem mem = guest_mem();
+    X86pMem mem = jit_x64_harness_mem(g_guest);
     X86pCpu ci;
     X86pCpu cj;
     X86pJitBlock blk;
@@ -1423,7 +1297,7 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
 
-    st = translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
+    st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
     if (st == kX86pJitUnsupportedAtEntry) {
       g_refused++;
       continue; /* a shape this backend refuses by name */
@@ -1482,12 +1356,12 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
       g_failed++;
     }
   }
-  code_free(code, 65536);
+  jit_x64_harness_code_free(code, 65536);
 }
 
 static void test_unsupported_at_entry_produces_no_block(void) {
-  void *code = code_alloc(4096);
-  X86pMem mem = guest_mem();
+  void *code = jit_x64_harness_code_alloc(4096);
+  X86pMem mem = jit_x64_harness_mem(g_guest);
   X86pJitBlock blk;
   char reason[192];
   X86pJitStatus st;
@@ -1504,17 +1378,17 @@ static void test_unsupported_at_entry_produces_no_block(void) {
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
-  st = translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
+  st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
   CHECK(strstr(reason, "RCPPS") != NULL);
-  code_free(code, 4096);
+  jit_x64_harness_code_free(code, 4096);
 }
 
 static void test_block_stops_at_unsupported_with_eip_on_it(void) {
-  void *code = code_alloc(4096);
-  X86pMem mem = guest_mem();
+  void *code = jit_x64_harness_code_alloc(4096);
+  X86pMem mem = jit_x64_harness_mem(g_guest);
   X86pCpu cpu;
   X86pJitBlock blk;
   char reason[192];
@@ -1533,10 +1407,10 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   g_guest[6] = 0x53u;
   g_guest[7] = 0xC0u;
 
-  st = translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
+  st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
   if (st != kX86pJitOk) {
-    code_free(code, 4096);
+    jit_x64_harness_code_free(code, 4096);
     return;
   }
   CHECK(blk.insns == 1u);
@@ -1551,12 +1425,12 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
      can hand exactly that one to the interpreter. Pointing past it would skip
      an instruction, silently. */
   CHECK(cpu.eip == GUEST_BASE + 5u);
-  code_free(code, 4096);
+  jit_x64_harness_code_free(code, 4096);
 }
 
 static void test_out_of_space_is_refused_not_truncated(void) {
-  void *code = code_alloc(4096);
-  X86pMem mem = guest_mem();
+  void *code = jit_x64_harness_code_alloc(4096);
+  X86pMem mem = jit_x64_harness_mem(g_guest);
   X86pJitBlock blk;
   char reason[192];
   X86pJitStatus st;
@@ -1574,15 +1448,15 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   /* A buffer too small for even the prologue plus one instruction. The result
      must be a refusal -- a truncated block would end without a RET. */
   reason[0] = '\0';
-  st = translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
+  st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOutOfSpace || st == kX86pJitUnsupportedAtEntry);
   CHECK(reason[0] != '\0');
-  code_free(code, 4096);
+  jit_x64_harness_code_free(code, 4096);
 }
 
 static void test_fetch_fault_at_an_unmapped_eip(void) {
-  void *code = code_alloc(4096);
-  X86pMem mem = guest_mem();
+  void *code = jit_x64_harness_code_alloc(4096);
+  X86pMem mem = jit_x64_harness_mem(g_guest);
   X86pJitBlock blk;
   char reason[192];
   X86pJitStatus st;
@@ -1592,14 +1466,14 @@ static void test_fetch_fault_at_an_unmapped_eip(void) {
     return;
   }
   reason[0] = '\0';
-  st = translate(&mem, GUEST_BASE + GUEST_SIZE + 0x1000u, code, 4096, &blk, reason, sizeof reason);
+  st = jit_x64_harness_translate(&mem, GUEST_BASE + GUEST_SIZE + 0x1000u, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitFetchFault);
   CHECK(reason[0] != '\0');
-  code_free(code, 4096);
+  jit_x64_harness_code_free(code, 4096);
 }
 
 int main(void) {
-  guest_mem_init();
+  g_guest = jit_x64_harness_guest_init();
   if (!x86p_jit_available()) {
     /* Not a pass. A host with no backend must say so rather than report a
        clean run over a suite that executed nothing. */

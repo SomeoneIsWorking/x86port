@@ -108,7 +108,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
     src/x86port/jit_x64_branch.c
     src/x86port/jit_x64_simd.c
     src/x86port/jit_x64_x87_register.c
-    src/x86port/jit_x64_x87.c)
+    src/x86port/jit_x64_x87.c
+    src/x86port/jit_x64_x87_inline.c)
 endif()
 
 # A host with no backend is a refusal, not a default. The one exception is
@@ -134,7 +135,8 @@ if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
       src/x86port/jit_x64_branch.c
       src/x86port/jit_x64_simd.c
       src/x86port/jit_x64_x87_register.c
-      src/x86port/jit_x64_x87.c)
+      src/x86port/jit_x64_x87.c
+      src/x86port/jit_x64_x87_inline.c)
   else()
     string(CONCAT X86P_NO_BACKEND_REFUSAL
       "x86port: ${X86P_NO_BACKEND_REASON} "
@@ -571,11 +573,16 @@ add_test(NAME test_jit_wasm_arena COMMAND test_jit_wasm_arena)
 
 if(NOT EMSCRIPTEN)
   # Native executable-memory differential; WASM has its own differential tests.
-  add_executable(test_jit_x64 tests/test_jit_x64.c)
+  add_executable(test_jit_x64 tests/test_jit_x64.c tests/jit_x64_harness.c)
   target_link_libraries(test_jit_x64 PRIVATE x86port_runtime x86port_test_oracle)
   x86p_strict_target(test_jit_x64)
   add_test(NAME test_jit_x64 COMMAND test_jit_x64)
   set_tests_properties(test_jit_x64 PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(test_jit_x64_x87 tests/test_jit_x64_x87.c tests/jit_x64_harness.c)
+  target_link_libraries(test_jit_x64_x87 PRIVATE x86port_runtime x86port_test_oracle)
+  x86p_strict_target(test_jit_x64_x87)
+  add_test(NAME test_jit_x64_x87 COMMAND test_jit_x64_x87)
+  set_tests_properties(test_jit_x64_x87 PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 add_executable(test_x87_f128_ext80 tests/test_x87_f128_ext80.cpp)
