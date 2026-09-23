@@ -290,6 +290,9 @@ X86pEmitSite x86p_emit_jcc_rel32(X86pEmit *e, unsigned cc);
 /* jmp rel32, destination unbound. */
 X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e);
 
+/* call rel32, destination unbound: a subroutine inside the same block. */
+X86pEmitSite x86p_emit_call_rel32(X86pEmit *e);
+
 /* Point a site at the current end of the buffer. */
 void x86p_emit_bind(X86pEmit *e, X86pEmitSite site);
 

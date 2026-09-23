@@ -103,6 +103,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_x64.c
+    src/x86port/jit_x64_mem.c
     src/x86port/jit_x64_cond.c
     src/x86port/jit_x64_alu.c
     src/x86port/jit_x64_branch.c
@@ -130,6 +131,7 @@ if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
     message(WARNING "${X86P_NO_BACKEND_WARNING}")
     set(X86P_JIT_BACKEND_SOURCES
       src/x86port/jit_x64.c
+      src/x86port/jit_x64_mem.c
       src/x86port/jit_x64_cond.c
       src/x86port/jit_x64_alu.c
       src/x86port/jit_x64_branch.c

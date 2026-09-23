@@ -182,7 +182,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     const int w = o->size; /* 4 or 8 -- can_emit gate */
     emit_mem_prepare_w(c, o, insn_eip, w);
     x87_inline_load(c, insn, &fast);
-    x87_inline_begin_slow(e, &fast);
+    x87_inline_begin_slow(c, &fast);
     x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
     if (insn->x87 == kX86pX87InsnLoadInt) {
       x86p_emit_x87_m(e, w == 4 ? 0xDB : 0xDF, w == 8 ? 5 : 0, HOSTPTR_REG, 0);
@@ -194,13 +194,13 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
     x87_call(e, (const void *)&jit_x87_push);
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-    x87_inline_end(e, &fast);
+    x87_inline_end(c, &fast);
     return;
   }
 
   /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
   x87_inline_load(c, insn, &fast);
-  x87_inline_begin_slow(e, &fast);
+  x87_inline_begin_slow(c, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, (uint32_t)o->reg);
@@ -215,7 +215,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_emit_bind(e, skip);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-  x87_inline_end(e, &fast);
+  x87_inline_end(c, &fast);
 }
 
 /*
@@ -247,18 +247,18 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
        a register INDEX, so no 80-bit value crosses the emitted boundary. */
     const uint32_t source = (uint32_t)(two_op ? insn->operand[1].reg : o0->reg);
     x87_inline_arith(c, insn, &fast);
-    x87_inline_begin_slow(e, &fast);
+    x87_inline_begin_slow(c, &fast);
     x87_lea_self(e);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG2, source | ((uint32_t)insn->x87_pops << 8));
     x87_call(e, (const void *)&jit_x87_arith_reg);
-    x87_inline_end(e, &fast);
+    x87_inline_end(c, &fast);
     return;
   }
 
   emit_mem_prepare_w(c, o0, insn_eip, o0->size);
   x87_inline_arith(c, insn, &fast);
-  x87_inline_begin_slow(e, &fast);
+  x87_inline_begin_slow(c, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
   x87_lea_self(e);
@@ -271,7 +271,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-  x87_inline_end(e, &fast);
+  x87_inline_end(c, &fast);
 }
 
 /*
@@ -314,7 +314,7 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   int i;
 
   x87_inline_store_reg(c, insn, &fast);
-  x87_inline_begin_slow(e, &fast);
+  x87_inline_begin_slow(c, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
@@ -333,7 +333,7 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   }
   x86p_emit_bind(e, skip);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-  x87_inline_end(e, &fast);
+  x87_inline_end(c, &fast);
 }
 
 /*
@@ -359,7 +359,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   int i;
 
   x87_inline_store_mem(c, insn, insn_eip, &fast);
-  x87_inline_begin_slow(e, &fast);
+  x87_inline_begin_slow(c, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
@@ -397,7 +397,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_emit_bind(e, empty);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
   x86p_emit_bind(e, done);
-  x87_inline_end(e, &fast);
+  x87_inline_end(c, &fast);
 }
 
 void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -416,4 +416,48 @@ void emit_x87_fn(BlockCtx *c, const X86pInsn *insn) {
   x87_lea_self(c->e);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, insn->x87_fn);
   x87_call(c->e, (const void *)&x86p_x87_apply_fn);
+}
+
+/*
+ * One X87 instruction. The four inline forms keep the host-stack mirror
+ * (jit_x64_x87_inline.h) across themselves; every other form calls a helper,
+ * so the mirror is popped first. FWAIT emits nothing and keeps it.
+ */
+void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  if (insn->x87 == kX86pX87InsnWait) {
+    /* The synchronous, masked-exception model has no pending work. */
+    return;
+  }
+  if (x87_arith_is_emittable(insn)) {
+    emit_x87_arith(c, insn, insn_eip);
+    return;
+  }
+  if (x87_store_reg_is_emittable(insn)) {
+    emit_x87_store_reg(c, insn);
+    return;
+  }
+  if (x87_store_mem_is_emittable(insn)) {
+    emit_x87_store_mem(c, insn, insn_eip);
+    return;
+  }
+  if (x87_load_is_emittable(insn)) {
+    emit_x87_load(c, insn, insn_eip);
+    return;
+  }
+  x87_cache_flush(c);
+  if (x87_register_is_emittable(insn)) {
+    emit_x87_register(c, insn);
+  } else if (x87_fn_is_emittable(insn)) {
+    emit_x87_fn(c, insn);
+  } else if (x87_control_is_emittable(insn)) {
+    emit_x87_control(c, insn, insn_eip);
+  } else if (x87_compare_mem_is_emittable(insn)) {
+    emit_x87_compare_mem(c, insn, insn_eip);
+  } else if (x87_constant_is_emittable(insn)) {
+    emit_x87_constant(c, insn);
+  } else if (x87_status_ax_is_emittable(insn)) {
+    emit_x87_status_ax(c);
+  } else {
+    emit_x87_clear_exceptions(c);
+  }
 }

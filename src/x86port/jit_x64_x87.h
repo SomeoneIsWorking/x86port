@@ -22,8 +22,11 @@
 
 #include "jit_x87_predicates.h"
 
-/* Emit one X87 instruction. The caller has already checked the matching
-   predicate. None of these write EFLAGS. */
+/* Emit one X87 instruction that can_emit admitted. None of these write
+   EFLAGS. */
+void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+
+/* The forms emit_x87 dispatches to. */
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);

@@ -526,6 +526,35 @@ static void test_bind_to_earlier_offset(void) {
         (long long)again.end + d.ops[0].imm.value.s == (long long)jmp_at);
 }
 
+/* A call bound like a jump: to a subroutine already emitted, and to one
+   emitted after it. */
+static void test_call_rel32(void) {
+  uint8_t buf[64];
+  X86pEmit e;
+  X86pEmitSite back, ahead;
+  size_t sub, back_at, ahead_at, later;
+  Decoded d;
+  x86p_emit_init(&e, buf, sizeof buf);
+  sub = x86p_emit_here(&e);
+  x86p_emit_ret(&e);
+  back_at = x86p_emit_here(&e);
+  back = x86p_emit_call_rel32(&e);
+  x86p_emit_bind_to(&e, back, sub);
+  ahead_at = x86p_emit_here(&e);
+  ahead = x86p_emit_call_rel32(&e);
+  x86p_emit_ret(&e);
+  later = x86p_emit_here(&e);
+  x86p_emit_bind(&e, ahead);
+  x86p_emit_ret(&e);
+  CHECK(x86p_emit_ok(&e) && x86p_emit_sites_bound(&e));
+  d = decode64(buf + back_at, back.end - back_at);
+  CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_CALL && back.end - back_at == 5u &&
+        (long long)back.end + d.ops[0].imm.value.s == (long long)sub);
+  d = decode64(buf + ahead_at, ahead.end - ahead_at);
+  CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_CALL &&
+        (long long)ahead.end + d.ops[0].imm.value.s == (long long)later);
+}
+
 static void test_ret(void) {
   uint8_t buf[16];
   X86pEmit e;
@@ -920,6 +949,7 @@ int main(void) {
   RUN(test_push_pop_every_register);
   RUN(test_alu_r64_imm8_stack_adjust);
   RUN(test_memory_counter_and_jump);
+  RUN(test_call_rel32);
   RUN(test_host_abi_argument_locations);
   RUN(test_host_abi_frames);
   RUN(test_win64_fifth_argument_slot);

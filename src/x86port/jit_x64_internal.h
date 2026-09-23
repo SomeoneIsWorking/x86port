@@ -76,6 +76,14 @@ typedef struct BlockCtx {
   X86pJitChain *chain;
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
+  /* How many guest x87 registers the host x87 stack mirrors here; see
+     jit_x64_x87_inline.h. */
+  unsigned x87_depth;
+  /* Calls into the block's mirror loader, each with the depth it loads; the
+     loader is emitted once, after the exits, when there is any. */
+  X86pEmitSite x87_loads[MAX_INSNS * 2];
+  uint8_t x87_load_depth[MAX_INSNS * 2];
+  unsigned nx87_loads;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
@@ -106,6 +114,18 @@ void x86p_x64_emit_cond_slow_path(BlockCtx *c);
  * must be refused.
  */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w);
+
+/* The pieces of that, for the forms that compose them differently
+   (jit_x64_mem.c): LEA's offset without a segment base, the linear address an
+   access uses, the bounds check whose returned site the caller binds, and the
+   host pointer for an address that passed it. */
+void emit_address_parts(X86pEmit *e, const X86pOperand *o);
+void emit_effective_address(X86pEmit *e, const X86pOperand *o);
+X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w);
+void emit_host_pointer(X86pEmit *e, const MemPlan *plan);
+/* Record a site that jumps to the block's memory-fault or divide-error stub. */
+void note_fault(BlockCtx *c, X86pEmitSite site);
+void note_divide_fault(BlockCtx *c, X86pEmitSite site);
 
 /* Guest CPU layout, shared by every x64 emission family. These were statics in
    jit_x64.c until jit_x64_cond.c needed the same two answers; jit_arm64_internal.h
