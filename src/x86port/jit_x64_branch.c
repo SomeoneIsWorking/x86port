@@ -349,7 +349,7 @@ void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, 
    immediate counts bytes ABOVE the return address. */
 void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
 

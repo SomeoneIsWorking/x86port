@@ -144,8 +144,14 @@ typedef struct BlockCtx {
   unsigned cond_inline;
   unsigned cond_proven;
   MemPlan plan;
+  /* Memory-fault sites and the guest EIP each reports. The EIP is loaded in
+     the block's tail, on a trampoline per run of sites that share one, not
+     before every access (note_fault). fault_tail_bytes is what those
+     trampolines will take. */
   X86pEmitSite faults[MAX_INSNS * 2];
+  uint32_t fault_eips[MAX_INSNS * 2];
   unsigned nfaults;
+  size_t fault_tail_bytes;
   X86pEmitSite divide_faults[MAX_INSNS];
   unsigned ndivide_faults;
   /* A Jcc's inline condition whose recorded-kind guard failed is completed by
@@ -182,10 +188,15 @@ void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, in
    host pointer for an address that passed it. */
 void emit_address_parts(BlockCtx *c, const X86pOperand *o);
 void emit_effective_address(BlockCtx *c, const X86pOperand *o);
-X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w);
+X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, int w);
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan);
-/* Record a site that jumps to the block's memory-fault or divide-error stub. */
-void note_fault(BlockCtx *c, X86pEmitSite site);
+/* The tail bytes of one memory-fault trampoline: MOV r10d, imm32 and a JMP
+   rel32 to the shared stub. */
+#define FAULT_TRAMPOLINE_BYTES 11u
+
+/* Record a site that jumps to the block's memory-fault stub reporting guest
+   `eip`, or to its divide-error stub. */
+void note_fault(BlockCtx *c, X86pEmitSite site, uint32_t eip);
 void note_divide_fault(BlockCtx *c, X86pEmitSite site);
 
 /* Guest CPU layout, shared by every x64 emission family. These were statics in

@@ -100,6 +100,13 @@ static int plan_is_identity(const MemPlan *plan) {
   return plan->lo == 0u && plan->host == 0u;
 }
 
+/* The register holding the offset into the mapping, EA - lo. With lo 0 that
+   is the address itself, zero-extended by the 32-bit write that formed it,
+   so no copy is made. */
+static X86pHostReg plan_offset_reg(const MemPlan *plan) {
+  return plan->lo == 0u ? EA_REG : ADDR_TMP;
+}
+
 /*
  * Bounds-check EA_REG and leave the host address in HOSTPTR_REG.
  *
@@ -117,14 +124,11 @@ static int plan_is_identity(const MemPlan *plan) {
  *
  * Returns the site to bind to the fault stub.
  */
-X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w) {
-  x86p_emit_mov_r32_imm32(e, FAULTPC_REG, insn_eip);
-  const X86pHostReg offset = plan_is_identity(plan) ? EA_REG : ADDR_TMP;
+X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, int w) {
+  const X86pHostReg offset = plan_offset_reg(plan);
   if (offset == ADDR_TMP) {
     x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
-    if (plan->lo != 0u) {
-      x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
-    }
+    x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
   }
   /*
    * A mapping narrower than the access has NO in-bounds address, so the check
@@ -140,8 +144,8 @@ X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_e
   return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
 }
 
-/* HOSTPTR_REG = host + (EA - lo). ADDR_TMP already holds the offset, and
-   writing a 32-bit register zero-extends, so the 64-bit add gets a clean
+/* HOSTPTR_REG = host + (EA - lo). plan_offset_reg already holds the offset,
+   and writing a 32-bit register zero-extends, so the 64-bit add gets a clean
    offset. An identity mapping's offset IS the guest address, and the 32-bit
    move zero-extends it into the pointer without a base to add. */
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
@@ -150,11 +154,15 @@ void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
     return;
   }
   x86p_emit_mov_r64_imm64(e, HOSTPTR_REG, plan->host);
-  x86p_emit_alu_r64_r64(e, kX64Add, HOSTPTR_REG, ADDR_TMP);
+  x86p_emit_alu_r64_r64(e, kX64Add, HOSTPTR_REG, plan_offset_reg(plan));
 }
 
-void note_fault(BlockCtx *c, X86pEmitSite site) {
+void note_fault(BlockCtx *c, X86pEmitSite site, uint32_t eip) {
   if (c->nfaults < sizeof c->faults / sizeof c->faults[0]) {
+    if (c->nfaults == 0u || c->fault_eips[c->nfaults - 1u] != eip) {
+      c->fault_tail_bytes += FAULT_TRAMPOLINE_BYTES;
+    }
+    c->fault_eips[c->nfaults] = eip;
     c->faults[c->nfaults++] = site;
     return;
   }
@@ -178,6 +186,6 @@ void note_divide_fault(BlockCtx *c, X86pEmitSite site) {
    refuse a legal one-byte access at the last address instead. */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_effective_address(c, o);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, w), insn_eip);
   emit_host_pointer(c->e, &c->plan);
 }
