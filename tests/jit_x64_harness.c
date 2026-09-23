@@ -73,6 +73,44 @@ uint8_t *jit_x64_harness_guest_init(void) {
   return base + page - GUEST_SIZE;
 }
 
+/* Low addresses a process is unlikely to have taken; each is a hint only. */
+static const uintptr_t kIdentityHints[] = {0x20000000u, 0x30000000u, 0x50000000u, 0x70000000u};
+
+uint8_t *jit_x64_harness_identity_page(size_t *page_size) {
+  for (size_t i = 0; i < sizeof kIdentityHints / sizeof kIdentityHints[0]; i++) {
+#if defined(_WIN32)
+    SYSTEM_INFO info;
+    DWORD old_protection;
+    GetSystemInfo(&info);
+    const size_t page = (size_t)info.dwPageSize;
+    uint8_t *base =
+        (uint8_t *)VirtualAlloc((void *)kIdentityHints[i], page * 2u, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!base) {
+      continue;
+    }
+    if ((uintptr_t)base != kIdentityHints[i] || !VirtualProtect(base + page, page, PAGE_NOACCESS, &old_protection)) {
+      VirtualFree(base, 0, MEM_RELEASE);
+      continue;
+    }
+#else
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    uint8_t *base = (uint8_t *)mmap(
+        (void *)kIdentityHints[i], page * 2u, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (base == MAP_FAILED) {
+      continue;
+    }
+    if ((uintptr_t)base != kIdentityHints[i] || mprotect(base + page, page, PROT_NONE) != 0) {
+      munmap(base, page * 2u);
+      continue;
+    }
+#endif
+    *page_size = page;
+    return base;
+  }
+  printf("    SKIP identity mapping: no page below 4 GiB could be placed on this host\n");
+  return NULL;
+}
+
 X86pMem jit_x64_harness_mem(uint8_t *guest) {
   X86pMem m = {0};
   m.host = guest;
