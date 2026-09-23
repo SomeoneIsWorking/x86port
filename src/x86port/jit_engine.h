@@ -459,6 +459,25 @@ typedef void (*X86pJitEntryWatchFn)(void *user, uint32_t addr, uint32_t previous
 void x86p_jit_engine_set_entry_watch(
     X86pJitEngine *e, uint32_t guest_addr, uint64_t reports, X86pJitEntryWatchFn fn, void *user);
 
+/*
+ * Told of every translation as it is published: the guest address it starts
+ * at and the host bytes that run it.
+ *
+ * A sampling profiler sees host addresses inside anonymous code, and nothing
+ * else in the process can say which guest code they belong to. A
+ * consumer that writes these ranges down, for example as a perf map, lets each
+ * sample be charged to its guest block. The ranges are exact. Attributing a
+ * sample to the nearest preceding guest-address marker also charges the
+ * shared stubs and helpers that follow a block.
+ *
+ * A range is valid until the translation is dropped: a flush or an
+ * invalidation can hand the same host bytes to another block later, so a
+ * reader keeps the LAST range published at an address. NULL turns it off; it
+ * costs one test per translation, none per block entry.
+ */
+typedef void (*X86pJitTranslateWatchFn)(void *user, uint32_t guest_eip, const void *host, size_t host_bytes);
+void x86p_jit_engine_set_translate_watch(X86pJitEngine *e, X86pJitTranslateWatchFn fn, void *user);
+
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */
 /*

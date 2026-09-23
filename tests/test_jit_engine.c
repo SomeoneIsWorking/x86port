@@ -1844,6 +1844,61 @@ static void test_the_entry_watch_names_the_block_that_sent_the_run_there(void) {
  * the same engine, because a counter checked only against a spin would pass
  * while counting every block entry in the run.
  */
+typedef struct TranslateLog {
+  unsigned calls;
+  uint32_t eip[4];
+  const void *host[4];
+  size_t bytes[4];
+} TranslateLog;
+
+static void translate_note(void *user, uint32_t guest_eip, const void *host, size_t host_bytes) {
+  TranslateLog *t = (TranslateLog *)user;
+  if (t->calls < 4u) {
+    t->eip[t->calls] = guest_eip;
+    t->host[t->calls] = host;
+    t->bytes[t->calls] = host_bytes;
+  }
+  t->calls++;
+}
+
+static void test_the_translate_watch_names_each_published_block(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  TranslateLog t;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0x40; /* INC EAX */
+  g_guest[1] = 0xEB; /* JMP $ */
+  g_guest[2] = 0xFE;
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    return;
+  }
+  memset(&t, 0, sizeof t);
+  x86p_jit_engine_set_translate_watch(eng, translate_note, &t);
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 200u, reason, sizeof reason) == kX86pRunBudget);
+  /* Two blocks, each told once however often it ran. */
+  CHECK(t.calls == 2u);
+  CHECK(t.eip[0] == GUEST_BASE);
+  CHECK(t.eip[1] == GUEST_BASE + 1u);
+  CHECK(t.bytes[0] > 0u && t.bytes[1] > 0u);
+  /* The host ranges are the published code, one after the other. */
+  CHECK((const uint8_t *)t.host[1] >= (const uint8_t *)t.host[0] + t.bytes[0]);
+
+  /* Off: a retranslation after a flush is not told. */
+  x86p_jit_engine_set_translate_watch(eng, NULL, NULL);
+  CHECK(x86p_jit_engine_invalidate_all(eng, reason, sizeof reason));
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 50u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(t.calls == 2u);
+  x86p_jit_engine_destroy(eng);
+}
+
 static void test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not(void) {
   X86pMem mem = guest_mem();
   X86pCpu cpu;
@@ -2021,6 +2076,7 @@ int main(void) {
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);
   RUN(test_summing_stats_leaves_no_field_behind);
   RUN(test_the_entry_watch_names_the_block_that_sent_the_run_there);
+  RUN(test_the_translate_watch_names_each_published_block);
   RUN(test_a_block_that_re_enters_itself_is_counted_and_a_chain_is_not);
   RUN(test_a_backend_that_records_no_successors_reads_as_unrecorded);
 
