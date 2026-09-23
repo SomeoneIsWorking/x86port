@@ -774,78 +774,55 @@ static void test_host_abi_argument_locations(void) {
   CHECK(x86p_jit_abi_stack_arg_offset(4u) == 32);
 }
 
-static void test_host_abi_frames(void) {
+/* One ABI's frame: the pushes in order, the call-frame reservation, the CPU
+   pointer parked in RBX, and the exact reverse on leaving. */
+static void
+check_host_abi_frame(X86pJitHostAbi abi, const X86pHostReg *saved, unsigned nsaved, X86pHostReg arg0, uint64_t frame) {
   uint8_t buf[128];
   X86pEmit e;
   Decoded d;
   size_t offset = 0u;
+  unsigned i;
 
   x86p_emit_init(&e, buf, sizeof buf);
-  x86p_jit_abi_emit_enter(&e, kX86pJitHostAbiSystemV, kX64Rbx);
-  x86p_jit_abi_emit_leave(&e, kX86pJitHostAbiSystemV, kX64Rbx);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64Rbx);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64R14);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64R15);
-  d = decode_next(&e, &offset);
-  CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOV);
-  if (d.ok) {
-    CHECK(reg_id(d.ops[0].reg.value) == kX64Rbx);
-    CHECK(reg_id(d.ops[1].reg.value) == kX64Rdi);
+  x86p_jit_abi_emit_enter(&e, abi, kX64Rbx);
+  x86p_jit_abi_emit_leave(&e, abi, kX64Rbx);
+  for (i = 0u; i < nsaved; i++) {
+    d = decode_next(&e, &offset);
+    check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, saved[i]);
   }
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64R15);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64R14);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64Rbx);
-  CHECK(offset == e.len);
-
-  offset = 0u;
-  x86p_emit_init(&e, buf, sizeof buf);
-  x86p_jit_abi_emit_enter(&e, kX86pJitHostAbiWin64, kX64Rbx);
-  x86p_jit_abi_emit_leave(&e, kX86pJitHostAbiWin64, kX64Rbx);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64Rbx);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64R14);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64R15);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64Rsi);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_PUSH, kX64Rdi);
   d = decode_next(&e, &offset);
   CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_SUB);
   if (d.ok) {
     CHECK(reg_id(d.ops[0].reg.value) == kX64Rsp);
-    CHECK(d.ops[1].imm.value.u == 48u);
+    CHECK(d.ops[1].imm.value.u == frame);
   }
   d = decode_next(&e, &offset);
   CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOV);
   if (d.ok) {
     CHECK(reg_id(d.ops[0].reg.value) == kX64Rbx);
-    CHECK(reg_id(d.ops[1].reg.value) == kX64Rcx);
+    CHECK(reg_id(d.ops[1].reg.value) == (int)arg0);
   }
   d = decode_next(&e, &offset);
   CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_ADD);
   if (d.ok) {
     CHECK(reg_id(d.ops[0].reg.value) == kX64Rsp);
-    CHECK(d.ops[1].imm.value.u == 48u);
+    CHECK(d.ops[1].imm.value.u == frame);
   }
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64Rdi);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64Rsi);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64R15);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64R14);
-  d = decode_next(&e, &offset);
-  check_unary_register(&d, ZYDIS_MNEMONIC_POP, kX64Rbx);
+  for (i = nsaved; i-- > 0u;) {
+    d = decode_next(&e, &offset);
+    check_unary_register(&d, ZYDIS_MNEMONIC_POP, saved[i]);
+  }
   CHECK(offset == e.len);
+  /* Entry RSP is 8 mod 16; every call the block makes needs 0. */
+  CHECK((8u + 8u * nsaved + frame) % 16u == 0u);
+}
+
+static void test_host_abi_frames(void) {
+  static const X86pHostReg system_v[] = {kX64Rbx, kX64R14, kX64R15, kX64R12, kX64R13, kX64Rbp};
+  static const X86pHostReg win64[] = {kX64Rbx, kX64R14, kX64R15, kX64R12, kX64R13, kX64Rbp, kX64Rsi, kX64Rdi};
+  check_host_abi_frame(kX86pJitHostAbiSystemV, system_v, 6u, kX64Rdi, 8u);
+  check_host_abi_frame(kX86pJitHostAbiWin64, win64, 8u, kX64Rcx, 56u);
 }
 
 static void test_win64_fifth_argument_slot(void) {

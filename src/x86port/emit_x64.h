@@ -102,6 +102,7 @@ typedef struct X86pEmit {
   int overflow;
   unsigned sites_made;  /* forward jumps created */
   unsigned sites_bound; /* ... and given a destination */
+  unsigned calls;       /* calls emitted, to a helper or a block routine */
 } X86pEmit;
 
 void x86p_emit_init(X86pEmit *e, void *buf, size_t cap);

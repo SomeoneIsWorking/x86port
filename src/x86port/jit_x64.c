@@ -7,6 +7,7 @@
 #include "emit_x64.h"
 #include "flags.h"
 #include "jit_x64_cond.h"
+#include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
 #include "jit_x64_x87_inline.h"
@@ -357,16 +358,6 @@ static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_ei
   emit_mem_prepare_w(c, o, insn_eip, 4);
 }
 
-static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
-  if (w == 1) {
-    x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
-  } else if (w == 2) {
-    x86p_emit_store16_imm(e, base, disp, (uint16_t)(imm & 0xFFFFu));
-  } else {
-    x86p_emit_store32_imm(e, base, disp, imm);
-  }
-}
-
 /*
  * Whether an instruction leaves the host-stack x87 mirror in place.
  *
@@ -543,28 +534,28 @@ static int flag_write_is_dead(const X86pMem *mem,
  * that are not addresses at all.
  */
 static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
-  emit_address_parts(c->e, &insn->operand[1]);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(insn->operand[0].reg), EA_REG);
+  emit_address_parts(c, &insn->operand[1]);
+  gpr_store(c, insn->operand[0].reg, EA_REG, 4);
 }
 
 /* LEAVE is ordered state transition, not a MOV followed by an ordinary POP:
    ESP becomes EBP before the stack read, and remains there if that read faults.
    Only a successful read advances ESP and replaces EBP. */
 static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
-  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEbp));
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
+  gpr_load(c, EA_REG, kX86pEbp, 4);
+  gpr_store(c, kX86pEsp, EA_REG, 4);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
   x86p_emit_alu_r32_imm32(c->e, kX64Add, EA_REG, 4u);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEbp), kX64Rsi);
+  gpr_store(c, kX86pEsp, EA_REG, 4);
+  gpr_store(c, kX86pEbp, kX64Rsi, 4);
 }
 
-static void emit_cdq(X86pEmit *e) {
-  x86p_emit_load32(e, kX64Rax, CPU_REG, reg_off(kX86pEax));
-  x86p_emit_shift_r32_imm8(e, kX64Sar, kX64Rax, 31u);
-  x86p_emit_store32(e, CPU_REG, reg_off(kX86pEdx), kX64Rax);
+static void emit_cdq(BlockCtx *c) {
+  gpr_load(c, kX64Rax, kX86pEax, 4);
+  x86p_emit_shift_r32_imm8(c->e, kX64Sar, kX64Rax, 31u);
+  gpr_store(c, kX86pEdx, kX64Rax, 4);
 }
 
 /* This helper owns only one already-decoded operation's value semantics. It
@@ -592,7 +583,7 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
     emit_mem_prepare_w(c, divisor, insn_eip, 4);
     x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG, 0);
   } else {
-    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG1, CPU_REG, reg_off(divisor->reg));
+    gpr_load(c, X86P_JIT_HOST_ARG1, divisor->reg, 4);
   }
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, (uint32_t)signed_divide);
@@ -624,15 +615,15 @@ static void emit_imul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
       emit_mem_prepare_w(c, source, insn_eip, 4);
       x86p_emit_load32(c->e, X86P_JIT_HOST_ARG3, HOSTPTR_REG, 0);
     } else {
-      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG3, CPU_REG, reg_off(source->reg));
+      gpr_load(c, X86P_JIT_HOST_ARG3, source->reg, 4);
     }
-    x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off(destination->reg));
+    gpr_load(c, X86P_JIT_HOST_ARG2, destination->reg, 4);
   } else {
     if (source->kind == kX86pOperandMem) {
       emit_mem_prepare_w(c, source, insn_eip, 4);
       x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, HOSTPTR_REG, 0);
     } else {
-      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off(source->reg));
+      gpr_load(c, X86P_JIT_HOST_ARG2, source->reg, 4);
     }
     x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, insn->operand[2].imm);
   }
@@ -673,14 +664,14 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
    PUSH and by CALL's return address, so the fault ordering above is stated once
    rather than reproduced next to each caller. */
 static void emit_push_rsi(BlockCtx *c, uint32_t insn_eip) {
-  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
+  gpr_load(c, EA_REG, kX86pEsp, 4);
   x86p_emit_alu_r32_imm32(c->e, kX64Sub, EA_REG, 4u);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
   /* The bounds check preserves EA_REG -- it copies into ADDR_TMP -- so the new
      ESP is still here and needs no second computation. */
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
+  gpr_store(c, kX86pEsp, EA_REG, 4);
 }
 
 static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -692,7 +683,7 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     emit_mem_prepare(c, o, insn_eip);
     x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
   } else {
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(o->reg));
+    gpr_load(c, kX64Rsi, o->reg, 4);
   }
 
   emit_push_rsi(c, insn_eip);
@@ -703,14 +694,14 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
    emit_push_rsi below the corresponding PUSH). The caller decides where the
    popped value in RSI ends up. */
 static void emit_pop_rsi(BlockCtx *c, uint32_t insn_eip) {
-  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
+  gpr_load(c, EA_REG, kX86pEsp, 4);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
 
   x86p_emit_mov_r32_r32(c->e, kX64Rdx, EA_REG);
   x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kX64Rdx);
+  gpr_store(c, kX86pEsp, kX64Rdx, 4);
 }
 
 static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -723,7 +714,7 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
     return;
   }
-  x86p_emit_store32(c->e, CPU_REG, reg_off(o->reg), kX64Rsi);
+  gpr_store(c, o->reg, kX64Rsi, 4);
 }
 
 /*
@@ -773,22 +764,22 @@ static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
       emit_store_imm_w(c->e, HOSTPTR_REG, 0, src->imm, w);
       return;
     }
-    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, w), w);
+    gpr_load(c, kX64Rax, src->reg, w);
     emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
     return;
   }
 
   if (src->kind == kX86pOperandImm) {
-    emit_store_imm_w(c->e, CPU_REG, reg_off_w(dst->reg, w), src->imm, w);
+    gpr_store_imm(c, dst->reg, src->imm, w);
     return;
   }
   if (src->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, src, insn_eip, w);
     emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, w);
   } else {
-    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, w), w);
+    gpr_load(c, kX64Rax, src->reg, w);
   }
-  emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+  gpr_store(c, dst->reg, kX64Rax, w);
 }
 
 static void emit_xchg32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -800,16 +791,16 @@ static void emit_xchg32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (memory->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, memory, insn_eip, 4);
     x86p_emit_load32(c->e, kX64Rax, HOSTPTR_REG, 0);
-    x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(reg->reg));
+    gpr_load(c, kX64Rsi, reg->reg, 4);
     x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
-    x86p_emit_store32(c->e, CPU_REG, reg_off(reg->reg), kX64Rax);
+    gpr_store(c, reg->reg, kX64Rax, 4);
     return;
   }
 
-  x86p_emit_load32(c->e, kX64Rax, CPU_REG, reg_off(first->reg));
-  x86p_emit_load32(c->e, kX64Rsi, CPU_REG, reg_off(second->reg));
-  x86p_emit_store32(c->e, CPU_REG, reg_off(first->reg), kX64Rsi);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(second->reg), kX64Rax);
+  gpr_load(c, kX64Rax, first->reg, 4);
+  gpr_load(c, kX64Rsi, second->reg, 4);
+  gpr_store(c, first->reg, kX64Rsi, 4);
+  gpr_store(c, second->reg, kX64Rax, 4);
 }
 
 /*
@@ -831,7 +822,7 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
     emit_mem_prepare_w(c, src, insn_eip, sw);
     emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, sw);
   } else {
-    emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(src->reg, sw), sw);
+    gpr_load(c, kX64Rax, src->reg, sw);
   }
 
   if (is_signed) {
@@ -840,7 +831,7 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
     x86p_emit_shift_r32_imm8(c->e, kX64Sar, kX64Rax, fill);
   }
 
-  emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, dw), kX64Rax, dw);
+  gpr_store(c, dst->reg, kX64Rax, dw);
 }
 
 /*
@@ -892,7 +883,7 @@ static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t 
     x86p_emit_load32(c->e, TARGET_REG, HOSTPTR_REG, 0);
     return;
   }
-  x86p_emit_load32(c->e, TARGET_REG, CPU_REG, reg_off(o->reg));
+  gpr_load(c, TARGET_REG, o->reg, 4);
 }
 
 static void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -910,14 +901,14 @@ static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t retur
 /* `release` is RET imm16's argument count, applied AFTER the pop because the
    immediate counts bytes ABOVE the return address. */
 static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
-  x86p_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
+  gpr_load(c, EA_REG, kX86pEsp, 4);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
 
   x86p_emit_mov_r32_r32(c->e, kX64Rdx, EA_REG);
   x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u + release);
-  x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kX64Rdx);
+  gpr_store(c, kX86pEsp, kX64Rdx, 4);
 
   emit_exit_from(c, kX64Rsi);
 }
@@ -1001,6 +992,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     if (!insn_fit(&e, &insn_start, pc, reason, reason_len)) {
       return kX86pJitOutOfSpace;
     }
+    gpr_check(&ctx); /* the checked build's, charged to no instruction */
+    insn_start = e.len;
     if (e.len + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
       break;
     }
@@ -1136,7 +1129,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_leave(&ctx, pc);
       break;
     case kX86pInsnCdq:
-      emit_cdq(&e);
+      emit_cdq(&ctx);
       break;
     case kX86pInsnDiv:
       emit_div32(&ctx, &insn, pc, 0);

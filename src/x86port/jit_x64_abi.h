@@ -66,31 +66,41 @@ static inline void x86p_jit_abi_emit_arg64_reg(X86pEmit *e, X86pJitHostAbi abi, 
   x86p_emit_store64(e, kX64Rsp, x86p_jit_abi_stack_arg_offset(index), value);
 }
 
-/* Entry RSP is 8 mod 16. Both ABIs save RBX (the CPU pointer) and R14 and R15,
+/* Entry RSP is 8 mod 16. Both ABIs save RBX (the CPU pointer), R14 and R15,
  * which hold the x87 TOP and occupancy cache across a block
- * (jit_x64_x87_inline.h); System V needs nothing more, three pushes leaving RSP
- * aligned. Win64 also preserves RSI and RDI because this emitter uses them as
- * scratch even though that ABI makes them nonvolatile; five pushes leave RSP
- * aligned. The 48-byte frame contains the mandatory 32-byte home/shadow area,
- * one eight-byte stack argument slot, and alignment padding. */
+ * (jit_x64_x87_inline.h), and R12, R13 and RBP, which hold the guest register
+ * cache (jit_x64_gpr.h). Six pushes leave RSP at 8 mod 16, so eight bytes of
+ * padding align it for calls. Win64 also preserves RSI and RDI because this
+ * emitter uses them as scratch even though that ABI makes them nonvolatile,
+ * and its 48-byte frame contains the mandatory 32-byte home/shadow area, one
+ * eight-byte stack argument slot, and alignment padding; with the two extra
+ * pushes the same eight-byte pad follows it. */
+#define X86P_JIT_FRAME_PAD 8
+
 static inline void x86p_jit_abi_emit_enter(X86pEmit *e, X86pJitHostAbi abi, X86pHostReg cpu_reg) {
   x86p_emit_push_r64(e, cpu_reg);
   x86p_emit_push_r64(e, kX64R14);
   x86p_emit_push_r64(e, kX64R15);
+  x86p_emit_push_r64(e, kX64R12);
+  x86p_emit_push_r64(e, kX64R13);
+  x86p_emit_push_r64(e, kX64Rbp);
   if (abi == kX86pJitHostAbiWin64) {
     x86p_emit_push_r64(e, kX64Rsi);
     x86p_emit_push_r64(e, kX64Rdi);
-    x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 48);
   }
+  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, (int8_t)(x86p_jit_abi_call_frame_bytes(abi) + X86P_JIT_FRAME_PAD));
   x86p_emit_mov_r64_r64(e, cpu_reg, x86p_jit_abi_arg(abi, 0));
 }
 
 static inline void x86p_jit_abi_emit_leave(X86pEmit *e, X86pJitHostAbi abi, X86pHostReg cpu_reg) {
+  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, (int8_t)(x86p_jit_abi_call_frame_bytes(abi) + X86P_JIT_FRAME_PAD));
   if (abi == kX86pJitHostAbiWin64) {
-    x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 48);
     x86p_emit_pop_r64(e, kX64Rdi);
     x86p_emit_pop_r64(e, kX64Rsi);
   }
+  x86p_emit_pop_r64(e, kX64Rbp);
+  x86p_emit_pop_r64(e, kX64R13);
+  x86p_emit_pop_r64(e, kX64R12);
   x86p_emit_pop_r64(e, kX64R15);
   x86p_emit_pop_r64(e, kX64R14);
   x86p_emit_pop_r64(e, cpu_reg);

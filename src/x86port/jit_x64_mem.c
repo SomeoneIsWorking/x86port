@@ -3,6 +3,7 @@
  * computes, the bounds check against the block's mapping, the host pointer,
  * and the fault sites that check leaves for the block's stubs.
  */
+#include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 
 #include "cond.h"
@@ -40,10 +41,11 @@
  * functions rather than a flag, because a flag at a call site is a thing to
  * get the wrong way round.
  */
-void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
+void emit_address_parts(BlockCtx *c, const X86pOperand *o) {
+  X86pEmit *e = c->e;
   int have_base = (o->base >= 0);
   if (have_base) {
-    x86p_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
+    gpr_load(c, EA_REG, o->base, 4);
   } else {
     x86p_emit_mov_r32_imm32(e, EA_REG, 0u);
   }
@@ -63,7 +65,7 @@ void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
       shift = 0u;
       break;
     }
-    x86p_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
+    gpr_load(c, ADDR_TMP, o->index, 4);
     if (shift) {
       x86p_emit_shift_r32_imm8(e, kX64Shl, ADDR_TMP, (uint8_t)shift);
     }
@@ -82,8 +84,9 @@ void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
  * nothing at all for the other four rather than a load and an add on every
  * memory access in the program.
  */
-void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
-  emit_address_parts(e, o);
+void emit_effective_address(BlockCtx *c, const X86pOperand *o) {
+  X86pEmit *e = c->e;
+  emit_address_parts(c, o);
   if (o->seg == (uint8_t)kX86pSegFs) {
     x86p_emit_alu_r32_mem(e, kX64Add, EA_REG, CPU_REG, (int32_t)offsetof(X86pCpu, fs_base));
   } else if (o->seg == (uint8_t)kX86pSegGs) {
@@ -157,7 +160,7 @@ void note_divide_fault(BlockCtx *c, X86pEmitSite site) {
    byte past the mapping must be refused, and a check hard-coded to 4 would
    refuse a legal one-byte access at the last address instead. */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
-  emit_effective_address(c->e, o);
+  emit_effective_address(c, o);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
   emit_host_pointer(c->e, &c->plan);
 }

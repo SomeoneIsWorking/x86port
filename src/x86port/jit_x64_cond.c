@@ -34,6 +34,7 @@
 #include "cond.h"
 #include "flags.h"
 #include "jit_x64_abi.h"
+#include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 
 #include <stddef.h>
@@ -176,6 +177,8 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
   if (out_of_line && !c->has_cond_slow) {
     c->has_cond_slow = 1;
     c->cond_slow_guard = slow;
+    /* The out-of-line path returns here after a helper call. */
+    gpr_forget(c);
     c->cond_slow_resume = x86p_emit_here(e);
     c->cond_slow_cond = cond;
     return;
@@ -220,5 +223,5 @@ void x86p_x64_emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, i
     x86p_emit_store8_reg(c->e, HOSTPTR_REG, 0, CARRY_REG);
     return;
   }
-  x86p_emit_store8_reg(c->e, CPU_REG, reg_off_w(dst->reg, 1), kX64Rax);
+  gpr_store(c, dst->reg, kX64Rax, 1);
 }
