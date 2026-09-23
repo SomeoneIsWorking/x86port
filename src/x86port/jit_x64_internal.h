@@ -46,6 +46,12 @@
 #define ADDR_TMP kX64Rdi  /* index/offset scratch during address forming */
 #define CARRY_REG kX64Rcx /* the pending carry-in bit, until it is safe to store */
 
+/* The x87 TOP and occupancy cache across a block's x87 forms
+   (jit_x64_x87_inline.h). Callee-saved, so helper calls keep them, and saved
+   by the block's frame (jit_x64_abi.h). */
+#define X87_TOP_REG kX64R14
+#define X87_FULL_REG kX64R15
+
 /* Guest instructions per block. */
 #define MAX_INSNS 64
 
@@ -85,6 +91,14 @@ typedef struct BlockCtx {
   unsigned nx87_loads;
   /* Bit k: host ST(k) holds a value the register file does not have yet. */
   unsigned x87_dirty;
+  /* Whether R14 and R15 hold TOP and the occupancy (THE CACHE), whether the
+     previous instruction was an x87 form, and whether its inline form ran;
+     and the calls into the block's routine that reads them back. */
+  int x87_regs_live;
+  int x87_open;
+  int x87_kept;
+  X86pEmitSite x87_syncs[MAX_INSNS * 2];
+  unsigned nx87_syncs;
   /* Whether the mirror was ever non-empty, so a fault or slow path may find
      values on the host stack to store. */
   int x87_used;

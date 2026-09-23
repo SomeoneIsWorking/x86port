@@ -11,6 +11,13 @@
  *   RSI  destination tag slot:       [RSI + tag0_off()] is its tag
  *   RDI  source register slot, for a source the mirror does not hold
  *
+ * and across the block, while BlockCtx.x87_regs_live:
+ *
+ *   R14  TOP, as memory holds it
+ *   R15  occupancy relative to TOP: bit k is set when ST(k) holds a value,
+ *        and the byte is repeated four times so that a 32-bit rotate is the
+ *        byte's own rotate
+ *
  * A tag byte records only whether a register is occupied (x87.h), so a write
  * stores kTagValid and never classifies the value it wrote.
  *
@@ -48,6 +55,10 @@ _Static_assert(sizeof(X86pX87Reg) == 16, "x87 register slots are addressed as in
 #define kTagValid ((unsigned)kX86pX87TagValid)
 #define kTagEmpty ((unsigned)kX86pX87TagEmpty)
 #define X87_MIRROR_MAX 7u
+/* One occupancy bit in each byte of X87_FULL_REG. */
+#define X87_FULL_EACH_BYTE 0x01010101u
+_Static_assert((kX86pX87TagEmpty & 1) == 1 && (kX86pX87TagValid & 1) == 0,
+               "the occupancy sync reads bit 0 of each stored tag");
 
 static int32_t x87_field(size_t field) {
   return (int32_t)(offsetof(X86pCpu, x87) + field);
@@ -102,7 +113,7 @@ static void note_slow(BlockCtx *c, X87Inline *fast, unsigned cc) {
 
 /* eax = (TOP + delta) & 7 -- the physical register ST(delta) names. */
 static void emit_phys(X86pEmit *e, unsigned delta) {
-  x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top_off());
+  x86p_emit_mov_r32_r32(e, kX64Rax, X87_TOP_REG);
   if (delta & 7u) {
     x86p_emit_alu_r32_imm32(e, kX64Add, kX64Rax, delta & 7u);
     x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
@@ -122,20 +133,50 @@ static void emit_reg_slot(X86pEmit *e, X86pHostReg slot) {
   x86p_emit_alu_r64_r64(e, kX64Add, slot, CPU_REG);
 }
 
-/* Jump to the slow path when the tag at [tag] is `tag_value`. */
-static void guard_tag_is(BlockCtx *c, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
-  X86pEmit *e = c->e;
-  x86p_emit_load8_zx(e, kX64Rcx, tag, tag0_off());
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, tag_value);
+/* Jump to the slow path unless ST(index) holds a value. */
+static void guard_occupied(BlockCtx *c, X87Inline *fast, unsigned index) {
+  x86p_emit_test_r32_imm32(c->e, X87_FULL_REG, 1u << index);
   note_slow(c, fast, kCcE);
 }
 
-/* Jump to the slow path when the tag at [tag] is anything BUT `tag_value`. */
-static void guard_tag_is_not(BlockCtx *c, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
-  X86pEmit *e = c->e;
-  x86p_emit_load8_zx(e, kX64Rcx, tag, tag0_off());
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, tag_value);
+/* Jump to the slow path unless ST(7), the register a push fills, is empty:
+   the helper reports the overflow. */
+static void guard_push_slot(BlockCtx *c, X87Inline *fast) {
+  x86p_emit_test_r32_imm32(c->e, X87_FULL_REG, 1u << 7);
   note_slow(c, fast, kCcNe);
+}
+
+/* The cache in R14 and R15 made current, from memory, where it may not be:
+   the first inline form after anything that calls out, and every slow path
+   after its helper. */
+static void regs_sync(BlockCtx *c) {
+  if (c->nx87_syncs >= sizeof c->x87_syncs / sizeof c->x87_syncs[0]) {
+    c->e->overflow = 1;
+    return;
+  }
+  c->x87_syncs[c->nx87_syncs++] = x86p_emit_call_rel32(c->e);
+  c->x87_regs_live = 1;
+}
+
+static void regs_ensure(BlockCtx *c) {
+  if (!c->x87_regs_live) {
+    regs_sync(c);
+  }
+}
+
+/* TOP moved to EAX, which the caller stored: the cache follows. A push
+   rotates the occupancy up and fills ST(0); a pop empties ST(0) and rotates it
+   down to ST(7). */
+static void regs_pushed(X86pEmit *e) {
+  x86p_emit_mov_r32_r32(e, X87_TOP_REG, kX64Rax);
+  x86p_emit_shift_r32_imm8(e, kX64Rol, X87_FULL_REG, 1u);
+  x86p_emit_alu_r32_imm32(e, kX64Or, X87_FULL_REG, X87_FULL_EACH_BYTE);
+}
+
+static void regs_popped(X86pEmit *e) {
+  x86p_emit_mov_r32_r32(e, X87_TOP_REG, kX64Rax);
+  x86p_emit_alu_r32_imm32(e, kX64And, X87_FULL_REG, ~X87_FULL_EACH_BYTE);
+  x86p_emit_shift_r32_imm8(e, kX64Ror, X87_FULL_REG, 1u);
 }
 
 /*
@@ -180,6 +221,7 @@ static void emit_pop(X86pEmit *e) {
   x86p_emit_alu_r32_imm32(e, kX64Add, kX64Rax, 1u);
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
   x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
+  regs_popped(e);
 }
 
 static void fld_ext80(X86pEmit *e, X86pHostReg slot) {
@@ -215,9 +257,23 @@ static void write_through(X86pEmit *e, unsigned host_index, X86pHostReg slot) {
   fstp_ext80(e, slot);
 }
 
+/* The store_pop and loader routines address guest registers from TOP in R14.
+   The mirror is only filled by forms that made the cache current, and it is
+   emptied before anything that makes the cache stale, so a call with the cache
+   stale is a lowering defect: refuse the block. */
+static int regs_live_for_routine(BlockCtx *c) {
+  if (!c->x87_regs_live) {
+    c->e->overflow = 1;
+  }
+  return c->x87_regs_live;
+}
+
 /* Call the block's store_pop routine: host ST(0) into guest ST(ECX)'s slot,
-   popped. It addresses the slot from TOP in memory. */
+   popped. */
 static void call_store_pop(BlockCtx *c, unsigned guest_index) {
+  if (!regs_live_for_routine(c)) {
+    return;
+  }
   if (c->nx87_store_pops >= sizeof c->x87_store_pops / sizeof c->x87_store_pops[0]) {
     c->e->overflow = 1; /* an unbound call would jump anywhere; refuse the block */
     return;
@@ -239,6 +295,9 @@ static void call_spill(BlockCtx *c) {
 /* Call the block's write_back routine for a mirror whose state is `state`
    (mirror_state). */
 static void call_write_back(BlockCtx *c, unsigned state) {
+  if (!regs_live_for_routine(c)) {
+    return;
+  }
   if (c->nx87_write_backs >= sizeof c->x87_write_backs / sizeof c->x87_write_backs[0]) {
     c->e->overflow = 1;
     return;
@@ -286,6 +345,9 @@ static void mirror_load(BlockCtx *c, unsigned depth) {
     return;
   }
   c->x87_used = 1;
+  if (!regs_live_for_routine(c)) {
+    return;
+  }
   if (c->nx87_loads >= sizeof c->x87_loads / sizeof c->x87_loads[0]) {
     c->e->overflow = 1; /* an unbound call would jump anywhere; refuse the block */
     return;
@@ -428,6 +490,7 @@ static void finish_fast(BlockCtx *c, X87Inline *fast) {
   fast->depth = c->x87_depth;
   fast->dirty = c->x87_dirty;
   fast->emitted = 1;
+  c->x87_kept = 1;
 }
 
 /* More dirty values than this go through the write_back routine, which
@@ -468,6 +531,18 @@ static void begin(X87Inline *fast) {
   fast->depth = 0;
   fast->dirty = 0;
   fast->spill = 0;
+}
+
+void x87_cache_before(BlockCtx *c, const X86pInsn *insn, int keeps_mirror) {
+  if (c->x87_open && !c->x87_kept) {
+    c->x87_regs_live = 0; /* an x87 instruction's helper ran */
+  }
+  c->x87_open = insn->op == (uint8_t)kX86pInsnX87;
+  c->x87_kept = 0;
+  if (!keeps_mirror) {
+    x87_cache_flush(c);
+    c->x87_regs_live = 0;
+  }
 }
 
 void x87_cache_flush(BlockCtx *c) {
@@ -546,7 +621,7 @@ static void emit_write_back_routines(BlockCtx *c) {
     X86pEmitSite empty;
     size_t loop;
     store_pop = x86p_emit_here(e);
-    x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top_off());
+    x86p_emit_mov_r32_r32(e, kX64Rax, X87_TOP_REG);
     x86p_emit_alu_r32_r32(e, kX64Add, kX64Rax, kX64Rcx);
     x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
     x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, 4u);
@@ -599,7 +674,7 @@ static void emit_loader(BlockCtx *c) {
     return;
   }
   entry = x86p_emit_here(e);
-  x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top_off());
+  x86p_emit_mov_r32_r32(e, kX64Rax, X87_TOP_REG);
   x86p_emit_alu_r32_r32(e, kX64Add, kX64Rax, kX64Rcx);
   loop = x86p_emit_here(e);
   x86p_emit_alu_r32_imm32(e, kX64Sub, kX64Rax, 1u);
@@ -618,8 +693,46 @@ static void emit_loader(BlockCtx *c) {
 }
 #endif
 
+/*
+ * sync: R14 = TOP and R15 = the occupancy relative to it, from memory. A
+ * stored tag is kTagValid or kTagEmpty (x87.h), told apart by bit 0; one
+ * multiply gathers the eight bit 0s into a byte, which is replicated and then
+ * rotated so that bit k names ST(k). Clobbers RAX, RCX and the flags.
+ */
+static void emit_regs_sync(BlockCtx *c) {
+  X86pEmit *e = c->e;
+  size_t entry;
+  unsigned i;
+  if (!c->nx87_syncs) {
+    return;
+  }
+  entry = x86p_emit_here(e);
+  x86p_emit_load8_zx(e, X87_TOP_REG, CPU_REG, top_off());
+  x86p_emit_load64(e, kX64Rax, CPU_REG, tag0_off());
+  x86p_emit_mov_r64_imm64(e, kX64Rcx, 0x0101010101010101u);
+  x86p_emit_alu_r64_r64(e, kX64And, kX64Rax, kX64Rcx);
+  x86p_emit_mov_r64_imm64(e, kX64Rcx, 0x0102040810204080u); /* byte k's bit 0 to bit 56 + k */
+  x86p_emit_imul_r64_r64(e, kX64Rax, kX64Rcx);
+  x86p_emit_shift_r64_imm8(e, kX64Shr, kX64Rax, 56u);
+  x86p_emit_alu_r32_imm32(e, kX64Xor, kX64Rax, 0xFFu); /* empty -> occupied */
+  x86p_emit_mov_r32_r32(e, kX64Rcx, kX64Rax);
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rcx, 8u);
+  x86p_emit_alu_r32_r32(e, kX64Or, kX64Rax, kX64Rcx);
+  x86p_emit_mov_r32_r32(e, kX64Rcx, kX64Rax);
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rcx, 16u);
+  x86p_emit_alu_r32_r32(e, kX64Or, kX64Rax, kX64Rcx);
+  x86p_emit_mov_r32_r32(e, kX64Rcx, X87_TOP_REG);
+  x86p_emit_shift_r32_cl(e, kX64Ror, kX64Rax);
+  x86p_emit_mov_r32_r32(e, X87_FULL_REG, kX64Rax);
+  x86p_emit_ret(e);
+  for (i = 0; i < c->nx87_syncs; i++) {
+    x86p_emit_bind_to(e, c->x87_syncs[i], entry);
+  }
+}
+
 void x87_cache_emit_routines(BlockCtx *c) {
 #if X87_INLINE_HOST
+  emit_regs_sync(c);
   emit_loader(c);
   emit_write_back_routines(c);
 #else
@@ -653,6 +766,8 @@ void x87_inline_end(BlockCtx *c, X87Inline *fast) {
     return;
   }
 #if X87_INLINE_HOST
+  /* The helper may have moved TOP or changed a tag. */
+  regs_sync(c);
   mirror_load(c, fast->depth);
   /* The paths meet with the fast path's dirty set: after the slow path those
      registers are clean, and storing a clean value again is exact. */
@@ -668,17 +783,18 @@ void x87_inline_load(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     X86pEmit *e = c->e;
     const X86pOperand *o = &insn->operand[0];
     const unsigned src = (unsigned)o->reg;
+    regs_ensure(c);
     if (o->kind != kX86pOperandMem) {
       /* FLD ST(i): the source is read BEFORE the push renumbers the stack. */
+      guard_occupied(c, fast, src);
       emit_phys(e, src);
-      emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
       emit_reg_slot(e, kX64Rdi);
     }
+    guard_push_slot(c, fast);
     emit_phys(e, 7u); /* the slot a push fills: TOP - 1 */
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is_not(c, fast, kX64Rsi, kTagEmpty); /* full: the helper reports the overflow */
     x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
+    regs_pushed(e);
     mirror_make_room(c);
     if (o->kind == kX86pOperandMem) {
       fld_guest(e, o->size, insn->x87 == kX86pX87InsnLoadInt);
@@ -720,14 +836,11 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
         x87_cache_flush(c);
         return;
       }
+      regs_ensure(c);
       guard_host_control(c, fast);
       guard_census_disarmed(c, fast);
-      emit_phys(e, src);
-      emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
-      emit_phys(e, dst);
-      emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+      guard_occupied(c, fast, src);
+      guard_occupied(c, fast, dst);
       mirror_ensure(c, deepest + 1u);
       if (divide) {
         guard_mirrored_nonzero(c, fast, reverse ? dst : src);
@@ -761,11 +874,10 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       x87_cache_flush(c);
       return;
     }
+    regs_ensure(c);
     guard_host_control(c, fast);
     guard_census_disarmed(c, fast);
-    emit_phys(e, 0u);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    guard_occupied(c, fast, 0u);
     if (divide && !reverse) {
       guard_memory_nonzero(c, fast, o0->size, insn->x87_mem_int);
     }
@@ -798,9 +910,8 @@ void x87_inline_store_reg(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       x87_cache_flush(c);
       return;
     }
-    emit_phys(e, 0u);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    regs_ensure(c);
+    guard_occupied(c, fast, 0u);
     emit_phys(e, dst);
     emit_tag_slot(e, kX64Rsi);
     emit_reg_slot(e, kX64Rdx);
@@ -812,6 +923,7 @@ void x87_inline_store_reg(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       write_through(e, 0u, kX64Rdx); /* a register only memory holds */
     }
     emit_occupied(e, kX64Rsi);
+    x86p_emit_alu_r32_imm32(e, kX64Or, X87_FULL_REG, X87_FULL_EACH_BYTE << dst);
     if (insn->x87_pops) {
       pop_mirrored(c, 1u);
     }
@@ -836,10 +948,9 @@ void x87_inline_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, 
       x87_cache_flush(c);
       return;
     }
+    regs_ensure(c);
     guard_host_control(c, fast);
-    emit_phys(e, 0u);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    guard_occupied(c, fast, 0u);
     mirror_ensure(c, 1u);
     /* Only now may the access fault: ST(0) holds a value to store. The fault
        stub spills the mirror. */
@@ -878,9 +989,8 @@ void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       x87_cache_flush(c);
       return;
     }
-    emit_phys(e, 0u);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    regs_ensure(c);
+    guard_occupied(c, fast, 0u);
     if (unary) {
       mirror_ensure(c, 1u);
       x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnAbs ? 0xE1u : 0xE0u); /* fabs / fchs */
@@ -888,9 +998,7 @@ void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       finish_fast(c, fast);
       return;
     }
-    emit_phys(e, index);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    guard_occupied(c, fast, index);
     mirror_ensure(c, index + 1u);
     if (exchange) {
       x86p_emit_x87_reg(e, 0xD9u, (uint8_t)(0xC8u + index)); /* fxch st(i) */
@@ -921,9 +1029,8 @@ void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) 
       x87_cache_flush(c);
       return;
     }
-    emit_phys(e, 0u);
-    emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
+    regs_ensure(c);
+    guard_occupied(c, fast, 0u);
     mirror_ensure(c, 1u);
     zero_compare_scratch(e);
     /* The operand goes on top and FUCOMIP drops it again, so the flags compare
@@ -949,10 +1056,12 @@ void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       x87_cache_flush(c);
       return;
     }
+    regs_ensure(c);
+    guard_push_slot(c, fast);
     emit_phys(e, 7u); /* the slot a push fills: TOP - 1 */
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is_not(c, fast, kX64Rsi, kTagEmpty);
     x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
+    regs_pushed(e);
     mirror_make_room(c);
     x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnConstZero ? 0xEEu : 0xE8u); /* fldz / fld1 */
     mirror_pushed(c);
@@ -978,4 +1087,5 @@ void x87_inline_status_ax(BlockCtx *c) {
   x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rcx, kX64Rax);
   x86p_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rcx);
+  c->x87_kept = 1;
 }

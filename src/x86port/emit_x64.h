@@ -124,6 +124,12 @@ void x86p_emit_mov_r32_r32(X86pEmit *e, X86pHostReg dst, X86pHostReg src);
 /* mov r32, [base + disp] */
 void x86p_emit_load32(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
 
+/* mov r64, [base + disp] -- eight bytes of host state at once. */
+void x86p_emit_load64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp);
+
+/* imul r64, r64 -- the low 64 bits of the product. */
+void x86p_emit_imul_r64_r64(X86pEmit *e, X86pHostReg dst, X86pHostReg src);
+
 /* mov [base + disp], r32 */
 void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);
 
@@ -190,11 +196,14 @@ void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
 
 /* The C1 / D3 group's ModRM.reg digit for each shift, so the enum IS the
    encoding. */
-typedef enum X86pHostShift { kX64Shl = 4, kX64Shr = 5, kX64Sar = 7 } X86pHostShift;
+typedef enum X86pHostShift { kX64Rol = 0, kX64Ror = 1, kX64Shl = 4, kX64Shr = 5, kX64Sar = 7 } X86pHostShift;
 
 /* <shift> r32, imm8 -- guest shifts, index scales, the halves of a MOVSX
    synthesised from shifts, and the sign fill of CDQ/CWDE. */
 void x86p_emit_shift_r32_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count);
+
+/* <shift> r64, imm8 -- a 64-bit value's high byte brought down. */
+void x86p_emit_shift_r64_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count);
 
 /* <shift> r32, cl -- the count is whatever CL holds, masked to five bits by
    the host exactly as the guest masks it. */
@@ -218,6 +227,9 @@ void x86p_emit_packed_ps(X86pEmit *e, X86pHostPacked op, X86pHostXmm dst, X86pHo
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);
+
+/* test r32, imm32 -- flags from a mask, the register unchanged. */
+void x86p_emit_test_r32_imm32(X86pEmit *e, X86pHostReg a, uint32_t imm);
 
 /*
  * cmovcc r32, r32 -- conditional move, using the HOST's condition codes.

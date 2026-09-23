@@ -1051,9 +1051,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     }
 
-    if (!keeps_x87_mirror(&insn)) {
-      x87_cache_flush(&ctx);
-    }
+    x87_cache_before(&ctx, &insn, keeps_x87_mirror(&insn));
 
     if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet || is_indirect_branch(&insn)) {
       uint32_t next = pc + insn.length;
