@@ -85,6 +85,10 @@ typedef struct BlockCtx {
   X86pJitLeafResolveFn leaf;
   void *leaf_user;
   unsigned leaf_calls;
+  /* Where a CALL through a register or memory claims its site, or NULL. Set
+     only with `leaf`. */
+  X86pJitLeafSites *leaf_sites;
+  unsigned leaf_site_count;
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
   /* The guest address this block translates, and the exits that jump to its

@@ -2,6 +2,7 @@
    a block. */
 #include "block_cache.h"
 #include "cond.h"
+#include "jit_leaf_sites.h"
 #include "jit_x64_abi.h"
 #include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
@@ -269,10 +270,78 @@ void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   emit_exit_from(c, TARGET_REG);
 }
 
+/*
+ * A CALL through a register or memory with a leaf site (jit_leaf_sites.h), its
+ * return address pushed and its target in TARGET_REG:
+ *
+ *       cmp  target, [site.target]      ; the site's target: its leaf, if any
+ *       jne  miss
+ *       leaf = [site.leaf]; if none, the ordinary exit
+ *   call_leaf:
+ *       [cpu.eip] = target; call leaf(cpu)
+ *       taken: exit to the return address; declined: the ordinary exit
+ *   miss:
+ *       spent refills: the ordinary exit
+ *       [cpu.eip] = target; leaf = fill(site, target)
+ *       a leaf: back to call_leaf; none: the ordinary exit
+ *
+ * The target survives the calls in [cpu.eip], the store the leaf needs anyway.
+ */
+static void emit_leaf_site(BlockCtx *c, X86pJitLeafSite *site, uint32_t return_eip) {
+  X86pEmit *e = c->e;
+  const int32_t eip_at = (int32_t)offsetof(X86pCpu, eip);
+  X86pEmitSite reload[1];
+  X86pEmitSite ordinary[2];
+
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)site);
+  x86p_emit_alu_r32_mem(e, kX64Cmp, TARGET_REG, kX64Rax, (int32_t)offsetof(X86pJitLeafSite, target));
+  const X86pEmitSite miss = x86p_emit_jcc_rel32(e, kX86pCondNZ);
+  x86p_emit_load64(e, kX64Rax, kX64Rax, (int32_t)offsetof(X86pJitLeafSite, leaf));
+  x86p_emit_alu_r64_imm8(e, kX64Cmp, kX64Rax, 0);
+  ordinary[0] = x86p_emit_jcc_rel32(e, kX86pCondZ);
+  x86p_emit_store32(e, CPU_REG, eip_at, TARGET_REG);
+
+  const size_t call_leaf = e->len;
+  x86p_emit_mov_r64_r64(e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_call_r64(e, kX64Rax);
+  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
+  reload[0] = x86p_emit_jcc_rel32(e, kX86pCondZ); /* declined */
+  emit_exit(c, return_eip);
+
+  x86p_emit_bind(e, miss); /* RAX still holds the site */
+  x86p_emit_load32(e, kX64Rcx, kX64Rax, (int32_t)offsetof(X86pJitLeafSite, refills));
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, X86P_JIT_LEAF_SITE_REFILLS);
+  ordinary[1] = x86p_emit_jcc_rel32(e, kX86pCondNB);
+  x86p_emit_store32(e, CPU_REG, eip_at, TARGET_REG);
+  /* fill(site, target): ARG1 is TARGET_REG itself on Windows, and neither
+     argument register is the other's source on either ABI. */
+  x86p_emit_mov_r32_r32(e, X86P_JIT_HOST_ARG1, TARGET_REG);
+  x86p_emit_mov_r64_r64(e, X86P_JIT_HOST_ARG0, kX64Rax);
+  x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_jit_leaf_site_fill);
+  x86p_emit_call_r64(e, kX64Rax);
+  x86p_emit_alu_r64_imm8(e, kX64Cmp, kX64Rax, 0);
+  x86p_emit_bind_to(e, x86p_emit_jcc_rel32(e, kX86pCondNZ), call_leaf);
+
+  /* No leaf, or a declined one: the target, kept in [cpu.eip] across the
+     call, leaves as an ordinary CALL's would. */
+  x86p_emit_bind(e, reload[0]);
+  x86p_emit_load32(e, TARGET_REG, CPU_REG, eip_at);
+  for (unsigned i = 0; i < 2u; i++) {
+    x86p_emit_bind(e, ordinary[i]);
+  }
+  emit_exit_from(c, TARGET_REG);
+}
+
 void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
   emit_read_branch_target(c, &insn->operand[0], insn_eip);
   x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
   emit_push_rsi(c, insn_eip);
+  X86pJitLeafSite *const site = c->leaf_sites ? x86p_jit_leaf_sites_claim(c->leaf_sites) : NULL;
+  if (site) {
+    c->leaf_site_count++;
+    emit_leaf_site(c, site, return_eip);
+    return;
+  }
   emit_exit_from(c, TARGET_REG);
 }
 
