@@ -1926,13 +1926,14 @@ static void test_guarded_whole_space_drops_the_check(void) {
 #if defined(_WIN32)
   printf("    SKIP guard fault: needs fork\n");
 #else
-  void *above = mmap((void *)(uintptr_t)(UINT64_C(1) << 32),
-                     page,
-                     PROT_NONE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
-                     -1,
-                     0);
-  if (above == MAP_FAILED || (uintptr_t)above != (uintptr_t)(UINT64_C(1) << 32)) {
+  /* A hint, not MAP_FIXED_NOREPLACE, which Darwin lacks: an address other
+     than the one asked for is handed back and refused below. */
+  void *const want = (void *)(uintptr_t)(UINT64_C(1) << 32);
+  void *above = mmap(want, page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (above != want) {
+    if (above != MAP_FAILED) {
+      munmap(above, page);
+    }
     printf("    SKIP guard fault: nothing could be mapped at 4 GB on this host\n");
     return;
   }
