@@ -340,17 +340,25 @@ static int can_emit(const X86pInsn *insn) {
    emits more could overrun a buffer the budget said had room. Measured, not
    assumed: the instruction that ended before `pc` is refused as an internal
    defect, and the next one starts at the current length. */
-static int insn_fit(const X86pEmit *e, size_t *insn_start, uint32_t pc, char *reason, unsigned reason_len) {
-  if (e->len - *insn_start > WORST_CASE_INSN_BYTES) {
+/* An instruction's bytes include the fault trampoline it adds to the tail, so
+   the loop's reservation of the tail those trampolines have already claimed
+   plus one worst case is enough for the next instruction wherever its bytes
+   land. */
+static int
+insn_fit(const BlockCtx *c, size_t *insn_start, size_t *tail_mark, uint32_t pc, char *reason, unsigned reason_len) {
+  const size_t used = (c->e->len - *insn_start) + (c->fault_tail_bytes - *tail_mark);
+  if (used > WORST_CASE_INSN_BYTES) {
     say(reason,
         reason_len,
-        "internal: the instruction before %08X emitted %zu bytes, past the %u-byte worst case",
+        "internal: the instruction before %08X emitted %zu bytes with its fault trampoline, past the %u-byte worst "
+        "case",
         pc,
-        e->len - *insn_start,
+        used,
         (unsigned)WORST_CASE_INSN_BYTES);
     return 0;
   }
-  *insn_start = e->len;
+  *insn_start = c->e->len;
+  *tail_mark = c->fault_tail_bytes;
   return 1;
 }
 
@@ -544,7 +552,7 @@ static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
 static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEbp, 4);
   gpr_store(c, kX86pEsp, EA_REG, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
   x86p_emit_alu_r32_imm32(c->e, kX64Add, EA_REG, 4u);
@@ -655,9 +663,8 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_string);
   x86p_emit_call_r64(c->e, kX64Rax);
   x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
-  x86p_emit_mov_r32_imm32(c->e, FAULTPC_REG, insn_eip);
   failed = x86p_emit_jcc_rel32(c->e, (unsigned)kX86pCondZ);
-  note_fault(c, failed);
+  note_fault(c, failed, insn_eip);
 }
 
 /* Push whatever is in RSI. The one implementation of the stack store, shared by
@@ -666,11 +673,11 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 void emit_push_rsi(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
   x86p_emit_alu_r32_imm32(c->e, kX64Sub, EA_REG, 4u);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
-  /* The bounds check preserves EA_REG -- it copies into ADDR_TMP -- so the new
-     ESP is still here and needs no second computation. */
+  /* The bounds check preserves EA_REG, so the new ESP is still here and needs
+     no second computation. */
   gpr_store(c, kX86pEsp, EA_REG, 4);
 }
 
@@ -695,7 +702,7 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
    popped value in RSI ends up. */
 static void emit_pop_rsi(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
 
@@ -877,6 +884,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   uint32_t count = 0;
   X86pJitExit exit = kX86pJitExitBlockEnd;
   size_t insn_start;
+  size_t tail_mark = 0;
   size_t tail_start;
   const char *stopper = NULL;
   int terminated = 0; /* a branch already emitted the exit */
@@ -936,12 +944,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
        epilogue. Discovering the overflow afterwards would mean discarding a
        block that was nearly finished, and worse, a caller that ignored the
        flag would run a block with no RET. */
-    if (!insn_fit(&e, &insn_start, pc, reason, reason_len)) {
+    if (!insn_fit(&ctx, &insn_start, &tail_mark, pc, reason, reason_len)) {
       return kX86pJitOutOfSpace;
     }
     gpr_check(&ctx); /* the checked build's, charged to no instruction */
     insn_start = e.len;
-    if (e.len + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
+    tail_mark = ctx.fault_tail_bytes;
+    if (e.len + ctx.fault_tail_bytes + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
       break;
     }
 
@@ -1058,7 +1067,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       x86p_x64_emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
-      int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+      int dead = flag_write_is_dead(
+          mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       /* NOT records no flags, so the PREVIOUS instruction is still the
          predecessor for the next one's carry-in -- and so is an INC/DEC/NEG
@@ -1144,7 +1154,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+        int dead = flag_write_is_dead(
+            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         /* A dead tuple was not stored, so the predecessor for the next
            carry-in is still the last kind actually written to memory. */
@@ -1153,7 +1164,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_w = insn.operand[0].size;
         }
       } else if (is_inline_shift(insn.alu)) {
-        int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+        int dead = flag_write_is_dead(
+            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
         int k = emit_shift_inline(&ctx, &insn, dead, pc);
         if (k == SHIFT_FLAGS_UNKNOWN) {
           last_kind = -1;
@@ -1194,7 +1206,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     count++;
   }
 
-  if (!insn_fit(&e, &insn_start, pc, reason, reason_len)) {
+  if (!insn_fit(&ctx, &insn_start, &tail_mark, pc, reason, reason_len)) {
     return kX86pJitOutOfSpace;
   }
   tail_start = e.len;
@@ -1207,14 +1219,27 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 
   /*
    * The shared fault stub, AFTER the normal return so it is never fallen into.
-   * FAULTPC_REG holds the guest EIP of whichever access failed, set immediately
-   * before each bounds check -- so EIP lands ON the faulting instruction and a
-   * caller can deliver the correct guest fault.
+   * Each run of sites with one guest EIP lands on a trampoline that loads that
+   * EIP into FAULTPC_REG and joins the stub, so EIP lands ON the faulting
+   * instruction and a caller can deliver the correct guest fault -- without an
+   * EIP load on every access's path.
    */
   if (ctx.nfaults) {
-    unsigned f;
-    for (f = 0; f < ctx.nfaults; f++) {
-      x86p_emit_bind(&e, ctx.faults[f]);
+    X86pEmitSite to_stub[MAX_INSNS * 2];
+    unsigned njoin = 0;
+    unsigned f = 0;
+    while (f < ctx.nfaults) {
+      const uint32_t fault_eip = ctx.fault_eips[f];
+      for (; f < ctx.nfaults && ctx.fault_eips[f] == fault_eip; f++) {
+        x86p_emit_bind(&e, ctx.faults[f]);
+      }
+      x86p_emit_mov_r32_imm32(&e, FAULTPC_REG, fault_eip);
+      if (f < ctx.nfaults) {
+        to_stub[njoin++] = x86p_emit_jmp_rel32(&e);
+      }
+    }
+    for (f = 0; f < njoin; f++) {
+      x86p_emit_bind(&e, to_stub[f]);
     }
     x87_cache_spill(&ctx);
     x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
@@ -1235,13 +1260,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   }
   emit_tail_routines(&ctx);
 
-  if (e.len - tail_start > EPILOGUE_BYTES) {
+  if (e.len - tail_start > EPILOGUE_BYTES + ctx.fault_tail_bytes) {
     say(reason,
         reason_len,
-        "internal: the tail of the block at %08X emitted %zu bytes, past the %u-byte budget",
+        "internal: the tail of the block at %08X emitted %zu bytes, past the %zu-byte budget",
         eip,
         e.len - tail_start,
-        (unsigned)EPILOGUE_BYTES);
+        (size_t)EPILOGUE_BYTES + ctx.fault_tail_bytes);
     return kX86pJitOutOfSpace;
   }
 
