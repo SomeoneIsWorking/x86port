@@ -355,6 +355,9 @@ void x86p_emit_dec_m64(X86pEmit *e, X86pHostReg base, int32_t disp);
 /* jmp qword [base + disp]: to a host address held in memory. */
 void x86p_emit_jmp_m64(X86pEmit *e, X86pHostReg base, int32_t disp);
 
+/* jmp r64: to a host address computed into a register. */
+void x86p_emit_jmp_r64(X86pEmit *e, X86pHostReg target);
+
 /* A single-byte raw opcode, for the handful of forms with no operands. */
 void x86p_emit_byte(X86pEmit *e, uint8_t b);
 

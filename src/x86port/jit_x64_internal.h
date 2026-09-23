@@ -82,6 +82,11 @@ typedef struct BlockCtx {
   X86pJitChain *chain;
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
+  /* The guest address this block translates, and the exits that jump to its
+     front-array probe (jit_chain.h, THE PROBE) when they miss their slot. */
+  uint32_t entry_eip;
+  X86pEmitSite chain_probes[4];
+  unsigned nchain_probes;
   /* How many guest x87 registers the host x87 stack mirrors here; see
      jit_x64_x87_inline.h. */
   unsigned x87_depth;
@@ -235,9 +240,15 @@ static inline void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86
 
 void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit);
+/* The routines a block's exits and x87 forms call, after its exits and fault
+   stubs: the chain probe and the x87 cache's (jit_x64_x87_inline.h). */
+void emit_tail_routines(BlockCtx *c);
+
 /* The block's exits to a next guest EIP: chained through a slot of
    `c->chain` when the translation has one (jit_chain.h), otherwise the plain
-   return. emit_block_end chains only kX86pJitExitBlockEnd. */
+   return. emit_block_end chains only kX86pJitExitBlockEnd. emit_exit_from is
+   for a target computed at run time, and asks the front array when it misses
+   its slot (jit_chain.h, THE PROBE). */
 void emit_exit(BlockCtx *c, uint32_t next_eip);
 void emit_exit_from(BlockCtx *c, X86pHostReg eip_reg);
 void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit);

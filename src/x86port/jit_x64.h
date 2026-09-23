@@ -107,13 +107,14 @@ const char *x86p_jit_status_name(X86pJitStatus s);
 #define X86P_JIT_WORST_CASE_INSN_BYTES 352u
 /* The block tail, bounded by its parts rather than by what a corpus happened
    to reach: the x87 mirror's last stores and pops (at most 34 bytes), the
-   normal exit (a chained exit is about 80 bytes on Win64), the two fault stubs
+   normal exit (a chained exit is about 90 bytes on Win64), the two fault stubs
    (about 25 each), the one out-of-line x86p_cond path a Jcc's inline condition
    can need (a Jcc ends its block, so there is never more than one; about 30
    bytes, and then its two exits are the instruction's own), and the x87
    mirror's loader and write-back routines (153 bytes with all four), and the
-   routine that reads the TOP and occupancy cache back from memory (about 75).
-   That is about 425.
+   routine that reads the TOP and occupancy cache back from memory (about 75),
+   and the chain probe that exits missing their slot jump to (about 125, with
+   12 more per exit to reach it; jit_chain.h). That is about 575.
 
    Both numbers are enforced, not trusted: x86p_jit_translate refuses a block
    in which one instruction, or the tail, emitted more, naming the count. The
@@ -124,7 +125,7 @@ const char *x86p_jit_status_name(X86pJitStatus s);
    corpora is 321 bytes (an x87 form with its guards, a slow path that writes
    two values back, and its helper sequence), which the 352 above holds with
    room for an addressing form the corpora do not reach. */
-#define X86P_JIT_EPILOGUE_BYTES 448u
+#define X86P_JIT_EPILOGUE_BYTES 640u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {

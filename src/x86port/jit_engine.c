@@ -196,6 +196,7 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
       free(e);
       return NULL;
     }
+    x86p_jit_chain_set_front(e->links, e->cache->front);
   }
   return e;
 }

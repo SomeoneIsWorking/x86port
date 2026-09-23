@@ -1044,6 +1044,132 @@ static void test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation(void
   x86p_jit_engine_destroy(eng);
 }
 
+/*
+ * THE PROBE (jit_chain.h): an exit whose target alternates misses its one slot
+ * every time, and transfers through the block cache's front array instead.
+ *
+ *   0:  E8 0F 00 00 00  CALL 20
+ *   5:  E8 0A 00 00 00  CALL 20
+ *   10: EB F4           JMP 0
+ *   20: 40              INC EAX    <- counts the calls, so a run that
+ *   21: C3              RET           overshoots its budget shows
+ *
+ * The RET leaves for 5, then 10, then 5. With slots alone its slot names the
+ * address it left for last, so every RET returns to the dispatcher: a quarter
+ * of the entries.
+ */
+static void probe_program(void) {
+  static const uint8_t prog[] = {0xE8, 0x0F, 0x00, 0x00, 0x00, 0xE8, 0x0A, 0x00, 0x00, 0x00, 0xEB, 0xF4};
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  g_guest[20] = 0x40;
+  g_guest[21] = 0xC3;
+}
+
+static void probe_run_agrees(X86pJitEngine *eng, uint64_t steps, uint64_t min_chained) {
+  X86pMem mem = guest_mem();
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu ci;
+  X86pCpu ce;
+  X86pJitEngineStats before;
+  X86pJitEngineStats after;
+  uint64_t n = 0u;
+  char reason[256];
+
+  seed(&ci);
+  /* One step per block entered: the stepper stops at each block's last
+     instruction, the INC and RET block counting as one entry. */
+  while (n < steps) {
+    CHECK(x86p_step(&ci, &mem, NULL) == kX86pStepOk);
+    n += ci.eip != GUEST_BASE + 21u;
+  }
+  x86p_jit_engine_stats(eng, &before);
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, steps, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(same_cpu(&ci, &ce));
+  x86p_jit_engine_stats(eng, &after);
+  CHECK(after.blocks_entered - before.blocks_entered == steps);
+  CHECK(after.blocks_chained - before.blocks_chained >= min_chained);
+  printf("    %llu of %llu block entries chained\n",
+         (unsigned long long)(after.blocks_chained - before.blocks_chained),
+         (unsigned long long)steps);
+}
+
+static void test_an_exit_with_changing_targets_transfers_through_the_front(void) {
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  uint32_t stops[2] = {GUEST_BASE + 5u, GUEST_BASE + 10u};
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  unsigned i;
+  char reason[256];
+
+  probe_program();
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  /* The same machine state, and the budget to the block. */
+  probe_run_agrees(eng, 1001u, 990u);
+
+  /* The stop address is the dispatcher's to enter, through a link or the
+     probe: the RET's slot names one of its two targets, and the probe
+     answers for the other. */
+  for (i = 0; i < 2u; i++) {
+    policy.take = stops[i];
+    seed(&ce);
+    CHECK(x86p_jit_engine_run(eng, &ce, &stops[i], 1000u, reason, sizeof reason) == kX86pRunIntercept);
+    CHECK(ce.eip == stops[i]);
+  }
+  policy.take = 0u;
+
+  /* +10 now spins. The front must no longer hold its old code, or the run
+     would keep going round the calls. */
+  g_guest[11] = 0xFE; /* JMP 10 */
+  x86p_jit_engine_invalidate(eng, GUEST_BASE + 10u, GUEST_BASE + 12u);
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, 100u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(ce.eip == GUEST_BASE + 10u);
+  x86p_jit_engine_destroy(eng);
+
+  /* A guarded block: the front holds a mark for it, which the probe must
+     refuse rather than enter, and every entry of it is a dispatch. */
+  probe_program();
+  policy.boundary = GUEST_BASE + 10u;
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  probe_run_agrees(eng, 1001u, 700u);
+  x86p_jit_engine_destroy(eng);
+
+  /* An indirect jump to its own block: the probe must leave that re-entry to
+     the dispatcher, which counts it.
+       0: B8 imm32  MOV EAX, GUEST_BASE + 5
+       5: FF E0     JMP EAX */
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xB8;
+  memcpy(&g_guest[1], &(uint32_t){GUEST_BASE + 5u}, 4u);
+  g_guest[5] = 0xFF;
+  g_guest[6] = 0xE0;
+  policy.boundary = GUEST_BASE + 0x1000u;
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, 200u, reason, sizeof reason) == kX86pRunBudget);
+  {
+    X86pJitEngineStats st;
+    x86p_jit_engine_stats(eng, &st);
+    CHECK(ce.eip == GUEST_BASE + 5u);
+    CHECK(st.blocks_entered == 200u);
+    CHECK(st.blocks_reentered == 198u);
+  }
+  x86p_jit_engine_destroy(eng);
+}
+
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
 
 static uint32_t g_disp_thunk, g_disp_unwind;
@@ -1544,6 +1670,7 @@ int main(void) {
   RUN(test_a_changed_host_control_word_retires_the_translations);
   RUN(test_chained_blocks_agree_with_the_interpreter);
   RUN(test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation);
+  RUN(test_an_exit_with_changing_targets_transfers_through_the_front);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

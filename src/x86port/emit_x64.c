@@ -528,6 +528,15 @@ void x86p_emit_jmp_m64(X86pEmit *e, X86pHostReg base, int32_t disp) {
   modrm_mem(e, (X86pHostReg)4, base, disp);
 }
 
+void x86p_emit_jmp_r64(X86pEmit *e, X86pHostReg target) {
+  /* FF /4, already 64-bit in long mode; REX.B only for a high register. */
+  if ((unsigned)target >= 8u) {
+    put(e, 0x41u);
+  }
+  put(e, 0xFFu);
+  put(e, (uint8_t)(0xE0u | ((unsigned)target & 7u)));
+}
+
 void x86p_emit_byte(X86pEmit *e, uint8_t b) {
   put(e, b);
 }
