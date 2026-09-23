@@ -225,6 +225,10 @@ typedef struct X86pJitEngineStats {
   uint64_t chain_links;
   uint64_t chain_exits;
   uint64_t chain_exits_unslotted;
+  /* Direct CALLs translated to call a leaf in place, summed at translation
+     (x86p_jit_engine_set_leaves). How often a leaf ran, and how often it
+     declined, is the consumer's to count: only it sees the answer. */
+  uint64_t leaf_calls;
 } X86pJitEngineStats;
 
 /*
@@ -362,6 +366,24 @@ int x86p_jit_engine_set_run_stop(X86pJitEngine *e, X86pJitRunStopFn fn, char *re
  * fall-through case. Null clears it.
  */
 void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *user);
+
+/*
+ * LEAVES. `fn` names, while a direct CALL is translated, host code that
+ * completes the call in place (jit_x64.h, X86pJitLeafFn) -- a native override
+ * small enough that leaving the block, asking the dispatcher and coming back
+ * cost more than its body. A declined call still reaches the callee through
+ * the dispatcher, so the consumer's ordinary path stays the complete one.
+ *
+ * Only a chaining translation calls a leaf: its return lands on a chained exit
+ * to the return address, under the run's stop and budget like any transfer.
+ * The x86-64 backend calls leaves; the others run every call the ordinary way.
+ *
+ * Refused (returns 0, with `reason`) when blocks are already cached: they were
+ * translated under the previous answer, which the new one does not replace.
+ * Null clears it.
+ */
+int x86p_jit_engine_set_leaves(
+    X86pJitEngine *e, X86pJitLeafResolveFn fn, void *user, char *reason, unsigned reason_len);
 
 /*
  * Turn the block cache off (enabled != 0 turns it back on; it is on by default).

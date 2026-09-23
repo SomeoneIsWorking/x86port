@@ -814,21 +814,21 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  X86pJitBlock *out,
                                  char *reason,
                                  unsigned reason_len) {
-  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, NULL, out, reason, reason_len);
+  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, out, reason, reason_len);
 }
 
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
                                          void *code,
                                          size_t code_cap,
-                                         X86pJitBoundaryFn boundary,
-                                         void *boundary_user,
-                                         X86pJitChain *chain,
+                                         const X86pJitTranslateEnv *env,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
-  /* This backend does not chain: every exit returns to the dispatcher. */
-  (void)chain;
+  /* This backend neither chains nor calls leaves: every exit returns to the
+     dispatcher. */
+  const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
+  void *const boundary_user = env ? env->boundary_user : NULL;
   X86pA64Emit e;
   BlockCtx ctx;
   uint32_t pc = eip;

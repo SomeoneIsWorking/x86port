@@ -25,6 +25,8 @@ struct X86pJitEngine {
   void *dispatch_user;
   X86pJitBoundaryFn boundary;
   void *boundary_user;
+  X86pJitLeafResolveFn leaf;
+  void *leaf_user;
   /* The intercept contract, when installed: see x86p_jit_engine_set_run_stop. */
   X86pJitRunStopFn run_stop;
   /* x86p_jit_host_state() that every cached translation was made under. */
@@ -351,6 +353,24 @@ void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *
   }
 }
 
+int x86p_jit_engine_set_leaves(
+    X86pJitEngine *e, X86pJitLeafResolveFn fn, void *user, char *reason, unsigned reason_len) {
+  if (!e) {
+    say(reason, reason_len, "no JIT engine");
+    return 0;
+  }
+  if (jc_block_count(e->cache) != 0u) {
+    say(reason,
+        reason_len,
+        "%zu block(s) are already cached, translated under the previous leaf resolver",
+        jc_block_count(e->cache));
+    return 0;
+  }
+  e->leaf = fn;
+  e->leaf_user = user;
+  return 1;
+}
+
 void x86p_jit_engine_set_cache(X86pJitEngine *e, int enabled) {
   if (e) {
     e->cache_disabled = enabled ? 0 : 1;
@@ -529,8 +549,8 @@ static void *translate_at(
     return NULL;
   }
   claimed = e->links ? x86p_jit_chain_claimed(e->links) : 0u;
-  *st = x86p_jit_storage_translate(
-      e->storage, e->mem, eip, e->boundary, e->boundary_user, e->links, &blk, reason, reason_len);
+  const X86pJitTranslateEnv env = {e->boundary, e->boundary_user, e->links, e->leaf, e->leaf_user};
+  *st = x86p_jit_storage_translate(e->storage, e->mem, eip, &env, &blk, reason, reason_len);
   if (*st != kX86pJitOk) {
     if (e->links) {
       x86p_jit_chain_rewind(e->links, claimed);
@@ -576,6 +596,7 @@ static void *translate_at(
   e->stats.exits_self += blk.exits_self;
   e->stats.chain_exits += blk.chain_exits;
   e->stats.chain_exits_unslotted += blk.chain_exits_unslotted;
+  e->stats.leaf_calls += blk.leaf_calls;
   if (e->chain) {
     x86p_jit_chain_census_note_block(
         e->chain, eip, blk.static_targets, blk.static_target_count, blk.static_targets_overflowed);

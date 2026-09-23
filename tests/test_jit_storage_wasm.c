@@ -199,8 +199,8 @@ int main(void) {
 
   for (i = 0; i < RECORDS; ++i) {
     X86pJitBlock block;
-    X86pJitStatus st = x86p_jit_storage_translate(
-        storage, &mem, GUEST_LO + i * STRIDE, NULL, NULL, NULL, &block, reason, sizeof reason);
+    X86pJitStatus st =
+        x86p_jit_storage_translate(storage, &mem, GUEST_LO + i * STRIDE, NULL, &block, reason, sizeof reason);
     if (st != kX86pJitOk) {
       printf("FAIL translate %u of %u: %s\n", i, RECORDS, reason);
       break;
@@ -230,8 +230,7 @@ int main(void) {
   /* The count came back down rather than only up: translating again fits. */
   {
     X86pJitBlock block;
-    X86pJitStatus st =
-        x86p_jit_storage_translate(storage, &mem, GUEST_LO, NULL, NULL, NULL, &block, reason, sizeof reason);
+    X86pJitStatus st = x86p_jit_storage_translate(storage, &mem, GUEST_LO, NULL, &block, reason, sizeof reason);
     check("translates again after eviction", st, kX86pJitOk);
   }
 

@@ -266,6 +266,8 @@ typedef struct X86pJitBlock {
      was claimed (jit_chain.h). */
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
+  /* Direct CALLs that call a leaf in place (X86pJitLeafFn). */
+  unsigned leaf_calls;
 } X86pJitBlock;
 
 /*
@@ -303,22 +305,59 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
 typedef int (*X86pJitBoundaryFn)(uint32_t eip, void *user);
 
 /*
- * As x86p_jit_translate, but ends the block before any address (other than
- * `eip` itself) for which `boundary` returns non-zero. `boundary` may be NULL,
- * which is exactly x86p_jit_translate.
+ * A LEAF: host code that completes a guest CALL to one address by itself.
  *
- * With `chain`, the block's exits to a next guest EIP claim slots in it and
- * may transfer straight to another translation (jit_chain.h); such a block
- * reads the chain's run header and is entered only by x86p_jit_engine_run.
- * NULL, and every exit returns. A backend that does not chain ignores it.
+ * Called with the CALL's return address already pushed and EIP at the callee,
+ * exactly as the callee would be entered. Returns non-zero when it has done
+ * what the callee and its RET would -- the return address and any arguments
+ * the callee pops are popped -- and execution continues at the return
+ * address. Returns zero, having changed NOTHING, when it cannot: the CALL then
+ * reaches the callee the ordinary way, through the dispatcher.
+ *
+ * It runs INSIDE the translated block that made the call, so it must not run
+ * guest code, give up the thread's hold on the guest (another guest thread
+ * could retire the block it returns into), retire translations, or unwind
+ * past its caller. A consumer that cannot promise that for every call must
+ * decline the ones it cannot.
  */
+typedef int (*X86pJitLeafFn)(X86pCpu *cpu);
+
+/* The leaf for a direct CALL to `target`, or NULL for an ordinary call.
+   Asked while translating, so its answer must hold for as long as the
+   translation does. */
+typedef X86pJitLeafFn (*X86pJitLeafResolveFn)(uint32_t target, void *user);
+
+/*
+ * What a translation is given by the engine it is made for. Every field may be
+ * NULL, and a NULL environment is all of them NULL:
+ *
+ *   - `boundary`: the block ends before any address (other than its entry)
+ *     for which it returns non-zero;
+ *   - `chain`: the block's exits to a next guest EIP claim slots in it and may
+ *     transfer straight to another translation (jit_chain.h); such a block
+ *     reads the chain's run header and is entered only by
+ *     x86p_jit_engine_run. Without it every exit returns;
+ *   - `leaf`: a direct CALL whose target it names a leaf for calls that leaf
+ *     in place (see X86pJitLeafFn).
+ *
+ * A backend that does not chain or call leaves ignores those fields; the
+ * dispatcher then runs every call the ordinary way.
+ */
+typedef struct X86pJitTranslateEnv {
+  X86pJitBoundaryFn boundary;
+  void *boundary_user;
+  X86pJitChain *chain;
+  X86pJitLeafResolveFn leaf;
+  void *leaf_user;
+} X86pJitTranslateEnv;
+
+/* As x86p_jit_translate, in the environment `env` (which may be NULL: that is
+   exactly x86p_jit_translate). */
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
                                          void *code,
                                          size_t code_cap,
-                                         X86pJitBoundaryFn boundary,
-                                         void *boundary_user,
-                                         X86pJitChain *chain,
+                                         const X86pJitTranslateEnv *env,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len);
