@@ -806,13 +806,16 @@ static void test_portable_path_divergence(void) {
 static void test_hw_compare_flags(void) {
   int i, j;
   unsigned long cases = 0, mismatch = 0;
-  const uint16_t mask = X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
+  const uint16_t mask = X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3;
+  const uint16_t unordered = X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3;
   for (i = 0; i < NVALS; i++) {
     for (j = 0; j < NVALS; j++) {
       X86pX87 f;
       uint16_t us, them;
       x86p_x87_reset(&f);
       CHECK(x86p_x87_push(&f, g_vals[i]));
+      /* A C1 left by an earlier instruction: the comparison clears it. */
+      f.status |= X86P_X87_C1;
       CHECK(x86p_x87_compare(&f, g_vals[j]));
       us = (uint16_t)(x86p_x87_status(&f) & mask);
       them = (uint16_t)(hw_compare(g_vals[i], g_vals[j]) & mask);
@@ -825,7 +828,7 @@ static void test_hw_compare_flags(void) {
       }
     }
   }
-  printf("    FCOM   %4lu case(s), %lu mismatch(es) on C0/C2/C3\n", cases, mismatch);
+  printf("    FCOM   %4lu case(s), %lu mismatch(es) on C0/C1/C2/C3\n", cases, mismatch);
   CHECK_EQ_U(cases, (unsigned long)(NVALS * NVALS));
   CHECK_EQ_U(mismatch, 0u);
 
@@ -836,8 +839,8 @@ static void test_hw_compare_flags(void) {
     x86p_x87_reset(&f);
     CHECK(x86p_x87_push(&f, (long double)NAN));
     CHECK(x86p_x87_compare(&f, 1.0L));
-    CHECK_EQ_U(x86p_x87_status(&f) & mask, mask);
-    CHECK_EQ_U(hw_compare((long double)NAN, 1.0L) & mask, mask);
+    CHECK_EQ_U(x86p_x87_status(&f) & mask, unordered);
+    CHECK_EQ_U(hw_compare((long double)NAN, 1.0L) & mask, unordered);
   }
 }
 

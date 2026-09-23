@@ -464,7 +464,7 @@ static void finish_compare(BlockCtx *c, X87Inline *fast, unsigned below_cc) {
   x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rcx, 14u); /* C3 */
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rax, kX64Rcx);
   x86p_emit_load16_zx(e, kX64Rdx, CPU_REG, status_off());
-  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, ~(uint32_t)(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3));
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, ~(uint32_t)(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rdx, kX64Rax);
   x86p_emit_store16_reg(e, CPU_REG, status_off(), kX64Rdx);
 }
