@@ -859,6 +859,74 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   x86p_jit_engine_destroy(eng);
 }
 
+/*
+ * A change of HOST x87 control word between runs.
+ *
+ * The x86-64 backend compares the guest's control word against the host's as
+ * a constant fixed at translation (x86p_jit_host_state), which is sound within
+ * a run because the ABI makes the host word callee-saved. Between runs the
+ * embedder may change it, and a cached block still carrying the old constant
+ * would take its inline path under the wrong host precision. 1 + 2^-60 - 1 is
+ * 2^-60 at the guest's extended precision and 0 at double precision, so a
+ * block that ran inline under a double-precision host word stores 0.
+ *
+ *   0:  DD 03        FLD   QWORD [EBX]       ; 1.0
+ *   2:  DC 43 08     FADD  QWORD [EBX+8]     ; 2^-60
+ *   5:  DC 23        FSUB  QWORD [EBX]
+ *   7:  DD 5B 10     FSTP  QWORD [EBX+16]
+ *   10: EB FE        JMP   10
+ */
+static void test_a_changed_host_control_word_retires_the_translations(void) {
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(_M_X64))
+  static const uint8_t prog[] = {0xDD, 0x03, 0xDC, 0x43, 0x08, 0xDC, 0x23, 0xDD, 0x5B, 0x10, 0xEB, 0xFE};
+  const uint64_t one = 0x3FF0000000000000ull;
+  const uint64_t tiny = 0x3C30000000000000ull; /* 2^-60 */
+  const uint16_t double_precision = 0x027Fu;
+  X86pMem mem = guest_mem();
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  uint16_t host_saved = 0u;
+  uint64_t result = 0u;
+  unsigned run;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  memcpy(g_guest + 0x400u, &one, sizeof one);
+  memcpy(g_guest + 0x408u, &tiny, sizeof tiny);
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, (unsigned)sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    printf("    (%s)\n", reason);
+    return;
+  }
+  __asm__ volatile("fnstcw %0" : "=m"(host_saved));
+  for (run = 0; run < 2u; run++) {
+    if (run == 1u) {
+      __asm__ volatile("fldcw %0" : : "m"(double_precision));
+    }
+    memset(g_guest + 0x410u, 0xCC, 8u);
+    seed(&cpu);
+    CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 16u, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+    memcpy(&result, g_guest + 0x410u, sizeof result);
+    CHECK(result == tiny);
+    if (result != tiny) {
+      printf("    run %u stored %016llx\n", run, (unsigned long long)result);
+    }
+  }
+  __asm__ volatile("fldcw %0" : : "m"(host_saved));
+
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(st.cache_flushes == 1u);
+  x86p_jit_engine_destroy(eng);
+#else
+  printf("    (no GNU x86-64 inline assembly to change the host control word: claims nothing)\n");
+#endif
+}
+
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
 
 static uint32_t g_disp_thunk, g_disp_unwind;
@@ -1356,6 +1424,7 @@ int main(void) {
   RUN(test_boundary_ends_a_block_before_a_flagged_address);
   RUN(test_intercept_contract_asks_only_where_it_can_fire);
   RUN(test_unsupported_instruction_is_a_product_refusal);
+  RUN(test_a_changed_host_control_word_retires_the_translations);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

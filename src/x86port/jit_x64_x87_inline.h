@@ -46,6 +46,10 @@ typedef struct X87Inline {
   X86pEmitSite done;
 } X87Inline;
 
+/* The host x87 control word, read now; 0 where this unit emits nothing. The
+   x86-64 backend's x86p_jit_host_state(). */
+uint32_t x87_inline_host_control(void);
+
 /* Bind the guards to the caller's helper sequence, which follows. */
 void x87_inline_begin_slow(X86pEmit *e, X87Inline *fast);
 /* Bind the fast path's completion jump after that sequence. */

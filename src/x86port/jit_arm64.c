@@ -55,6 +55,10 @@ int x86p_jit_available(void) {
 #endif
 }
 
+uint32_t x86p_jit_host_state(void) {
+  return 0u;
+}
+
 static void say(char *buf, unsigned len, const char *fmt, ...) {
   va_list ap;
   if (!buf || len == 0) {

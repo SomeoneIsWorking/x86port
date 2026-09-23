@@ -69,6 +69,8 @@ typedef struct MemPlan {
 typedef struct BlockCtx {
   X86pEmit *e;
   const X86pMem *mem;
+  /* x86p_jit_host_state() for this translation; see jit_x64.h. */
+  uint32_t host_state;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
