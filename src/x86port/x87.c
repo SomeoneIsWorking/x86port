@@ -654,7 +654,9 @@ int x86p_x87_compare(X86pX87 *f, long double other) {
     f->status |= X86P_X87_IE | X86P_X87_SF;
     return 0;
   }
-  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3);
+  /* Every FCOM/FUCOM/FICOM form clears C1 as well; a C1 an earlier FSQRT or
+     FPREM left must not survive a comparison. */
+  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
 #ifdef X86P_X87_BINARY128
   {
     const X86pF128 x = x86p_f128_of(a), y = x86p_f128_of(other);

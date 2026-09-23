@@ -34,7 +34,8 @@ void x86p_x87_test(X86pX87 *f) {
   if (!x86p_x87_get(f, 0, &v)) {
     return;
   }
-  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3);
+  /* FTST clears C1, as every comparison does. */
+  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
   if (v < 0) {
     f->status |= X86P_X87_C0;
   } else if (v == 0) {
@@ -58,6 +59,8 @@ int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index) {
     result |= X86P_ZF;
   }
   x86p_flags_set_explicit(flags, result);
+  /* FCOMI and FUCOMI report in EFLAGS and clear C1 in the status word. */
+  f->status &= (uint16_t)~X86P_X87_C1;
   return 1;
 }
 void x86p_x87_free(X86pX87 *f, int index) {
