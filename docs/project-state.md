@@ -181,7 +181,14 @@ not verification of the merged tree or complete guest semantics: macOS uses
 binary64 `long double`, and the prior interpreter/JIT comparison shared that
 inexact x87 representation. Both host backends use `jit_x87_predicates.c` for
 value admission: exact extended state, or the explicitly approved Apple ARM64
-binary64 path described below. `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
+binary64 path described below.
+
+Gap: the ARM64 backend does not link blocks to their successors
+(`x86p_jit_chain_entry_offset` returns 0), so every block exit returns to the
+dispatcher; x64 chains. `test_jit_engine` checks that a non-chaining backend
+chains nothing rather than asserting x64's chained counts there.
+
+`x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
 intercept and dispatch callbacks. The run loop consults the intercept once per
 block boundary, and a consumer's interception predicate needs the guest call
 frame it is currently inside -- which is per-thread. Before this the consumer

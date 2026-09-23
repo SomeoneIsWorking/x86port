@@ -18,6 +18,7 @@
 #include "x86port/cpu.h"
 #include "x86port/exec.h"
 #include "x86port/jit_engine.h"
+#include "x86port/jit_x64.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -943,6 +944,22 @@ static void test_a_changed_host_control_word_retires_the_translations(void) {
  */
 #define CHAIN_SPIN 17u
 
+/* Whether this build's backend links blocks at all. The AArch64 backend does
+   not yet (its x86p_jit_chain_entry_offset is 0); there a chained count must
+   be zero rather than merely unchecked. */
+static int backend_chains(void) {
+  return x86p_jit_chain_entry_offset() != 0u;
+}
+
+/* `chained` entries out of a run whose chaining backend must reach `least`. */
+static void check_chained(uint64_t chained, uint64_t least) {
+  if (backend_chains()) {
+    CHECK(chained >= least);
+  } else {
+    CHECK(chained == 0u);
+  }
+}
+
 static X86pJitEngine *chain_engine(X86pMem *mem, ContractIntercept *policy, char *reason) {
   X86pJitEngine *eng = contract_engine(mem, policy, 1, reason);
   CHECK(eng != NULL);
@@ -986,8 +1003,8 @@ static void test_chained_blocks_agree_with_the_interpreter(void) {
      budget is a block entered by one route or the other. */
   CHECK(st.blocks_entered == 4096u);
   CHECK(st.blocks_reentered >= 4000u);
-  CHECK(st.chain_links > 0u);
-  CHECK(st.blocks_chained > 0u);
+  check_chained(st.chain_links, 1u);
+  check_chained(st.blocks_chained, 1u);
   printf("    %llu of %llu block entries chained, %llu link(s), %llu chain exit(s)\n",
          (unsigned long long)st.blocks_chained,
          (unsigned long long)st.blocks_entered,
@@ -1024,7 +1041,7 @@ static void test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation(void
   CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 1001u, reason, sizeof reason) == kX86pRunBudget);
   x86p_jit_engine_stats(eng, &st);
   CHECK(st.blocks_entered == 1001u);
-  CHECK(st.blocks_chained >= 990u);
+  check_chained(st.blocks_chained, 990u);
   CHECK(cpu.eip == GUEST_BASE + 2u); /* 1001 entries: +0 first, so +2 is next */
 
   /* The stop address is the dispatcher's to enter, even through a link. */
@@ -1089,7 +1106,7 @@ static void probe_run_agrees(X86pJitEngine *eng, uint64_t steps, uint64_t min_ch
   CHECK(same_cpu(&ci, &ce));
   x86p_jit_engine_stats(eng, &after);
   CHECK(after.blocks_entered - before.blocks_entered == steps);
-  CHECK(after.blocks_chained - before.blocks_chained >= min_chained);
+  check_chained(after.blocks_chained - before.blocks_chained, min_chained);
   printf("    %llu of %llu block entries chained\n",
          (unsigned long long)(after.blocks_chained - before.blocks_chained),
          (unsigned long long)steps);

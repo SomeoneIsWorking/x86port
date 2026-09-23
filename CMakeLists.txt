@@ -11,6 +11,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # options; passing GCC's -Wall through clang-cl instead enables a different,
 # excessively broad warning set and makes the Windows contract accidental.
 if(MSVC)
+  # The Microsoft CRT marks ISO C functions such as fopen, getenv and sscanf
+  # deprecated in favour of its non-portable *_s forms; under /WX that makes
+  # standard C an error. The portable functions are the ones used here.
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
   set(X86P_WARN_FLAGS /W4 /WX)
   set(X86P_OPTIMIZE_FLAG /O2)
 else()
