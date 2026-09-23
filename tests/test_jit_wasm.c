@@ -39,6 +39,7 @@
 #include "decode.h"
 #include "exec.h"
 #include "flags.h"
+#include "host_pipe.h"
 #include "jit_wasm_lower.h"
 #include "jit_wasm_module.h"
 #include "jit_x64.h"
@@ -346,22 +347,6 @@ typedef struct Recording {
 } Recording;
 
 /* ---- the oracle --------------------------------------------------------- */
-
-static FILE *open_pipe(const char *command) {
-#if defined(_WIN32)
-  return _popen(command, "r");
-#else
-  return popen(command, "r");
-#endif
-}
-
-static int close_pipe(FILE *pipe) {
-#if defined(_WIN32)
-  return _pclose(pipe);
-#else
-  return pclose(pipe);
-#endif
-}
 
 static int engine_present(const char *node) {
   char command[512];

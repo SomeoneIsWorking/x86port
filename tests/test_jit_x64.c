@@ -1594,16 +1594,18 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   X86pJitBlock blk;
   char reason[192];
   X86pJitStatus st;
-  uint64_t rng = 7u;
-  Prog pr;
 
   CHECK(code != NULL);
   if (!code) {
     return;
   }
+  /* MOV EAX, imm32 then NOPs: instructions every build translates. A
+     generated program may open with x87, which a host without an 80-bit
+     long double refuses at entry for a reason that has nothing to do with
+     space. */
   memset(g_guest, 0x90, GUEST_SIZE);
-  pr = generate(&rng, 64u);
-  CHECK(pr.insns > 0u);
+  g_guest[0] = 0xB8u;
+  memcpy(&g_guest[1], "\x78\x56\x34\x12", 4u);
 
   /* A buffer too small for even the prologue plus one instruction. The result
      must be a refusal -- a truncated block would end without a RET. */
@@ -1615,7 +1617,11 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   /* Exactly the advertised minimum holds a block of at least one
      instruction: the engine flushes below it and translates at it, so a
      block that came back empty there would be refused as unsupported. */
+  reason[0] = '\0';
   st = jit_x64_harness_translate(&mem, GUEST_BASE, code, X86P_JIT_MIN_BLOCK_BYTES, &blk, reason, sizeof reason);
+  if (st != kX86pJitOk) {
+    printf("    minimum-size block: status %d, %s\n", (int)st, reason);
+  }
   CHECK(st == kX86pJitOk);
   CHECK(st != kX86pJitOk || blk.insns >= 1u);
   jit_x64_harness_code_free(code, 4096);
@@ -1757,7 +1763,18 @@ int main(void) {
     return 1;
   }
   printf("%lu of the inline condition(s) had their recorded kind proven and no guard\n", g_cond_proven);
-  if (g_cond_proven == 0u || g_cond_proven == g_cond_inline) {
+#if defined(__x86_64__) || defined(_M_X64)
+  /* Only the x64 backend proves a condition's kind; the arm64 one guards
+     every inline condition, so there a nonzero count would be the bug. */
+  const int proves = 1;
+#else
+  const int proves = 0;
+#endif
+  if (!proves && g_cond_proven != 0u) {
+    printf("REFUSED: %lu condition(s) unguarded by a backend that proves none\n", g_cond_proven);
+    return 1;
+  }
+  if (proves && (g_cond_proven == 0u || g_cond_proven == g_cond_inline)) {
     /* The proof must have dropped some guards and kept others: a run where
        every inline condition went one way says nothing about the other. */
     printf("REFUSED: %lu of %lu inline condition(s) unguarded; both must be exercised\n", g_cond_proven, g_cond_inline);
