@@ -336,6 +336,7 @@ static void test_the_guest_control_word_governs_a_transcendental(void) {
    helper once read the status after storing the result, and the store cleared
    C1: 3 rem 2 (quotient 1) and 4 rem 2 (quotient 2) then looked alike. */
 static void test_fprem_reports_its_quotient_in_c1(void) {
+#if HAVE_ORACLE
   static const struct {
     long double dividend;
     unsigned c1;
@@ -355,6 +356,7 @@ static void test_fprem_reports_its_quotient_in_c1(void) {
       g_failed++;
     }
   }
+#endif
 }
 
 int main(void) {
