@@ -382,23 +382,33 @@ static void test_alu_r32_imm32_every_op(void) {
                                                    ZYDIS_MNEMONIC_SUB,
                                                    ZYDIS_MNEMONIC_XOR,
                                                    ZYDIS_MNEMONIC_CMP};
+  /* Each side of the sign-extended byte boundary, and the encoded length
+     that says which form was chosen. */
+  static const struct {
+    uint32_t imm;
+    size_t len;
+  } kImms[] = {{0x12345678u, 6u}, {0x7Fu, 3u}, {0x80u, 6u}, {0xFFFFFF80u, 3u}, {0xFFFFFF7Fu, 6u}, {0u, 3u}};
   int op;
   int dst;
+  size_t k;
   for (op = 0; op < kX64AluCount; op++) {
     for (dst = 0; dst < kX64RegCount; dst++) {
-      uint8_t buf[16];
-      X86pEmit e;
-      Decoded d;
-      x86p_emit_init(&e, buf, sizeof buf);
-      x86p_emit_alu_r32_imm32(&e, (X86pHostAlu)op, (X86pHostReg)dst, 0x12345678u);
-      d = emit_and_decode(&e);
-      if (!d.ok) {
-        continue;
+      for (k = 0; k < sizeof kImms / sizeof kImms[0]; k++) {
+        uint8_t buf[16];
+        X86pEmit e;
+        Decoded d;
+        x86p_emit_init(&e, buf, sizeof buf);
+        x86p_emit_alu_r32_imm32(&e, (X86pHostAlu)op, (X86pHostReg)dst, kImms[k].imm);
+        CHECK(e.len == kImms[k].len + (dst >= 8 ? 1u : 0u));
+        d = emit_and_decode(&e);
+        if (!d.ok) {
+          continue;
+        }
+        CHECK(d.insn.mnemonic == want[op]);
+        CHECK(reg_id(d.ops[0].reg.value) == dst);
+        CHECK(d.ops[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE);
+        CHECK((uint32_t)d.ops[1].imm.value.u == kImms[k].imm);
       }
-      CHECK(d.insn.mnemonic == want[op]);
-      CHECK(reg_id(d.ops[0].reg.value) == dst);
-      CHECK(d.ops[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE);
-      CHECK((uint32_t)d.ops[1].imm.value.u == 0x12345678u);
     }
   }
 }

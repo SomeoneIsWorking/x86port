@@ -82,8 +82,20 @@ typedef struct BlockCtx {
   /* Calls into the block's mirror loader, each with the depth it loads; the
      loader is emitted once, after the exits, when there is any. */
   X86pEmitSite x87_loads[MAX_INSNS * 2];
-  uint8_t x87_load_depth[MAX_INSNS * 2];
   unsigned nx87_loads;
+  /* Bit k: host ST(k) holds a value the register file does not have yet. */
+  unsigned x87_dirty;
+  /* Whether the mirror was ever non-empty, so a fault or slow path may find
+     values on the host stack to store. */
+  int x87_used;
+  /* Calls into the block's two write-back routines, emitted with the loader:
+     one stores and pops host ST(0), the other every value the host holds. */
+  X86pEmitSite x87_store_pops[MAX_INSNS * 4];
+  unsigned nx87_store_pops;
+  X86pEmitSite x87_spills[MAX_INSNS + 1];
+  unsigned nx87_spills;
+  X86pEmitSite x87_write_backs[MAX_INSNS * 2 + 1];
+  unsigned nx87_write_backs;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
@@ -219,6 +231,21 @@ void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit);
 void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
 
+/* The guest ALU operations emitted as host arithmetic plus the lazy tuple
+   (jit_x64_alu.c). `last_kind` is the kind the previous flag writer in this
+   block recorded, or -1; `flags_dead` skips the tuple a later instruction
+   overwrites unread. */
+int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, int *writes_dest);
+void emit_alu_inline(BlockCtx *c,
+                     const X86pInsn *insn,
+                     X86pHostAlu host,
+                     X86pFlagKind kind,
+                     int writes_dest,
+                     int last_kind,
+                     int flags_dead,
+                     uint32_t insn_eip);
+/* INC, DEC, NEG and NOT: the kind recorded, or -1 for NOT. */
+int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int flags_dead, uint32_t insn_eip);
 void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 
 /* What emit_shift_inline says the flag state holds afterwards, besides a kind

@@ -91,7 +91,9 @@ static int same_x87(const Case *k, const X86pCpu *a, const X86pCpu *b) {
       snprintf(what, sizeof what, "physical %d tag interp=%u jit=%u", p, a->x87.tag[p], b->x87.tag[p]);
       fail(k->name, what);
       ok = 0;
-    } else if (a->x87.tag[p] != (uint8_t)kX86pX87TagEmpty && memcmp(&a->x87.reg[p], &b->x87.reg[p], 10) != 0) {
+    } else if (memcmp(&a->x87.reg[p], &b->x87.reg[p], 10) != 0) {
+      /* An empty register is compared too: a pop leaves its value behind,
+         and FSAVE writes all eight. */
       snprintf(what, sizeof what, "physical %d value differs", p);
       fail(k->name, what);
       ok = 0;
@@ -218,6 +220,10 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FSTP_M32_FAULT 0xD9, 0x9E, 0, 0, 0, 0 /* D9 /3 [esi+disp32] */
 #define FLD_M32_FAULT 0xD9, 0x86, 0, 0, 0, 0  /* D9 /0 [esi+disp32] */
 #define MOV_EAX_EBX 0x89, 0xD8
+#define MOV_EAX_M_FAULT 0x8B, 0x86, 0, 0, 0, 0 /* 8B /r [esi+disp32] */
+#define SHL_EAX(n) 0xC1, 0xE0, (n)
+#define ADD_EAX_EBX 0x01, 0xD8
+#define INC_EAX 0x40
 #define JMP_NEXT 0xEB, 0x00
 #define FCHS 0xD9, 0xE0
 #define FABS 0xD9, 0xE1
@@ -401,6 +407,70 @@ static const Case kCases[] = {
     {"an integer instruction inside a chain",
      CODE(FLD_M32(0), FLD_M32(4), MOV_EAX_EBX, FADDP_ST_ST0(1), FLD_ST(0), FMULP_ST_ST0(1), FSTP_M32(8)),
      7,
+     {F32_ONE, F32_THREE},
+     0},
+    {"integer arithmetic inside a chain",
+     CODE(FLD_M32(0), FLD_M32(4), SHL_EAX(3), ADD_EAX_EBX, FADDP_ST_ST0(1), FLD_ST(0), FSTP_M32(8), FSTP_M32(12)),
+     8,
+     {F32_ONE, F32_THREE},
+     0},
+    /* The block's first flag writer has an unknown predecessor, so INC's
+       carry-in calls out while the mirror holds two values. */
+    {"a carry-in call inside a chain",
+     CODE(FLD_M32(0), FLD_M32(4), INC_EAX, FMULP_ST_ST0(1), FSTP_M32(8)),
+     5,
+     {F32_ONE, F32_THREE},
+     0},
+    /* Lazy write-back: dirty values reach the register file at a flush, a
+       pop, an eviction and the block's end. More than two dirty values at a
+       flush go through the spill routine. */
+    {"four dirty values at a carry-in call",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FMUL_ST0_ST(1), FLD_M32(4), INC_EAX, FADDP_ST_ST0(1), FSTP_M32(8)),
+     8,
+     {F32_ONE, F32_THREE},
+     0},
+    {"four dirty values at the end of the block",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FADD_ST0_ST(3)),
+     5,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a slow path with four dirty values",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FADD_ST0_ST(5), FSTP_M32(8), FSTP_M32(12)),
+     7,
+     {F32_ONE, F32_THREE},
+     0},
+    /* INC's carry-in empties the mirror, so FDIV's early guards leave with an
+       empty host stack and its divisor guard, after the reload, with two
+       values: the slow path cannot know which statically. */
+    {"a zero divisor after the mirror was emptied",
+     CODE(FLD_M32(0), FLD_M32(4), INC_EAX, FDIV_ST0_ST(1), FSTP_M32(8), FSTP_M32(12)),
+     6,
+     {F32_ZERO, F32_ONE},
+     0},
+    {"a dirty ST(0) popped into a register",
+     CODE(FLD_M32(0), FLD_M32(4), FMUL_ST0_ST(1), FSTP_ST(1), FLD_ST(0), FADDP_ST_ST0(1), FSTP_M32(8)),
+     7,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a store to a register the mirror does not hold",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FLD_M32(4),
+          FADD_ST0_ST(1),
+          FST_ST(7),
+          FSTP_M32(8),
+          FSTP_M32(12)),
+     12,
+     {F32_ONE, F32_THREE},
+     0},
+    {"an integer fault with the mirror live",
+     CODE(FLD_M32(0), FLD_M32(4), FMUL_ST0_ST(1), MOV_EAX_M_FAULT, FSTP_M32(8)),
+     5,
      {F32_ONE, F32_THREE},
      0},
     {"a zero divisor the mirror holds",
