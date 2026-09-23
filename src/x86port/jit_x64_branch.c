@@ -3,6 +3,7 @@
 #include "block_cache.h"
 #include "cond.h"
 #include "jit_x64_abi.h"
+#include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87_inline.h"
 
@@ -177,6 +178,18 @@ void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken) {
   emit_exits_on(c, (uint8_t)kX86pCondNZ, taken, not_taken);
 }
 
+void emit_leaf_call(BlockCtx *c, X86pJitLeafFn leaf, uint32_t return_eip, uint32_t target) {
+  /* The leaf is entered as the callee would be, EIP included. Guest state is
+     in memory here: the register cache writes through, and the x87 mirror
+     was flushed before the CALL because the CALL ends the block. */
+  x86p_emit_store32_imm(c->e, CPU_REG, (int32_t)offsetof(X86pCpu, eip), target);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)leaf);
+  x86p_emit_call_r64(c->e, kX64Rax);
+  c->leaf_calls++;
+  emit_two_way_exit(c, return_eip, target);
+}
+
 void emit_exits_on(BlockCtx *c, uint8_t host_cond, uint32_t taken, uint32_t not_taken) {
   const X86pEmitSite branch = x86p_emit_jcc_rel32(c->e, host_cond);
   emit_exit(c, not_taken);
@@ -208,4 +221,72 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
      does, and saying so here keeps the compiler from warning at each call. */
   *(void **)&fn = b->entry;
   return (X86pJitExit)fn(cpu);
+}
+
+/*
+ * CALL and RET: control transfers the block can COMPLETE rather than refuse.
+ *
+ * Both end the block -- the target is another block -- but ending it with
+ * kX86pJitExitBlockEnd and the right EIP is a different thing from ending it
+ * with kX86pJitExitUnsupported. The second refuses the run; the first leaves
+ * the dispatcher a plain address to look up. On
+ * this corpus that is the difference between 17,640 blocks that must fall back
+ * and 17,640 that do not.
+ *
+ * Indirect forms stay out: a CALL through a register or memory has no target
+ * until the block runs, so it belongs to the block cache, not to a constant
+ * folded in here.
+ */
+void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uint32_t insn_eip) {
+  const X86pJitLeafFn leaf = c->leaf ? c->leaf(target, c->leaf_user) : NULL;
+  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
+  emit_push_rsi(c, insn_eip);
+  if (leaf) {
+    emit_leaf_call(c, leaf, return_eip, target);
+    return;
+  }
+  emit_exit(c, target);
+}
+
+/*
+ * The indirect forms. TARGET_REG is read before anything else touches memory,
+ * because CALL [ESP+4] must take its target from the stack as it stands and not
+ * from the stack after the return address has been pushed onto it.
+ */
+#define TARGET_REG kX64Rdx
+
+static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
+  if (o->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, o, insn_eip, 4);
+    x86p_emit_load32(c->e, TARGET_REG, HOSTPTR_REG, 0);
+    return;
+  }
+  gpr_load(c, TARGET_REG, o->reg, 4);
+}
+
+void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+  emit_read_branch_target(c, &insn->operand[0], insn_eip);
+  emit_exit_from(c, TARGET_REG);
+}
+
+void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
+  emit_read_branch_target(c, &insn->operand[0], insn_eip);
+  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
+  emit_push_rsi(c, insn_eip);
+  emit_exit_from(c, TARGET_REG);
+}
+
+/* `release` is RET imm16's argument count, applied AFTER the pop because the
+   immediate counts bytes ABOVE the return address. */
+void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
+  gpr_load(c, EA_REG, kX86pEsp, 4);
+  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
+  emit_host_pointer(c->e, &c->plan);
+  x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
+
+  x86p_emit_mov_r32_r32(c->e, kX64Rdx, EA_REG);
+  x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u + release);
+  gpr_store(c, kX86pEsp, kX64Rdx, 4);
+
+  emit_exit_from(c, kX64Rsi);
 }

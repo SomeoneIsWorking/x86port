@@ -663,7 +663,7 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 /* Push whatever is in RSI. The one implementation of the stack store, shared by
    PUSH and by CALL's return address, so the fault ordering above is stated once
    rather than reproduced next to each caller. */
-static void emit_push_rsi(BlockCtx *c, uint32_t insn_eip) {
+void emit_push_rsi(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
   x86p_emit_alu_r32_imm32(c->e, kX64Sub, EA_REG, 4u);
   note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
@@ -849,69 +849,6 @@ static void emit_restore_host_frame(X86pEmit *e) {
   x86p_jit_abi_emit_leave(e, X86P_JIT_HOST_ABI, CPU_REG);
 }
 
-/*
- * CALL and RET: control transfers the block can COMPLETE rather than refuse.
- *
- * Both end the block -- the target is another block -- but ending it with
- * kX86pJitExitBlockEnd and the right EIP is a different thing from ending it
- * with kX86pJitExitUnsupported. The second refuses the run; the first leaves
- * the dispatcher a plain address to look up. On
- * this corpus that is the difference between 17,640 blocks that must fall back
- * and 17,640 that do not.
- *
- * Indirect forms stay out: a CALL through a register or memory has no target
- * until the block runs, so it belongs to the block cache, not to a constant
- * folded in here.
- */
-static void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uint32_t insn_eip) {
-  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
-  emit_push_rsi(c, insn_eip);
-  emit_exit(c, target);
-}
-
-/*
- * The indirect forms. TARGET_REG is read before anything else touches memory,
- * because CALL [ESP+4] must take its target from the stack as it stands and not
- * from the stack after the return address has been pushed onto it.
- */
-#define TARGET_REG kX64Rdx
-
-static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
-  if (o->kind == kX86pOperandMem) {
-    emit_mem_prepare(c, o, insn_eip);
-    x86p_emit_load32(c->e, TARGET_REG, HOSTPTR_REG, 0);
-    return;
-  }
-  gpr_load(c, TARGET_REG, o->reg, 4);
-}
-
-static void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
-  emit_read_branch_target(c, &insn->operand[0], insn_eip);
-  emit_exit_from(c, TARGET_REG);
-}
-
-static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
-  emit_read_branch_target(c, &insn->operand[0], insn_eip);
-  x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
-  emit_push_rsi(c, insn_eip);
-  emit_exit_from(c, TARGET_REG);
-}
-
-/* `release` is RET imm16's argument count, applied AFTER the pop because the
-   immediate counts bytes ABOVE the return address. */
-static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
-  gpr_load(c, EA_REG, kX86pEsp, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
-  emit_host_pointer(c->e, &c->plan);
-  x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
-
-  x86p_emit_mov_r32_r32(c->e, kX64Rdx, EA_REG);
-  x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u + release);
-  gpr_store(c, kX86pEsp, kX64Rdx, 4);
-
-  emit_exit_from(c, kX64Rsi);
-}
-
 /* ---- translation --------------------------------------------------------- */
 
 X86pJitStatus x86p_jit_translate(const X86pMem *mem,
@@ -921,19 +858,19 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  X86pJitBlock *out,
                                  char *reason,
                                  unsigned reason_len) {
-  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, NULL, out, reason, reason_len);
+  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, out, reason, reason_len);
 }
 
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
                                          void *code,
                                          size_t code_cap,
-                                         X86pJitBoundaryFn boundary,
-                                         void *boundary_user,
-                                         X86pJitChain *chain,
+                                         const X86pJitTranslateEnv *env,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
+  const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
+  void *const boundary_user = env ? env->boundary_user : NULL;
   X86pEmit e;
   BlockCtx ctx;
   uint32_t pc = eip;
@@ -966,7 +903,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.e = &e;
   ctx.mem = mem;
   ctx.host_state = x86p_jit_host_state();
-  ctx.chain = x86p_jit_chain_entry_offset() != 0u ? chain : NULL;
+  ctx.chain = env && x86p_jit_chain_entry_offset() != 0u ? env->chain : NULL;
+  /* A leaf returns into the block through a chained exit, so only a chaining
+     translation calls one. */
+  if (ctx.chain && env->leaf) {
+    ctx.leaf = env->leaf;
+    ctx.leaf_user = env->leaf_user;
+  }
   ctx.entry_eip = eip;
   out->host_state = ctx.host_state;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
@@ -1335,6 +1278,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->ends_in_branch = terminated;
   out->chain_exits = ctx.chain_exits;
   out->chain_exits_unslotted = ctx.chain_exits_unslotted;
+  out->leaf_calls = ctx.leaf_calls;
   return kX86pJitOk;
 }
 

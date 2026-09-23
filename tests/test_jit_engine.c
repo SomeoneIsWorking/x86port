@@ -1187,6 +1187,124 @@ static void test_an_exit_with_changing_targets_transfers_through_the_front(void)
   x86p_jit_engine_destroy(eng);
 }
 
+/* ---- leaves: a direct CALL completed in place --------------------------- */
+
+/*
+ *   0: B9 0A 00 00 00   MOV ECX, 10
+ *   5: E8 xx xx xx xx   CALL 0x100
+ *  10: 49               DEC ECX
+ *  11: 75 F8            JNZ 5
+ *  13: EB FE            JMP 13
+ * 0x100: 83 C0 03       ADD EAX, 3
+ * 0x103: C3             RET
+ *
+ * The leaf does what the callee does, so every route must end in the
+ * interpreter's state.
+ */
+#define LEAF_CALLEE 0x100u
+#define LEAF_SPIN 13u
+
+typedef struct LeafRecord {
+  int decline;
+  unsigned calls;
+  unsigned entered_wrong; /* calls that did not arrive as the callee would */
+} LeafRecord;
+
+static LeafRecord g_leaf;
+
+static int leaf_add3(X86pCpu *cpu) {
+  const uint32_t esp = cpu->reg[kX86pEsp];
+  uint32_t ret;
+  memcpy(&ret, &g_guest[esp - GUEST_BASE], sizeof ret);
+  g_leaf.calls++;
+  if (cpu->eip != GUEST_BASE + LEAF_CALLEE || ret != GUEST_BASE + 10u) {
+    g_leaf.entered_wrong++;
+  }
+  if (g_leaf.decline) {
+    return 0;
+  }
+  cpu->reg[kX86pEax] += 3u;
+  cpu->reg[kX86pEsp] = esp + 4u;
+  return 1;
+}
+
+static X86pJitLeafFn leaf_at_callee(uint32_t target, void *user) {
+  (void)user;
+  return target == GUEST_BASE + LEAF_CALLEE ? leaf_add3 : NULL;
+}
+
+static void leaf_program(void) {
+  static const uint8_t prog[] = {
+      0xB9, 0x0A, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x49, 0x75, 0xF8, 0xEB, 0xFE};
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  put_imm32(&g_guest[6], LEAF_CALLEE - 10u);
+  g_guest[LEAF_CALLEE] = 0x83;
+  g_guest[LEAF_CALLEE + 1u] = 0xC0;
+  g_guest[LEAF_CALLEE + 2u] = 0x03;
+  g_guest[LEAF_CALLEE + 3u] = 0xC3;
+}
+
+static void leaf_run(int decline, const X86pCpu *expect) {
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  char reason[256];
+
+  leaf_program();
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  CHECK(x86p_jit_engine_set_leaves(eng, leaf_at_callee, NULL, reason, sizeof reason));
+  memset(&g_leaf, 0, sizeof g_leaf);
+  g_leaf.decline = decline;
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, 400u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(ce.eip == GUEST_BASE + LEAF_SPIN);
+  CHECK(same_cpu(expect, &ce));
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(g_leaf.entered_wrong == 0u);
+  if (backend_chains()) {
+    /* The CALL is in two translations -- the block at 0 and the loop's at 5
+       -- and the leaf is asked on every pass. */
+    CHECK(st.leaf_calls == 2u);
+    CHECK(g_leaf.calls == 10u);
+  } else {
+    CHECK(st.leaf_calls == 0u);
+    CHECK(g_leaf.calls == 0u);
+  }
+  /* Blocks translated under one resolver are not silently kept under
+     another. */
+  CHECK(!x86p_jit_engine_set_leaves(eng, NULL, NULL, reason, sizeof reason));
+  CHECK(strstr(reason, "already cached") != NULL);
+  printf("    %s: %u leaf call(s), %llu block(s) entered\n",
+         decline ? "declining" : "completing",
+         g_leaf.calls,
+         (unsigned long long)st.blocks_entered);
+  x86p_jit_engine_destroy(eng);
+}
+
+static void test_a_leaf_completes_a_direct_call_in_place(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu ci;
+  unsigned i;
+
+  leaf_program();
+  seed(&ci);
+  for (i = 0; i < 4096u && ci.eip != GUEST_BASE + LEAF_SPIN; i++) {
+    CHECK(x86p_step(&ci, &mem, NULL) == kX86pStepOk);
+  }
+  CHECK(ci.eip == GUEST_BASE + LEAF_SPIN);
+  CHECK(ci.reg[kX86pEax] == 0x1000u + 30u);
+  leaf_run(0, &ci);
+  /* A declined call changes nothing and reaches the guest callee. */
+  leaf_run(1, &ci);
+}
+
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
 
 static uint32_t g_disp_thunk, g_disp_unwind;
@@ -1688,6 +1806,7 @@ int main(void) {
   RUN(test_chained_blocks_agree_with_the_interpreter);
   RUN(test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation);
   RUN(test_an_exit_with_changing_targets_transfers_through_the_front);
+  RUN(test_a_leaf_completes_a_direct_call_in_place);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

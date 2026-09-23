@@ -186,7 +186,9 @@ binary64 path described below.
 Gap: the ARM64 backend does not link blocks to their successors
 (`x86p_jit_chain_entry_offset` returns 0), so every block exit returns to the
 dispatcher; x64 chains. `test_jit_engine` checks that a non-chaining backend
-chains nothing rather than asserting x64's chained counts there.
+chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the ARM64 and WebAssembly backends
+never call one in place (`x86p_jit_engine_set_leaves`), so every direct CALL to
+a consumer's leaf reaches it through the dispatcher there.
 
 `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
 intercept and dispatch callbacks. The run loop consults the intercept once per
@@ -467,8 +469,12 @@ boundary, not a playable X-Men 2 or Little Fighter 2 release.
 
 ### S008 — native and original dispatch
 
-The JIT engine has consumer interception, inline dispatch, and translation
-boundary callbacks. Gap: complete image/module-generation identity, override
+The JIT engine has consumer interception, inline dispatch, translation
+boundary callbacks, and leaves: host code a chaining x64 translation calls in
+place for a direct CALL, which completes the call or declines having changed
+nothing, and a declined call reaches the callee through the dispatcher
+(`test_jit_engine`, `test_a_leaf_completes_a_direct_call_in_place`, both routes
+checked against the interpreter). Gap: complete image/module-generation identity, override
 installation/removal invalidation, disabled override behavior, and a scoped
 original call that re-enters the JIT without recursion are not yet verified as
 one product contract.

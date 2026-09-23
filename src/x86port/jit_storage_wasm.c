@@ -418,9 +418,7 @@ void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t 
 X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
                                          const X86pMem *mem,
                                          uint32_t eip,
-                                         X86pJitBoundaryFn boundary,
-                                         void *boundary_user,
-                                         X86pJitChain *chain,
+                                         const X86pJitTranslateEnv *env,
                                          X86pJitBlock *block,
                                          char *reason,
                                          unsigned reason_len) {
@@ -439,8 +437,7 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     }
     return kX86pJitOutOfSpace;
   }
-  status = x86p_jit_translate_bounded(
-      mem, eip, storage->buffer, room, boundary, boundary_user, chain, block, reason, reason_len);
+  status = x86p_jit_translate_bounded(mem, eip, storage->buffer, room, env, block, reason, reason_len);
   if (status != kX86pJitOk) {
     return status;
   }
@@ -469,7 +466,7 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     storage->pending[storage->pending_count++] = (unsigned)slot;
   }
   if (storage->pending_count == X86P_WASM_COMPACT_BATCH) {
-    share_a_module(storage, mem, boundary, boundary_user);
+    share_a_module(storage, mem, env ? env->boundary : NULL, env ? env->boundary_user : NULL);
   }
   return kX86pJitOk;
 }

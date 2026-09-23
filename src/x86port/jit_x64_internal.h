@@ -80,6 +80,11 @@ typedef struct BlockCtx {
   uint32_t host_state;
   /* The engine's chain slots, or NULL: exits then only return. */
   X86pJitChain *chain;
+  /* Names the leaf a direct CALL makes in place, or NULL (jit_x64.h,
+     X86pJitLeafFn). Set only with `chain`. */
+  X86pJitLeafResolveFn leaf;
+  void *leaf_user;
+  unsigned leaf_calls;
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
   /* The guest address this block translates, and the exits that jump to its
@@ -288,6 +293,18 @@ void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken);
 /* The same two exits, chosen by host condition `host_cond` on the current
    host EFLAGS instead of by RAX. */
 void emit_exits_on(BlockCtx *c, uint8_t host_cond, uint32_t taken, uint32_t not_taken);
+/* Push RSI onto the guest stack (PUSH's store), faulting as PUSH does. */
+void emit_push_rsi(BlockCtx *c, uint32_t insn_eip);
+/* CALL rel32, JMP and CALL through a register or memory, and RET imm16
+   (jit_x64_branch.c): each ends the block with an exit to its target. */
+void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uint32_t insn_eip);
+void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip);
+void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip);
+/* The end of a direct CALL whose return address is pushed: `leaf` completes
+   it in place and the block leaves for `return_eip`, or declines and the block
+   leaves for `target` as an ordinary call does (X86pJitLeafFn). */
+void emit_leaf_call(BlockCtx *c, X86pJitLeafFn leaf, uint32_t return_eip, uint32_t target);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
 
 /* The guest ALU operations emitted as host arithmetic plus the lazy tuple
