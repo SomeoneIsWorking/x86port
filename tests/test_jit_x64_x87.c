@@ -512,8 +512,33 @@ static const Case kCases[] = {
      9,
      {F32_ONE, F32_THREE},
      0},
-    /* FSQRT is inline: the host instruction on the mirror, C1 cleared. The
-       status word is stored between roots, so a C1 left set shows. */
+    /* FSQRT is inline: the host instruction on the mirror, C1 its rounding
+       direction. The status word is stored after each root, and the roots of
+       2, 3, 5, 6 and 7 round both ways at 64 bits. */
+    {"the rounding direction of five roots",
+     CODE(FLD_M32(0),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(20),
+          FLD_M32(4),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(24),
+          FLD_M32(8),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(28),
+          FLD_M32(12),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FLD_M32(16),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(36)),
+     20,
+     {0x40000000u, F32_THREE, 0x40A00000u, 0x40C00000u, 0x40E00000u},
+     0},
     {"square roots inside a chain",
      CODE(FLD_M32(0),
           FLD_M32(4),
@@ -533,7 +558,8 @@ static const Case kCases[] = {
      9,
      {0xBF800000u, F32_NEG_ZERO, F32_INF},
      0},
-    /* A ninth push overflows and sets C1; the root clears it. */
+    /* A ninth push overflows and sets C1; the root replaces it with its own
+       rounding direction. */
     {"a square root after an overflow set C1",
      CODE(FLD_M32(0),
           FLD_M32(0),

@@ -30,8 +30,9 @@ int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
   }
   /* C1 and C2 are guest-visible: C2 reports an incomplete FPREM reduction
      and an out-of-range trigonometric argument, and guest code loops on it. */
-  /* FSQRT defines only C1; the host's leftover C0/C2/C3 are not the guest's,
-     so they keep the guest's values -- as the x64 inline form does. */
+  /* FSQRT defines only C1, its rounding direction; the host's leftover
+     C0/C2/C3 are not the guest's, so they keep the guest's values -- as the
+     x64 inline form does. */
   const uint16_t written =
       fn == kX86pX87FnSqrt ? (uint16_t)X86P_X87_C1 : (uint16_t)(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
   f->status &= (uint16_t)~written;
