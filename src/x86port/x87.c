@@ -4,6 +4,7 @@
 #include "x87_stack.h"
 
 #include "x87_binary128.h"
+#include "x87_double_arith.h"
 #include "x87_ext80_arith.h"
 #include "x87_ext80_narrow.h"
 #include "x87_ext80_widen.h"
@@ -122,11 +123,29 @@ void x86p_x87_reset(X86pX87 *f) {
   if (!f) {
     return;
   }
+  const uint8_t double_arith = f->double_arith;
   memset(f, 0, sizeof *f);
   for (i = 0; i < X86P_X87_REGS; i++) {
     f->tag[i] = (uint8_t)kX86pX87TagEmpty;
   }
   f->control = X86P_X87_CW_INIT;
+  f->double_arith = double_arith;
+}
+
+int x86p_x87_double_arith_available(void) {
+#if X86P_X87_BINARY128
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+int x86p_x87_set_double_arith(X86pX87 *f, int enabled) {
+  if (!f || (enabled && !x86p_x87_double_arith_available())) {
+    return 0;
+  }
+  f->double_arith = (uint8_t)(enabled != 0);
+  return 1;
 }
 
 /*
@@ -506,7 +525,9 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
   if (f->op_census) {
     x86p_x87_census_note_ext80(f, op, x, y);
   }
-  if (op == kX86pX87Mul) {
+  if (f->double_arith && x86p_ext80_double_arith(f->control, op, x, y, &r)) {
+    answered = 1;
+  } else if (op == kX86pX87Mul) {
     answered = x86p_ext80_mul_ordinary(f->control, x, y, &r, &raised);
   } else if (op == kX86pX87Add || op == kX86pX87Sub) {
     answered = x86p_ext80_add_ordinary(f->control, x, y, op == kX86pX87Sub, &r, &raised);
@@ -610,7 +631,9 @@ int x86p_x87_arith_raw(X86pX87 *f, X86pX87Op op, int dst, X86pX87Reg src, int re
       ey.signif = y.signif;
       ey.sign_exp = y.sign_exp;
       if (!divide_by_zero) {
-        if (op == kX86pX87Mul) {
+        if (f->double_arith && x86p_ext80_double_arith(f->control, op, ex, ey, &er)) {
+          answered = 1;
+        } else if (op == kX86pX87Mul) {
           answered = x86p_ext80_mul_ordinary(f->control, ex, ey, &er, &raised);
         } else if (op == kX86pX87Add || op == kX86pX87Sub) {
           answered = x86p_ext80_add_ordinary(f->control, ex, ey, op == kX86pX87Sub, &er, &raised);
