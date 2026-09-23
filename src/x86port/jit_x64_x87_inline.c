@@ -29,6 +29,7 @@
  * expects.
  */
 #include "jit_x64_x87_inline.h"
+#include "jit_x64_gpr.h"
 
 #include "cond.h"
 #include "cpu.h"
@@ -1086,6 +1087,6 @@ void x87_inline_status_ax(BlockCtx *c) {
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
   x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rcx, kX64Rax);
-  x86p_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rcx);
+  gpr_store(c, kX86pEax, kX64Rcx, 2);
   c->x87_kept = 1;
 }

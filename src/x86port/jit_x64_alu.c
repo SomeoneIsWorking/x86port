@@ -1,6 +1,7 @@
 #include "alu.h"
 #include "bit_ops.h"
 #include "flags.h"
+#include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87_inline.h"
 #include <stddef.h>
@@ -128,7 +129,7 @@ static void emit_read_alu_src(BlockCtx *c, X86pHostReg dst, const X86pOperand *o
     x86p_emit_mov_r32_imm32(c->e, dst, o->imm & x86p_width_mask(w));
     return;
   }
-  emit_load_w(c->e, dst, CPU_REG, reg_off_w(o->reg, w), w);
+  gpr_load(c, dst, o->reg, w);
 }
 
 /*
@@ -201,13 +202,13 @@ void emit_alu_inline(BlockCtx *c,
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kX64Rdx, HOSTPTR_REG, 0, w);
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
+    gpr_load(c, kX64Rsi, dst->reg, w);
   } else {
     if (!flags_dead && carry_live) {
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_read_alu_src(c, kX64Rdx, src, w);
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
+    gpr_load(c, kX64Rsi, dst->reg, w);
   }
 
   x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
@@ -235,7 +236,7 @@ void emit_alu_inline(BlockCtx *c,
     if (dst->kind == kX86pOperandMem) {
       emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
     } else {
-      emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+      gpr_store(c, dst->reg, kX64Rax, w);
     }
   }
 }
@@ -264,7 +265,7 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
       emit_mem_prepare_w(c, o, insn_eip, w);
       emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, w);
     } else {
-      emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(o->reg, w), w);
+      gpr_load(c, kX64Rax, o->reg, w);
     }
     /* XOR with all ones is the host's NOT; the guest's flag rule is honoured by
        storing nothing, not by choosing a different host opcode. */
@@ -275,7 +276,7 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
     if (is_mem) {
       emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
     } else {
-      emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
+      gpr_store(c, o->reg, kX64Rax, w);
     }
     return -1;
   }
@@ -294,7 +295,7 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
     if (!flags_dead) {
       x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(o->reg, w), w);
+    gpr_load(c, kX64Rsi, o->reg, w);
   }
 
   if (insn->alu == (uint8_t)kX86pAluNeg) {
@@ -335,7 +336,7 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
   if (is_mem) {
     emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
   } else {
-    emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
+    gpr_store(c, o->reg, kX64Rax, w);
   }
   return (int)kind;
 }
@@ -345,7 +346,9 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
  * CPU_REG; the later argument setup writes registers they would otherwise have
  * to avoid. Preserve the caller's nonvolatile registers and 16-byte stack
  * alignment. Bounds checks precede the local save, so fault exits need no extra
- * unwind. */
+ * unwind. The operands are read from memory, not the guest register cache
+ * (jit_x64_gpr.h): a memory destination holds its host pointer in R12, which
+ * is one of the cache's registers, and memory is always current. */
 void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   const X86pOperand *dst = &insn->operand[0];
@@ -390,7 +393,7 @@ void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     if (mem_dst) {
       emit_store_w(e, kX64R12, 0, kX64Rax, w);
     } else {
-      emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+      gpr_store(c, dst->reg, kX64Rax, w);
     }
   }
   if (mem_dst) {
@@ -443,10 +446,10 @@ int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_
   if (dst->kind == kX86pOperandMem) {
     emit_load_w(e, kX64Rsi, HOSTPTR_REG, 0, w);
   } else {
-    emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
+    gpr_load(c, kX64Rsi, dst->reg, w);
   }
   if (by_cl) {
-    emit_load_w(e, kX64Rcx, CPU_REG, reg_off_w(src->reg, src->size), src->size);
+    gpr_load(c, kX64Rcx, src->reg, src->size);
     x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, 0x1Fu);
     zero = x86p_emit_jcc_rel32(e, (unsigned)kX86pCondZ);
   }
@@ -478,7 +481,7 @@ int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_
   if (dst->kind == kX86pOperandMem) {
     emit_store_w(e, HOSTPTR_REG, 0, kX64Rax, w);
   } else {
-    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+    gpr_store(c, dst->reg, kX64Rax, w);
   }
   if (by_cl) {
     x86p_emit_bind(e, zero);
@@ -526,7 +529,7 @@ void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     emit_mem_prepare_w(c, operand, insn_eip, width);
     emit_load_w(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG, 0, width);
   } else {
-    emit_load_w(c->e, X86P_JIT_HOST_ARG1, CPU_REG, reg_off_w(operand->reg, width), width);
+    gpr_load(c, X86P_JIT_HOST_ARG1, operand->reg, width);
   }
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, insn->op == kX86pInsnImul);
@@ -553,11 +556,11 @@ void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   }
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG);
-  x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, CPU_REG, reg_off(src->reg));
+  gpr_load(c, X86P_JIT_HOST_ARG2, src->reg, 4);
   if (count->kind == kX86pOperandImm) {
     x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, count->imm);
   } else {
-    x86p_emit_load8_zx(c->e, X86P_JIT_HOST_ARG3, CPU_REG, reg_off(kX86pEcx));
+    gpr_load(c, X86P_JIT_HOST_ARG3, kX86pEcx, 1); /* CL */
   }
   x86p_jit_abi_emit_arg32_imm(c->e, X86P_JIT_HOST_ABI, 4, insn->op == kX86pInsnShld);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_double_shift32);

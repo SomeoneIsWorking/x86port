@@ -106,6 +106,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
     src/x86port/jit_x64_mem.c
     src/x86port/jit_x64_cond.c
     src/x86port/jit_x64_alu.c
+    src/x86port/jit_x64_gpr.c
     src/x86port/jit_x64_branch.c
     src/x86port/jit_x64_simd.c
     src/x86port/jit_x64_x87_register.c
@@ -134,6 +135,7 @@ if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
       src/x86port/jit_x64_mem.c
       src/x86port/jit_x64_cond.c
       src/x86port/jit_x64_alu.c
+      src/x86port/jit_x64_gpr.c
       src/x86port/jit_x64_branch.c
       src/x86port/jit_x64_simd.c
       src/x86port/jit_x64_x87_register.c
@@ -586,6 +588,22 @@ if(NOT EMSCRIPTEN)
   x86p_strict_target(test_jit_x64_x87)
   add_test(NAME test_jit_x64_x87 COMMAND test_jit_x64_x87)
   set_tests_properties(test_jit_x64_x87 PROPERTIES SKIP_RETURN_CODE 77)
+  # The same differentials over the CHECKED guest register cache
+  # (jit_x64_gpr.h): the executable's own jit_x64_gpr.c, compiled to trap
+  # wherever a cached host register disagrees with X86pCpu, takes the place of
+  # the archive's copy, which then is never pulled in.
+  foreach(differential test_jit_x64 test_jit_x64_x87 test_jit_engine)
+    add_executable(${differential}_gpr_checked tests/${differential}.c src/x86port/jit_x64_gpr.c)
+    if(NOT differential STREQUAL "test_jit_engine")
+      target_sources(${differential}_gpr_checked PRIVATE tests/jit_x64_harness.c)
+    endif()
+    target_include_directories(${differential}_gpr_checked PRIVATE src)
+    target_compile_definitions(${differential}_gpr_checked PRIVATE X86P_JIT_GPR_CHECK=1)
+    target_link_libraries(${differential}_gpr_checked PRIVATE x86port_runtime x86port_test_oracle)
+    x86p_strict_target(${differential}_gpr_checked)
+    add_test(NAME ${differential}_gpr_checked COMMAND ${differential}_gpr_checked)
+    set_tests_properties(${differential}_gpr_checked PROPERTIES SKIP_RETURN_CODE 77)
+  endforeach()
 endif()
 
 add_executable(test_x87_f128_ext80 tests/test_x87_f128_ext80.cpp)

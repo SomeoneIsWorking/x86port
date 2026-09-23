@@ -115,6 +115,14 @@ typedef struct BlockCtx {
   unsigned nx87_spills;
   X86pEmitSite x87_write_backs[MAX_INSNS * 2 + 1];
   unsigned nx87_write_backs;
+  /* The guest register cache (jit_x64_gpr.h): the cache slot + 1 each guest
+     register was given, or 0; how many slots are given out; the registers
+     whose host copy equals memory; and the emitter's calls + bound sites when
+     that set was last known good. */
+  uint8_t gpr_slot[8];
+  unsigned gpr_slots;
+  unsigned gpr_live;
+  unsigned gpr_epoch;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
@@ -150,8 +158,8 @@ void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, in
    (jit_x64_mem.c): LEA's offset without a segment base, the linear address an
    access uses, the bounds check whose returned site the caller binds, and the
    host pointer for an address that passed it. */
-void emit_address_parts(X86pEmit *e, const X86pOperand *o);
-void emit_effective_address(X86pEmit *e, const X86pOperand *o);
+void emit_address_parts(BlockCtx *c, const X86pOperand *o);
+void emit_effective_address(BlockCtx *c, const X86pOperand *o);
 X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w);
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan);
 /* Record a site that jumps to the block's memory-fault or divide-error stub. */
@@ -235,6 +243,16 @@ static inline void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86
     x86p_emit_store16_reg(e, base, disp, src);
   } else {
     x86p_emit_store32(e, base, disp, src);
+  }
+}
+
+static inline void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
+  if (w == 1) {
+    x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
+  } else if (w == 2) {
+    x86p_emit_store16_imm(e, base, disp, (uint16_t)(imm & 0xFFFFu));
+  } else {
+    x86p_emit_store32_imm(e, base, disp, imm);
   }
 }
 

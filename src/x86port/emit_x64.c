@@ -13,6 +13,7 @@ void x86p_emit_init(X86pEmit *e, void *buf, size_t cap) {
   e->len = 0u;
   e->sites_made = 0u;
   e->sites_bound = 0u;
+  e->calls = 0u;
   /* A null buffer is overflowed from the start rather than a special case
      every emit has to remember to test. */
   e->overflow = buf ? 0 : 1;
@@ -481,6 +482,7 @@ X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e) {
 }
 
 X86pEmitSite x86p_emit_call_rel32(X86pEmit *e) {
+  e->calls++;
   put(e, 0xE8u);
   return make_site(e);
 }
@@ -539,6 +541,7 @@ void x86p_emit_ret(X86pEmit *e) {
 void x86p_emit_call_r64(X86pEmit *e, X86pHostReg target) {
   /* No REX.W: CALL r/m64 is already 64-bit in long mode, but a high register
      still needs REX.B. */
+  e->calls++;
   if ((unsigned)target >= 8u) {
     put(e, 0x41u);
   }
