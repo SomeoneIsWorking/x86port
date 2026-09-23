@@ -35,6 +35,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 static int g_checks;
 static int g_failed;
@@ -1708,6 +1714,235 @@ static void test_identity_mapped_guest_memory(void) {
   jit_x64_harness_code_free(code, 4096);
 }
 
+/* ModRM rm fields of the offset registers: EAX holds a zero-based guest
+   address, EDI the offset computed from any other lower bound. */
+#define RM_EAX 0u
+#define RM_EDI 7u
+
+/* Whether `code[0..len)` holds `lea r11, [base + disp32]` with that
+   displacement: REX.WR, 8D, mod=10 reg=r11 rm=base. */
+static int has_host_lea(const uint8_t *code, size_t len, unsigned base_rm, uint32_t disp) {
+  const uint8_t want[7] = {0x4Cu,
+                           0x8Du,
+                           (uint8_t)(0x98u | base_rm),
+                           (uint8_t)disp,
+                           (uint8_t)(disp >> 8),
+                           (uint8_t)(disp >> 16),
+                           (uint8_t)(disp >> 24)};
+  for (size_t i = 0; i + sizeof want <= len; i++) {
+    if (memcmp(code + i, want, sizeof want) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
+ * A host mapping below 2 GB is addressed with a disp32 lea rather than a
+ * 64-bit immediate. Run once with the guest window at zero (the offset is the
+ * guest address itself, in EAX) and once above it (the offset is computed into
+ * EDI): each must load, store and fault exactly as the high mapping does, and
+ * the block must carry the lea on the offset register the plan names --
+ * otherwise this test would pass on the immediate path it means to replace.
+ */
+static void run_low_based(uint8_t *base, size_t page, uint32_t lo) {
+  void *code = jit_x64_harness_code_alloc(4096);
+  CHECK(code != NULL);
+  if (!code) {
+    return;
+  }
+  X86pMem mem = {0};
+  mem.host = base;
+  mem.lo = lo;
+  mem.size = (uint32_t)page;
+  memset(base, 0, page);
+  put_u32(base + 0x800u, 0x10203040u);
+  /* at lo+0x10: MOV EAX,[lo+0x800] ; ADD EAX,1 ; MOV [lo+0x804],EAX ;
+     MOV ECX,[lo+page] -- the last one is past the mapping. */
+  uint8_t *p = base + 0x10u;
+  *p++ = 0xA1u;
+  put_u32(p, lo + 0x800u);
+  p += 4;
+  *p++ = 0x83u;
+  *p++ = 0xC0u;
+  *p++ = 0x01u;
+  *p++ = 0xA3u;
+  put_u32(p, lo + 0x804u);
+  p += 4;
+  const uint32_t faulting = lo + (uint32_t)(p - base);
+  *p++ = 0x8Bu;
+  *p++ = 0x0Du;
+  put_u32(p, lo + (uint32_t)page);
+
+  X86pJitBlock blk;
+  char reason[192] = {0};
+  const X86pJitStatus st = jit_x64_harness_translate(&mem, lo + 0x10u, code, 4096, &blk, reason, sizeof reason);
+  CHECK(st == kX86pJitOk);
+  if (st == kX86pJitOk) {
+    CHECK(has_host_lea((const uint8_t *)code, blk.host_bytes, lo == 0u ? RM_EAX : RM_EDI, (uint32_t)(uintptr_t)base));
+    X86pCpu cpu;
+    seed_cpu(&cpu, 11u);
+    cpu.reg[kX86pEcx] = 0x5A5A5A5Au;
+    const X86pJitExit exit = x86p_jit_enter(&blk, &cpu);
+    uint32_t stored;
+    memcpy(&stored, base + 0x804u, sizeof stored);
+    CHECK(cpu.reg[kX86pEax] == 0x10203041u);
+    CHECK(stored == 0x10203041u);
+    CHECK(exit == kX86pJitExitMemoryFault);
+    CHECK(cpu.eip == faulting);
+    CHECK(cpu.reg[kX86pEcx] == 0x5A5A5A5Au);
+  }
+  jit_x64_harness_code_free(code, 4096);
+}
+
+static void test_low_based_guest_memory(void) {
+  size_t page = 0;
+  uint8_t *base = jit_x64_harness_identity_page(&page);
+  if (!base) {
+    return;
+  }
+  CHECK((uintptr_t)base <= (uintptr_t)INT32_MAX);
+  run_low_based(base, page, 0u);
+  run_low_based(base, page, 0x00400000u);
+}
+
+/* Translate the program at `eip` against an identity span of `size` bytes
+   from guest 0, with `guard` bytes guaranteed to fault from 4 GB. */
+static X86pJitStatus translate_identity(uint32_t eip, uint32_t size, uint32_t guard, void *code, X86pJitBlock *blk) {
+  X86pMem mem = {0};
+  mem.host = NULL;
+  mem.lo = 0u;
+  mem.size = size;
+  mem.guard_above = guard;
+  char reason[192] = {0};
+  return jit_x64_harness_translate(&mem, eip, code, 4096, blk, reason, sizeof reason);
+}
+
+static X86pJitStatus translate_whole_space(uint32_t eip, uint32_t guard, void *code, X86pJitBlock *blk) {
+  return translate_identity(eip, UINT32_MAX, guard, code, blk);
+}
+
+/* JMP rel32 from `p` (a guest address `at`) to `target`; returns the end. */
+static uint8_t *put_jmp(uint8_t *p, uint32_t at, uint32_t target) {
+  *p++ = 0xE9u;
+  put_u32(p, target - (at + 5u));
+  return p + 4;
+}
+
+#if !defined(_WIN32)
+/* Run MOV EAX,[0xFFFFFFFE] -- four bytes overrunning the space by two -- in a
+   child, against a guard of `guard` bytes, and return how the child ended:
+   the signal that killed it, or 0 when the block returned. */
+static int wrapping_load_signal(uint8_t *base, uint32_t guard) {
+  const uint32_t guest = (uint32_t)(uintptr_t)base;
+  uint8_t *p = base;
+  *p++ = 0xA1u;
+  put_u32(p, 0xFFFFFFFEu);
+  p += 4;
+  put_jmp(p, guest + 5u, guest + 0x700u);
+  const pid_t child = fork();
+  if (child == 0) {
+    void *code = jit_x64_harness_code_alloc(4096);
+    X86pJitBlock blk;
+    if (!code || translate_whole_space(guest, guard, code, &blk) != kX86pJitOk) {
+      _exit(2);
+    }
+    X86pCpu cpu;
+    seed_cpu(&cpu, 13u);
+    (void)x86p_jit_enter(&blk, &cpu);
+    _exit(0);
+  }
+  int status = 0;
+  if (child < 0 || waitpid(child, &status, 0) != child) {
+    return -1;
+  }
+  return WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+}
+#endif
+
+/*
+ * A span of the whole space with a guard above it needs no bounds check: an
+ * access either lands inside the span, where the host VM owns permissions, or
+ * overruns the top by less than its width onto the guard. The guarded block
+ * must be shorter by those checks and behave the same; a guard narrower than
+ * the access, or a span ending below the top, must keep the check; and the
+ * overrun must really fault -- in a
+ * child, against a guard mapped at 4 GB, since the process takes the signal.
+ */
+static void test_guarded_whole_space_drops_the_check(void) {
+  size_t page = 0;
+  uint8_t *base = jit_x64_harness_identity_page(&page);
+  if (!base) {
+    return;
+  }
+  void *code = jit_x64_harness_code_alloc(4096);
+  CHECK(code != NULL);
+  if (!code) {
+    return;
+  }
+  const uint32_t guest = (uint32_t)(uintptr_t)base;
+  memset(base, 0, page);
+  put_u32(base + 0x800u, 0x0A0B0C0Du);
+  /* MOV EAX,[guest+0x800] ; ADD EAX,1 ; MOV [guest+0x804],EAX ;
+     JMP guest+0x700 */
+  uint8_t *p = base;
+  *p++ = 0xA1u;
+  put_u32(p, guest + 0x800u);
+  p += 4;
+  *p++ = 0x83u;
+  *p++ = 0xC0u;
+  *p++ = 0x01u;
+  *p++ = 0xA3u;
+  put_u32(p, guest + 0x804u);
+  p += 4;
+  put_jmp(p, guest + (uint32_t)(p - base), guest + 0x700u);
+
+  X86pJitBlock checked;
+  X86pJitBlock narrow;
+  X86pJitBlock guarded;
+  CHECK(translate_whole_space(guest, 0u, code, &checked) == kX86pJitOk);
+  CHECK(translate_whole_space(guest, 2u, code, &narrow) == kX86pJitOk);
+  CHECK(translate_whole_space(guest, 16u, code, &guarded) == kX86pJitOk);
+  CHECK(narrow.host_bytes == checked.host_bytes);
+  CHECK(guarded.host_bytes < checked.host_bytes);
+  /* A span ending below the top leaves in-range addresses past its end, which
+     a guard at 4 GB does not catch: the check stays. */
+  X86pJitBlock partial;
+  CHECK(translate_identity(guest, guest + (uint32_t)page, 16u, code, &partial) == kX86pJitOk);
+  X86pJitBlock partial_checked;
+  CHECK(translate_identity(guest, guest + (uint32_t)page, 0u, code, &partial_checked) == kX86pJitOk);
+  CHECK(partial.host_bytes == partial_checked.host_bytes);
+
+  X86pCpu cpu;
+  seed_cpu(&cpu, 12u);
+  CHECK(x86p_jit_enter(&guarded, &cpu) == kX86pJitExitBlockEnd);
+  uint32_t stored;
+  memcpy(&stored, base + 0x804u, sizeof stored);
+  CHECK(cpu.reg[kX86pEax] == 0x0A0B0C0Eu);
+  CHECK(stored == 0x0A0B0C0Eu);
+  CHECK(cpu.eip == guest + 0x700u);
+  jit_x64_harness_code_free(code, 4096);
+
+#if defined(_WIN32)
+  printf("    SKIP guard fault: needs fork\n");
+#else
+  void *above = mmap((void *)(uintptr_t)(UINT64_C(1) << 32),
+                     page,
+                     PROT_NONE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+                     -1,
+                     0);
+  if (above == MAP_FAILED || (uintptr_t)above != (uintptr_t)(UINT64_C(1) << 32)) {
+    printf("    SKIP guard fault: nothing could be mapped at 4 GB on this host\n");
+    return;
+  }
+  CHECK(wrapping_load_signal(base, 16u) == SIGSEGV);
+  /* Unguarded, the same load is a translated memory fault the block returns. */
+  CHECK(wrapping_load_signal(base, 0u) == 0);
+  munmap(above, page);
+#endif
+}
+
 int main(void) {
   g_guest = jit_x64_harness_guest_init();
   if (!x86p_jit_available()) {
@@ -1724,6 +1959,8 @@ int main(void) {
   RUN(test_out_of_space_is_refused_not_truncated);
   RUN(test_fetch_fault_at_an_unmapped_eip);
   RUN(test_identity_mapped_guest_memory);
+  RUN(test_low_based_guest_memory);
+  RUN(test_guarded_whole_space_drops_the_check);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   printf("%lu program(s), %lu guest instruction(s) translated, %lu full-machine comparison(s)\n",
