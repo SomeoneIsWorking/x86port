@@ -104,7 +104,7 @@ const char *x86p_jit_status_name(X86pJitStatus s);
  * cannot fit. Below this, x86p_jit_translate refuses with kX86pJitOutOfSpace;
  * at or above it, a block of at least one instruction always comes back.
  */
-#define X86P_JIT_WORST_CASE_INSN_BYTES 352u
+#define X86P_JIT_WORST_CASE_INSN_BYTES 384u
 /* The block tail, bounded by its parts rather than by what a corpus happened
    to reach: the x87 mirror's last stores and pops (at most 34 bytes), the
    normal exit (a chained exit is about 90 bytes on Win64), the two fault stubs
@@ -121,10 +121,13 @@ const char *x86p_jit_status_name(X86pJitStatus s);
    instruction bound had drifted to 224 while forms emitted up to 303 bytes,
    which nothing noticed because a budget is only exceeded near the end of a
    buffer; the tail bound was once passed by the game at 337 bytes while no
-   test corpus reached 200. The largest instruction measured over the test
-   corpora is 321 bytes (an x87 form with its guards, a slow path that writes
-   two values back, and its helper sequence), which the 352 above holds with
-   room for an addressing form the corpora do not reach. */
+   test corpus reached 200. The largest instruction is a CALL through
+   base + index * 4 + disp32 with a leaf site (jit_leaf_sites.h): its memory
+   read, the return address push, the site's check and refill call, and two
+   exits come to 379 bytes, the case
+   test_the_widest_indirect_call_fits_with_its_site translates. Before sites
+   the largest was 321 bytes (an x87 form with its guards, a slow path that
+   writes two values back, and its helper sequence). */
 #define X86P_JIT_EPILOGUE_BYTES 640u
 /* The frame the block opens before its first instruction: at most eight
    pushes, the stack adjustment and the CPU pointer move -- 19 bytes on Win64.
@@ -268,6 +271,8 @@ typedef struct X86pJitBlock {
   unsigned chain_exits_unslotted;
   /* Direct CALLs that call a leaf in place (X86pJitLeafFn). */
   unsigned leaf_calls;
+  /* CALLs through a register or memory given a leaf site. */
+  unsigned leaf_sites;
 } X86pJitBlock;
 
 /*
@@ -322,10 +327,13 @@ typedef int (*X86pJitBoundaryFn)(uint32_t eip, void *user);
  */
 typedef int (*X86pJitLeafFn)(X86pCpu *cpu);
 
-/* The leaf for a direct CALL to `target`, or NULL for an ordinary call.
-   Asked while translating, so its answer must hold for as long as the
+/* The leaf for a CALL to `target`, or NULL for an ordinary call. Asked while
+   translating a direct CALL, and at run time for a CALL through a register or
+   memory (jit_leaf_sites.h), so its answer must hold for as long as the
    translation does. */
 typedef X86pJitLeafFn (*X86pJitLeafResolveFn)(uint32_t target, void *user);
+
+typedef struct X86pJitLeafSites X86pJitLeafSites;
 
 /*
  * What a translation is given by the engine it is made for. Every field may be
@@ -338,7 +346,10 @@ typedef X86pJitLeafFn (*X86pJitLeafResolveFn)(uint32_t target, void *user);
  *     reads the chain's run header and is entered only by
  *     x86p_jit_engine_run. Without it every exit returns;
  *   - `leaf`: a direct CALL whose target it names a leaf for calls that leaf
- *     in place (see X86pJitLeafFn).
+ *     in place (see X86pJitLeafFn);
+ *   - `leaf_sites`: a CALL through a register or memory claims a site in it
+ *     and calls the leaf `leaf` names for its runtime target
+ *     (jit_leaf_sites.h). Used only with `chain` and `leaf`.
  *
  * A backend that does not chain or call leaves ignores those fields; the
  * dispatcher then runs every call the ordinary way.
@@ -349,6 +360,7 @@ typedef struct X86pJitTranslateEnv {
   X86pJitChain *chain;
   X86pJitLeafResolveFn leaf;
   void *leaf_user;
+  X86pJitLeafSites *leaf_sites;
 } X86pJitTranslateEnv;
 
 /* As x86p_jit_translate, in the environment `env` (which may be NULL: that is

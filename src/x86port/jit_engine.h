@@ -229,6 +229,15 @@ typedef struct X86pJitEngineStats {
      (x86p_jit_engine_set_leaves). How often a leaf ran, and how often it
      declined, is the consumer's to count: only it sees the answer. */
   uint64_t leaf_calls;
+  /* CALLs through a register or memory translated with a leaf site
+     (jit_leaf_sites.h), summed at translation; and, at run time, the
+     resolver answers the sites took, how many named a leaf, the sites that
+     used their last refill, and the sites refused for a spent pool. */
+  uint64_t leaf_sites;
+  uint64_t leaf_site_fills;
+  uint64_t leaf_site_leaf_fills;
+  uint64_t leaf_sites_exhausted;
+  uint64_t leaf_sites_refused;
 } X86pJitEngineStats;
 
 /*

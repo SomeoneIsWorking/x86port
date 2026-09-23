@@ -3,6 +3,7 @@
 #include "block_cache.h"
 #include "decode.h"
 #include "jit_chain.h"
+#include "jit_leaf_sites.h"
 #include "jit_storage.h"
 
 #include <stdarg.h>
@@ -27,6 +28,10 @@ struct X86pJitEngine {
   void *boundary_user;
   X86pJitLeafResolveFn leaf;
   void *leaf_user;
+  /* Sites for CALLs through a register or memory, answered by `leaf` at run
+     time (jit_leaf_sites.h); NULL without a resolver. */
+  X86pJitLeafSites *leaf_sites;
+  size_t cache_blocks;
   /* The intercept contract, when installed: see x86p_jit_engine_set_run_stop. */
   X86pJitRunStopFn run_stop;
   /* x86p_jit_host_state() that every cached translation was made under. */
@@ -168,6 +173,7 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
   }
   e->mem = mem;
   e->host_state = x86p_jit_host_state();
+  e->cache_blocks = cache_blocks;
 
   why[0] = '\0';
   /* ONE number for both: the storage holds exactly as many translations as the
@@ -212,6 +218,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   x86p_jit_chain_destroy(e->links);
   x86p_jit_profile_destroy(e->profile);
   x86p_jit_chain_census_destroy(e->chain);
+  x86p_jit_leaf_sites_destroy(e->leaf_sites);
   free(e);
 }
 
@@ -273,6 +280,14 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   out->block_records = (uint64_t)x86p_jit_storage_block_records(e->storage);
   out->ceilings_learned = (uint64_t)x86p_jit_storage_ceilings_learned(e->storage);
   out->ceilings_retired = (uint64_t)x86p_jit_storage_ceilings_retired(e->storage);
+  {
+    X86pJitLeafSitesStats sites;
+    x86p_jit_leaf_sites_stats(e->leaf_sites, &sites);
+    out->leaf_site_fills = sites.fills;
+    out->leaf_site_leaf_fills = sites.leaf_fills;
+    out->leaf_sites_exhausted = sites.exhausted;
+    out->leaf_sites_refused = sites.refused;
+  }
   {
     JcBlockStats cache;
     jc_block_stats(e->cache, &cache);
@@ -366,6 +381,18 @@ int x86p_jit_engine_set_leaves(
         jc_block_count(e->cache));
     return 0;
   }
+  X86pJitLeafSites *sites = NULL;
+  if (fn) {
+    /* A CALL ends its block, so a block holds at most one site; twice the
+       blocks leaves room for the sites of blocks evicted before a flush. */
+    sites = x86p_jit_leaf_sites_create(e->cache_blocks * 2u, fn, user);
+    if (!sites) {
+      say(reason, reason_len, "leaf sites for %zu blocks could not be created", e->cache_blocks);
+      return 0;
+    }
+  }
+  x86p_jit_leaf_sites_destroy(e->leaf_sites);
+  e->leaf_sites = sites;
   e->leaf = fn;
   e->leaf_user = user;
   return 1;
@@ -462,6 +489,7 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
   if (e->links) {
     x86p_jit_chain_reset(e->links);
   }
+  x86p_jit_leaf_sites_reset(e->leaf_sites);
   /*
    * CHECKED, not assumed. An entry surviving the flush points into arena bytes
    * the next translation is about to overwrite, and entering it executes
@@ -549,12 +577,14 @@ static void *translate_at(
     return NULL;
   }
   claimed = e->links ? x86p_jit_chain_claimed(e->links) : 0u;
-  const X86pJitTranslateEnv env = {e->boundary, e->boundary_user, e->links, e->leaf, e->leaf_user};
+  const size_t sites_claimed = x86p_jit_leaf_sites_mark(e->leaf_sites);
+  const X86pJitTranslateEnv env = {e->boundary, e->boundary_user, e->links, e->leaf, e->leaf_user, e->leaf_sites};
   *st = x86p_jit_storage_translate(e->storage, e->mem, eip, &env, &blk, reason, reason_len);
   if (*st != kX86pJitOk) {
     if (e->links) {
       x86p_jit_chain_rewind(e->links, claimed);
     }
+    x86p_jit_leaf_sites_rewind(e->leaf_sites, sites_claimed);
     return NULL;
   }
   exec = blk.entry;
@@ -597,6 +627,7 @@ static void *translate_at(
   e->stats.chain_exits += blk.chain_exits;
   e->stats.chain_exits_unslotted += blk.chain_exits_unslotted;
   e->stats.leaf_calls += blk.leaf_calls;
+  e->stats.leaf_sites += blk.leaf_sites;
   if (e->chain) {
     x86p_jit_chain_census_note_block(
         e->chain, eip, blk.static_targets, blk.static_target_count, blk.static_targets_overflowed);

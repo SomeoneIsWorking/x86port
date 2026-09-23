@@ -187,8 +187,9 @@ Gap: the ARM64 backend does not link blocks to their successors
 (`x86p_jit_chain_entry_offset` returns 0), so every block exit returns to the
 dispatcher; x64 chains. `test_jit_engine` checks that a non-chaining backend
 chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the ARM64 and WebAssembly backends
-never call one in place (`x86p_jit_engine_set_leaves`), so every direct CALL to
-a consumer's leaf reaches it through the dispatcher there.
+never call one in place (`x86p_jit_engine_set_leaves`), so every CALL to a
+consumer's leaf, direct or through a leaf site, reaches it through the
+dispatcher there.
 
 `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
 intercept and dispatch callbacks. The run loop consults the intercept once per
@@ -474,7 +475,12 @@ boundary callbacks, and leaves: host code a chaining x64 translation calls in
 place for a direct CALL, which completes the call or declines having changed
 nothing, and a declined call reaches the callee through the dispatcher
 (`test_jit_engine`, `test_a_leaf_completes_a_direct_call_in_place`, both routes
-checked against the interpreter). Gap: complete image/module-generation identity, override
+checked against the interpreter). A CALL through a register or memory calls
+the leaf for its runtime target through a per-site cache that stops refilling
+after four targets (`jit_leaf_sites.c`; `test_a_leaf_completes_an_indirect_call_through_its_site`
+checks one-target, declining and alternating sites against the interpreter,
+and `test_the_widest_indirect_call_fits_with_its_site` the widest form within
+the 384-byte instruction bound). Gap: complete image/module-generation identity, override
 installation/removal invalidation, disabled override behavior, and a scoped
 original call that re-enters the JIT without recursion are not yet verified as
 one product contract.

@@ -1305,6 +1305,213 @@ static void test_a_leaf_completes_a_direct_call_in_place(void) {
   leaf_run(1, &ci);
 }
 
+/*
+ * A leaf for a CALL through a register (jit_leaf_sites.h):
+ *
+ *   0: B9 0A 00 00 00    MOV ECX, 10
+ *   5: BA <A>            MOV EDX, callee A
+ *  10: FF D2             CALL EDX
+ *  12: 81 F2 <k>         XOR EDX, k        ; k = A ^ B alternates, 0 does not
+ *  18: 49                DEC ECX
+ *  19: 75 F5             JNZ 10
+ *  21: EB FE             JMP 21
+ * 0x100: 83 C0 03 C3     ADD EAX, 3; RET   ; callee A
+ * 0x110: 83 C0 05 C3     ADD EAX, 5; RET   ; callee B
+ */
+#define SITE_A 0x100u
+#define SITE_B 0x110u
+#define SITE_SPIN 21u
+
+typedef struct SiteRecord {
+  int decline;
+  uint32_t returns_to; /* the return address a call must arrive with */
+  unsigned calls;
+  unsigned entered_wrong;
+} SiteRecord;
+
+static SiteRecord g_site;
+
+static int site_leaf(X86pCpu *cpu, uint32_t callee, uint32_t add) {
+  const uint32_t esp = cpu->reg[kX86pEsp];
+  uint32_t ret;
+  memcpy(&ret, &g_guest[esp - GUEST_BASE], sizeof ret);
+  g_site.calls++;
+  if (cpu->eip != GUEST_BASE + callee || ret != GUEST_BASE + g_site.returns_to) {
+    g_site.entered_wrong++;
+  }
+  if (g_site.decline) {
+    return 0;
+  }
+  cpu->reg[kX86pEax] += add;
+  cpu->reg[kX86pEsp] = esp + 4u;
+  return 1;
+}
+
+static int site_leaf_a(X86pCpu *cpu) {
+  return site_leaf(cpu, SITE_A, 3u);
+}
+
+static int site_leaf_b(X86pCpu *cpu) {
+  return site_leaf(cpu, SITE_B, 5u);
+}
+
+static X86pJitLeafFn site_leaf_at(uint32_t target, void *user) {
+  (void)user;
+  if (target == GUEST_BASE + SITE_A) {
+    return site_leaf_a;
+  }
+  return target == GUEST_BASE + SITE_B ? site_leaf_b : NULL;
+}
+
+static void site_program(int alternate) {
+  static const uint8_t prog[] = {0xB9, 0x0A, 0x00, 0x00, 0x00, 0xBA, 0,    0,    0,    0,    0xFF, 0xD2,
+                                 0x81, 0xF2, 0,    0,    0,    0,    0x49, 0x75, 0xF5, 0xEB, 0xFE};
+  static const uint8_t callee[] = {0x83, 0xC0, 0x03, 0xC3};
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  put_imm32(&g_guest[6], GUEST_BASE + SITE_A);
+  put_imm32(&g_guest[14], alternate ? SITE_A ^ SITE_B : 0u);
+  memcpy(&g_guest[SITE_A], callee, sizeof callee);
+  memcpy(&g_guest[SITE_B], callee, sizeof callee);
+  g_guest[SITE_B + 2u] = 0x05;
+}
+
+typedef struct SiteExpect {
+  unsigned calls;
+  uint64_t fills;
+  uint64_t exhausted;
+} SiteExpect;
+
+static void site_run(int alternate, int decline, const X86pCpu *expect, SiteExpect want) {
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  char reason[256];
+
+  site_program(alternate);
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  CHECK(x86p_jit_engine_set_leaves(eng, site_leaf_at, NULL, reason, sizeof reason));
+  memset(&g_site, 0, sizeof g_site);
+  g_site.decline = decline;
+  g_site.returns_to = 12u;
+  seed(&ce);
+  const X86pJitRunStatus rs = x86p_jit_engine_run(eng, &ce, &no_stop, 600u, reason, sizeof reason);
+  if (rs != kX86pRunBudget) {
+    printf("    run: %s (%s)\n", x86p_jit_run_status_name(rs), reason);
+  }
+  CHECK(rs == kX86pRunBudget);
+  CHECK(ce.eip == GUEST_BASE + SITE_SPIN);
+  CHECK(same_cpu(expect, &ce));
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(g_site.entered_wrong == 0u);
+  CHECK(st.leaf_sites_refused == 0u);
+  if (backend_chains()) {
+    /* CALL EDX is in two translations, the block at 0 and the loop's at 10,
+       each with its own site. */
+    CHECK(st.leaf_sites == 2u);
+    CHECK(g_site.calls == want.calls);
+    CHECK(st.leaf_site_fills == want.fills);
+    CHECK(st.leaf_site_leaf_fills == want.fills);
+    CHECK(st.leaf_sites_exhausted == want.exhausted);
+  } else {
+    CHECK(st.leaf_sites == 0u);
+    CHECK(g_site.calls == 0u);
+  }
+  printf("    %s, %s: %u leaf call(s), %llu fill(s), %llu site(s) exhausted\n",
+         alternate ? "alternating" : "one target",
+         decline ? "declining" : "completing",
+         g_site.calls,
+         (unsigned long long)st.leaf_site_fills,
+         (unsigned long long)st.leaf_sites_exhausted);
+  x86p_jit_engine_destroy(eng);
+}
+
+static void site_interpret(int alternate, X86pCpu *ci) {
+  X86pMem mem = guest_mem();
+  unsigned i;
+  site_program(alternate);
+  seed(ci);
+  for (i = 0; i < 4096u && ci->eip != GUEST_BASE + SITE_SPIN; i++) {
+    CHECK(x86p_step(ci, &mem, NULL) == kX86pStepOk);
+  }
+  CHECK(ci->eip == GUEST_BASE + SITE_SPIN);
+}
+
+/*
+ * The widest CALL a site is emitted for, base + index * 4 + disp32 through
+ * memory, within the per-instruction bound x86p_jit_translate enforces:
+ *
+ *   0: BB <GUEST_BASE>          MOV EBX, GUEST_BASE
+ *   5: 31 C9                    XOR ECX, ECX
+ *   7: FF 94 8B 00 02 00 00     CALL [EBX + ECX*4 + 0x200]  ; = callee A
+ *  14: 31 C9                    XOR ECX, ECX  ; the flags the leaf leaves alone
+ *  16: EB FE                    JMP 16
+ */
+static void test_the_widest_indirect_call_fits_with_its_site(void) {
+  static const uint8_t prog[] = {
+      0xBB, 0, 0, 0, 0, 0x31, 0xC9, 0xFF, 0x94, 0x8B, 0x00, 0x02, 0x00, 0x00, 0x31, 0xC9, 0xEB, 0xFE};
+  static const uint8_t callee[] = {0x83, 0xC0, 0x03, 0xC3};
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu ci;
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  char reason[256];
+  unsigned i;
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  put_imm32(&g_guest[1], GUEST_BASE);
+  put_imm32(&g_guest[0x200], GUEST_BASE + SITE_A);
+  memcpy(&g_guest[SITE_A], callee, sizeof callee);
+  seed(&ci);
+  for (i = 0; i < 64u && ci.eip != GUEST_BASE + 16u; i++) {
+    CHECK(x86p_step(&ci, &mem, NULL) == kX86pStepOk);
+  }
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  CHECK(x86p_jit_engine_set_leaves(eng, site_leaf_at, NULL, reason, sizeof reason));
+  memset(&g_site, 0, sizeof g_site);
+  g_site.returns_to = 14u;
+  seed(&ce);
+  const X86pJitRunStatus rs = x86p_jit_engine_run(eng, &ce, &no_stop, 50u, reason, sizeof reason);
+  if (rs != kX86pRunBudget) {
+    printf("    run: %s (%s)\n", x86p_jit_run_status_name(rs), reason);
+  }
+  CHECK(rs == kX86pRunBudget);
+  CHECK(same_cpu(&ci, &ce));
+  CHECK(g_site.entered_wrong == 0u);
+  CHECK(g_site.calls == (backend_chains() ? 1u : 0u));
+  x86p_jit_engine_destroy(eng);
+}
+
+static void test_a_leaf_completes_an_indirect_call_through_its_site(void) {
+  X86pCpu ci;
+
+  site_interpret(0, &ci);
+  CHECK(ci.reg[kX86pEax] == 0x1000u + 30u);
+  /* One fill per site; every call takes the leaf. */
+  site_run(0, 0, &ci, (SiteExpect){10u, 2u, 0u});
+  /* A declined call changes nothing and reaches the guest callee. */
+  site_run(0, 1, &ci, (SiteExpect){10u, 2u, 0u});
+
+  /* The loop's site sees B, A, B, A and stops asking: after that only A,
+     its last target, takes the leaf, and B runs as an ordinary CALL. The
+     first call (A) is the block at 0's; 1 + 4 + 2 leaf calls in all. */
+  site_interpret(1, &ci);
+  CHECK(ci.reg[kX86pEax] == 0x1000u + 40u);
+  site_run(1, 0, &ci, (SiteExpect){7u, 5u, 1u});
+}
+
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
 
 static uint32_t g_disp_thunk, g_disp_unwind;
@@ -1807,6 +2014,8 @@ int main(void) {
   RUN(test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation);
   RUN(test_an_exit_with_changing_targets_transfers_through_the_front);
   RUN(test_a_leaf_completes_a_direct_call_in_place);
+  RUN(test_a_leaf_completes_an_indirect_call_through_its_site);
+  RUN(test_the_widest_indirect_call_fits_with_its_site);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

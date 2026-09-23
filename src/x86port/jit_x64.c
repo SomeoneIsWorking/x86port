@@ -909,6 +909,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   if (ctx.chain && env->leaf) {
     ctx.leaf = env->leaf;
     ctx.leaf_user = env->leaf_user;
+    ctx.leaf_sites = env->leaf_sites;
   }
   ctx.entry_eip = eip;
   out->host_state = ctx.host_state;
@@ -1279,6 +1280,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->chain_exits = ctx.chain_exits;
   out->chain_exits_unslotted = ctx.chain_exits_unslotted;
   out->leaf_calls = ctx.leaf_calls;
+  out->leaf_sites = ctx.leaf_site_count;
   return kX86pJitOk;
 }
 
