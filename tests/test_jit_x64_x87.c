@@ -182,6 +182,10 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
     fail(k->name, reason);
   }
   g_checks++;
+  if (memcmp(ci.reg, cj.reg, sizeof ci.reg) != 0) {
+    fail(k->name, "general registers differ");
+  }
+  g_checks++;
   same_x87(k, &ci, &cj);
   g_checks++;
   if (memcmp(after_interp, g_guest + DATA_OFF, DATA_BYTES) != 0) {
@@ -215,6 +219,19 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FLD_M32_FAULT 0xD9, 0x86, 0, 0, 0, 0  /* D9 /0 [esi+disp32] */
 #define MOV_EAX_EBX 0x89, 0xD8
 #define JMP_NEXT 0xEB, 0x00
+#define FCHS 0xD9, 0xE0
+#define FABS 0xD9, 0xE1
+#define FLDZ 0xD9, 0xEE
+#define FLD1 0xD9, 0xE8
+#define FCOM_ST(i) 0xD8, (0xD0 + (i))
+#define FCOMP_ST(i) 0xD8, (0xD8 + (i))
+#define FCOMPP 0xDE, 0xD9
+#define FUCOMPP 0xDA, 0xE9
+#define FCOM_M32(d) 0xD8, 0x53, (d)  /* D8 /2 */
+#define FCOMP_M64(d) 0xDC, 0x5B, (d) /* DC /3 */
+#define FICOM_M32(d) 0xDA, 0x53, (d) /* DA /2 */
+#define FNSTSW_AX 0xDF, 0xE0
+#define MOV_M_EAX(d) 0x89, 0x43, (d) /* mov [ebx+d8], eax */
 #define FLD_ST(i) 0xD9, (0xC0 + (i))
 #define FST_ST(i) 0xDD, (0xD0 + (i))
 #define FSTP_ST(i) 0xDD, (0xD8 + (i))
@@ -401,6 +418,69 @@ static const Case kCases[] = {
      4,
      {F32_ONE, F32_THREE},
      0},
+    {"exchange and sign inside a chain",
+     CODE(FLD_M32(0), FLD_M32(4), FXCH_ST(1), FCHS, FSUB_ST0_ST(1), FABS, FXCH_ST(1), FSTP_M32(8), FSTP_M32(12)),
+     9,
+     {F32_ONE, F32_THREE},
+     0},
+    {"sign of a NaN and a zero",
+     CODE(FLD_M32(0), FABS, FLD_M32(4), FCHS, FLD_M32(8), FABS, FSTP_M32(12), FSTP_M32(16), FSTP_M32(20)),
+     9,
+     {0xFFC00000u, F32_ZERO, F32_NEG_ZERO},
+     0},
+    {"register compares",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FCOM_ST(1),
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FXCH_ST(1),
+          FCOM_ST(1),
+          FNSTSW_AX,
+          MOV_M_EAX(36),
+          FLD_ST(0),
+          FCOMP_ST(1),
+          FNSTSW_AX,
+          MOV_M_EAX(40),
+          FCOMPP,
+          FNSTSW_AX),
+     15,
+     {F32_ONE, F32_THREE},
+     0},
+    {"an unordered register compare",
+     CODE(FLD_M32(0), FLD_M32(4), FUCOMPP, FNSTSW_AX, MOV_M_EAX(32), FLD_M32(4), FCOM_ST(3)),
+     7,
+     {F32_ONE, F32_QNAN},
+     0},
+    {"memory compares",
+     CODE(FLD_M32(0),
+          FLD_M32(0),
+          FCOM_M32(4),
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FCOM_M32(0),
+          FNSTSW_AX,
+          MOV_M_EAX(36),
+          FICOM_M32(8),
+          FNSTSW_AX,
+          MOV_M_EAX(40),
+          FCOMP_M64(16),
+          FNSTSW_AX),
+     13,
+     {F32_THREE, F32_ONE, 3u, 0, 0, 0x7FF80000u},
+     0},
+    {"compare below a memory operand",
+     CODE(FLD_M32(4), FLD_M32(4), FCOM_M32(0), FNSTSW_AX),
+     4,
+     {F32_THREE, F32_ONE},
+     0},
+    {"an exchange that stays on the stack",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FXCH_ST(2), FXCH_ST(1)),
+     5,
+     {F32_ONE, F32_THREE},
+     0},
+    {"compare against an empty stack", CODE(FCOM_M32(0), FNSTSW_AX, FCOMPP, FNSTSW_AX), 4, {F32_ONE}, 0},
+    {"constants", CODE(FLDZ, FLD1, FADD_ST0_ST(1), FLD1, FLDZ, FLDZ, FLDZ, FLDZ, FLDZ, FLD1, FSTP_M64(16)), 11, {0}, 0},
     {"a chain that runs to the end of the block",
      CODE(FLD_M32(0), FLD_M32(4), FADD_ST0_ST(1)),
      3,

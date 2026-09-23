@@ -99,6 +99,20 @@ void x87_inline_load(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 /* FADD/FSUB/FMUL/FDIV (+R, +P) with a register or a prepared memory source. */
 void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 
+/* FXCH, FCHS, FABS, and FCOM/FCOMP/FCOMPP/FUCOM* against a register. */
+void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
+
+/* FCOM/FCOMP m32/m64 and FICOM m16/m32 with the operand prepared in
+   HOSTPTR_REG. */
+void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
+
+/* FLDZ and FLD1, the two constants that do not depend on the rounding
+   control. */
+void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
+
+/* FNSTSW AX, which calls nothing and so keeps the mirror. */
+void x87_inline_status_ax(BlockCtx *c);
+
 /* FST/FSTP ST(i). */
 void x87_inline_store_reg(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 

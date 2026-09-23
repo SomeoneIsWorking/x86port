@@ -24,11 +24,9 @@ void x86p_x87_sign(X86pX87 *f, int absolute) {
   if (!x86p_x87_get(f, 0, &v)) {
     return;
   }
-  if (absolute) {
-    v = (v < 0 || (v == 0 && signbit(v))) ? -v : v;
-  } else {
-    v = -v;
-  }
+  /* FABS clears the sign bit and FCHS flips it, whatever the value: a NaN's
+     sign changes too, and neither raises anything. */
+  v = absolute ? fabsl(v) : -v;
   x86p_x87_set(f, 0, v);
 }
 void x86p_x87_test(X86pX87 *f) {
