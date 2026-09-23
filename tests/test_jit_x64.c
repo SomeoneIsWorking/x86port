@@ -1624,6 +1624,69 @@ static void test_fetch_fault_at_an_unmapped_eip(void) {
   jit_x64_harness_code_free(code, 4096);
 }
 
+/*
+ * Guest memory mapped at its own host addresses: host 0 and lo 0, the mapping
+ * a product that places guest memory at the guest's addresses uses. The
+ * backend forms the host pointer differently there, so every other test here
+ * -- all of which map guest memory at an arena pointer -- never reaches it.
+ * A load and a store must land on the right bytes, and an access past the
+ * mapping's size must still fault rather than touch the guard page.
+ */
+static void test_identity_mapped_guest_memory(void) {
+  size_t page = 0;
+  uint8_t *base = jit_x64_harness_identity_page(&page);
+  if (!base) {
+    return;
+  }
+  void *code = jit_x64_harness_code_alloc(4096);
+  CHECK(code != NULL);
+  if (!code) {
+    return;
+  }
+  const uint32_t guest = (uint32_t)(uintptr_t)base;
+  X86pMem mem = {0};
+  mem.host = NULL;
+  mem.lo = 0u;
+  mem.size = guest + (uint32_t)page;
+  memset(base, 0, page);
+  put_u32(base + 0x800u, 0x41424344u);
+  /* MOV EAX,[guest+0x800] ; ADD EAX,1 ; MOV [guest+0x804],EAX ;
+     MOV ECX,[guest+page] -- the last one is past the mapping. */
+  uint8_t *p = base;
+  *p++ = 0xA1u;
+  put_u32(p, guest + 0x800u);
+  p += 4;
+  *p++ = 0x83u;
+  *p++ = 0xC0u;
+  *p++ = 0x01u;
+  *p++ = 0xA3u;
+  put_u32(p, guest + 0x804u);
+  p += 4;
+  const uint32_t faulting = guest + (uint32_t)(p - base);
+  *p++ = 0x8Bu;
+  *p++ = 0x0Du;
+  put_u32(p, guest + (uint32_t)page);
+
+  X86pJitBlock blk;
+  char reason[192] = {0};
+  const X86pJitStatus st = jit_x64_harness_translate(&mem, guest, code, 4096, &blk, reason, sizeof reason);
+  CHECK(st == kX86pJitOk);
+  if (st == kX86pJitOk) {
+    X86pCpu cpu;
+    seed_cpu(&cpu, 7u);
+    cpu.reg[kX86pEcx] = 0x5A5A5A5Au;
+    const X86pJitExit exit = x86p_jit_enter(&blk, &cpu);
+    uint32_t stored;
+    memcpy(&stored, base + 0x804u, sizeof stored);
+    CHECK(cpu.reg[kX86pEax] == 0x41424345u);
+    CHECK(stored == 0x41424345u);
+    CHECK(exit == kX86pJitExitMemoryFault);
+    CHECK(cpu.eip == faulting);
+    CHECK(cpu.reg[kX86pEcx] == 0x5A5A5A5Au);
+  }
+  jit_x64_harness_code_free(code, 4096);
+}
+
 int main(void) {
   g_guest = jit_x64_harness_guest_init();
   if (!x86p_jit_available()) {
@@ -1639,6 +1702,7 @@ int main(void) {
   RUN(test_block_stops_at_unsupported_with_eip_on_it);
   RUN(test_out_of_space_is_refused_not_truncated);
   RUN(test_fetch_fault_at_an_unmapped_eip);
+  RUN(test_identity_mapped_guest_memory);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);
   printf("%lu program(s), %lu guest instruction(s) translated, %lu full-machine comparison(s)\n",

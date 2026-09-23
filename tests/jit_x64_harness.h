@@ -22,6 +22,12 @@
 uint8_t *jit_x64_harness_guest_init(void);
 X86pMem jit_x64_harness_mem(uint8_t *guest);
 
+/* One page whose host address is below 4 GiB and is followed by an unreadable
+   page, so guest memory can be mapped with host 0 and lo 0 -- the identity
+   mapping a product that places guest memory at its own addresses uses. NULL
+   (with a SKIP line naming why) on a host that reserves the low 4 GiB. */
+uint8_t *jit_x64_harness_identity_page(size_t *page_size);
+
 /* One writable code region at a time; NULL (with a REFUSED line) if the host
    refuses executable memory. */
 void *jit_x64_harness_code_alloc(size_t n);

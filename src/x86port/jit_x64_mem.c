@@ -94,6 +94,12 @@ void emit_effective_address(BlockCtx *c, const X86pOperand *o) {
   }
 }
 
+/* The guest address is the host address: no offset to subtract, no base to
+   add. */
+static int plan_is_identity(const MemPlan *plan) {
+  return plan->lo == 0u && plan->host == 0u;
+}
+
 /*
  * Bounds-check EA_REG and leave the host address in HOSTPTR_REG.
  *
@@ -106,13 +112,19 @@ void emit_effective_address(BlockCtx *c, const X86pOperand *o) {
  * and runs off the end is refused rather than truncated -- the same rule
  * x86p_mem_read enforces.
  *
+ * An identity mapping (lo 0, host 0) compares EA_REG itself: the offset is
+ * the address, and emit_host_pointer reads it from there.
+ *
  * Returns the site to bind to the fault stub.
  */
 X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w) {
   x86p_emit_mov_r32_imm32(e, FAULTPC_REG, insn_eip);
-  x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
-  if (plan->lo != 0u) {
-    x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
+  const X86pHostReg offset = plan_is_identity(plan) ? EA_REG : ADDR_TMP;
+  if (offset == ADDR_TMP) {
+    x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
+    if (plan->lo != 0u) {
+      x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
+    }
   }
   /*
    * A mapping narrower than the access has NO in-bounds address, so the check
@@ -124,14 +136,19 @@ X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_e
   if (plan->size < (uint32_t)w) {
     return x86p_emit_jmp_rel32(e);
   }
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, ADDR_TMP, plan->size - (uint32_t)w);
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, offset, plan->size - (uint32_t)w);
   return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
 }
 
 /* HOSTPTR_REG = host + (EA - lo). ADDR_TMP already holds the offset, and
    writing a 32-bit register zero-extends, so the 64-bit add gets a clean
-   offset. */
+   offset. An identity mapping's offset IS the guest address, and the 32-bit
+   move zero-extends it into the pointer without a base to add. */
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
+  if (plan_is_identity(plan)) {
+    x86p_emit_mov_r32_r32(e, HOSTPTR_REG, EA_REG);
+    return;
+  }
   x86p_emit_mov_r64_imm64(e, HOSTPTR_REG, plan->host);
   x86p_emit_alu_r64_r64(e, kX64Add, HOSTPTR_REG, ADDR_TMP);
 }
