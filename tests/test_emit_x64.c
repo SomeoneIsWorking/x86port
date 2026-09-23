@@ -516,9 +516,18 @@ static void test_shift_every_op_and_register(void) {
    each packed operation: the opcode byte picks the operation, and a wrong one
    is another valid instruction. */
 static void test_packed_single(void) {
-  static const X86pHostPacked ops[4] = {kX64Addps, kX64Mulps, kX64Subps, kX64Divps};
-  static const ZydisMnemonic want[4] = {
-      ZYDIS_MNEMONIC_ADDPS, ZYDIS_MNEMONIC_MULPS, ZYDIS_MNEMONIC_SUBPS, ZYDIS_MNEMONIC_DIVPS};
+  static const X86pHostPacked ops[10] = {
+      kX64Addps, kX64Mulps, kX64Subps, kX64Divps, kX64Andps, kX64Andnps, kX64Orps, kX64Xorps, kX64Movhlps, kX64Movlhps};
+  static const ZydisMnemonic want[10] = {ZYDIS_MNEMONIC_ADDPS,
+                                         ZYDIS_MNEMONIC_MULPS,
+                                         ZYDIS_MNEMONIC_SUBPS,
+                                         ZYDIS_MNEMONIC_DIVPS,
+                                         ZYDIS_MNEMONIC_ANDPS,
+                                         ZYDIS_MNEMONIC_ANDNPS,
+                                         ZYDIS_MNEMONIC_ORPS,
+                                         ZYDIS_MNEMONIC_XORPS,
+                                         ZYDIS_MNEMONIC_MOVHLPS,
+                                         ZYDIS_MNEMONIC_MOVLHPS};
   static const int32_t disps[3] = {0, 0x70, 0x1230};
   int b, k, x;
   for (b = 0; b < kX64RegCount; b++) {
@@ -539,10 +548,22 @@ static void test_packed_single(void) {
         CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOVUPS &&
               d.ops[1].reg.value == (ZydisRegister)(ZYDIS_REGISTER_XMM0 + x) && reg_id(d.ops[0].mem.base) == b &&
               d.ops[0].mem.index == ZYDIS_REGISTER_NONE && d.ops[0].mem.disp.value == disps[k]);
+        x86p_emit_init(&e, buf, sizeof buf);
+        x86p_emit_movss_load(&e, (X86pHostXmm)x, (X86pHostReg)b, disps[k]);
+        d = emit_and_decode(&e);
+        CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOVSS &&
+              d.ops[0].reg.value == (ZydisRegister)(ZYDIS_REGISTER_XMM0 + x) && reg_id(d.ops[1].mem.base) == b &&
+              d.ops[1].size == 32 && d.ops[1].mem.disp.value == disps[k]);
+        x86p_emit_init(&e, buf, sizeof buf);
+        x86p_emit_half_load(&e, x ? kX64Movhps : kX64Movlps, (X86pHostXmm)x, (X86pHostReg)b, disps[k]);
+        d = emit_and_decode(&e);
+        CHECK(d.ok && d.insn.mnemonic == (x ? ZYDIS_MNEMONIC_MOVHPS : ZYDIS_MNEMONIC_MOVLPS) &&
+              d.ops[0].reg.value == (ZydisRegister)(ZYDIS_REGISTER_XMM0 + x) && reg_id(d.ops[1].mem.base) == b &&
+              d.ops[1].size == 64 && d.ops[1].mem.disp.value == disps[k]);
       }
     }
   }
-  for (k = 0; k < 4; k++) {
+  for (k = 0; k < 10; k++) {
     uint8_t buf[16];
     X86pEmit e;
     Decoded d;
@@ -551,6 +572,21 @@ static void test_packed_single(void) {
     d = emit_and_decode(&e);
     CHECK(d.ok && d.insn.mnemonic == want[k] && d.ops[0].reg.value == ZYDIS_REGISTER_XMM0 &&
           d.ops[1].reg.value == ZYDIS_REGISTER_XMM1);
+  }
+  {
+    uint8_t buf[16];
+    X86pEmit e;
+    Decoded d;
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_movss_rr(&e, kX64Xmm1, kX64Xmm0);
+    d = emit_and_decode(&e);
+    CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOVSS && d.ops[0].reg.value == ZYDIS_REGISTER_XMM1 &&
+          d.ops[1].reg.value == ZYDIS_REGISTER_XMM0);
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_shufps(&e, kX64Xmm0, kX64Xmm1, 0x1Bu);
+    d = emit_and_decode(&e);
+    CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_SHUFPS && d.ops[0].reg.value == ZYDIS_REGISTER_XMM0 &&
+          d.ops[1].reg.value == ZYDIS_REGISTER_XMM1 && d.ops[2].imm.value.u == 0x1Bu);
   }
 }
 

@@ -292,6 +292,38 @@ void x86p_emit_packed_ps(X86pEmit *e, X86pHostPacked op, X86pHostXmm dst, X86pHo
   modrm_reg(e, (X86pHostReg)dst, (X86pHostReg)src);
 }
 
+void x86p_emit_half_load(X86pEmit *e, X86pHostHalfLoad op, X86pHostXmm dst, X86pHostReg base, int32_t disp) {
+  rex(e, 0, (X86pHostReg)dst, base);
+  put(e, 0x0Fu);
+  put(e, (uint8_t)op);
+  modrm_mem(e, (X86pHostReg)dst, base, disp);
+}
+
+/* F3 [REX] 0F 10: the mandatory prefix precedes REX. */
+void x86p_emit_movss_load(X86pEmit *e, X86pHostXmm dst, X86pHostReg base, int32_t disp) {
+  put(e, 0xF3u);
+  rex(e, 0, (X86pHostReg)dst, base);
+  put(e, 0x0Fu);
+  put(e, 0x10u);
+  modrm_mem(e, (X86pHostReg)dst, base, disp);
+}
+
+void x86p_emit_movss_rr(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src) {
+  put(e, 0xF3u);
+  rex(e, 0, (X86pHostReg)dst, (X86pHostReg)src);
+  put(e, 0x0Fu);
+  put(e, 0x10u);
+  modrm_reg(e, (X86pHostReg)dst, (X86pHostReg)src);
+}
+
+void x86p_emit_shufps(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src, uint8_t imm) {
+  rex(e, 0, (X86pHostReg)dst, (X86pHostReg)src);
+  put(e, 0x0Fu);
+  put(e, 0xC6u);
+  modrm_reg(e, (X86pHostReg)dst, (X86pHostReg)src);
+  put(e, imm);
+}
+
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
   rex(e, 0, b, a);
   put(e, 0x85u);

@@ -110,7 +110,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 107u);
+  unsigned pick = (unsigned)(r % 124u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -687,6 +687,76 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = 0x5Eu;
     p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
     return 3;
+  /*
+   * The SSE moves, shuffles and bitwise forms, which the backend lowers as
+   * whole-register host moves: each merge (MOVSS's lane 0, a half move, the
+   * two lanes of SHUFPS each operand supplies) and each store back to guest
+   * memory.
+   */
+  case 107: /* MOVAPS xmm, xmm -- 0F 28 /r, mod=11 */
+  case 109: /* MOVSS xmm, xmm -- F3 0F 10 /r, mod=11 */
+  case 114: /* ANDPS xmm, xmm -- 0F 54 /r */
+  case 116: /* ORPS xmm, xmm -- 0F 56 /r */
+  case 120: /* MOVHLPS xmm, xmm -- 0F 12 /r, mod=11 */
+  case 121: /* MOVLHPS xmm, xmm -- 0F 16 /r, mod=11 */
+  {
+    const uint8_t op = pick == 107u   ? 0x28u
+                       : pick == 109u ? 0x10u
+                       : pick == 114u ? 0x54u
+                       : pick == 116u ? 0x56u
+                       : pick == 120u ? 0x12u
+                                      : 0x16u;
+    uint32_t n = 0;
+    if (pick == 109u) {
+      p[n++] = 0xF3u;
+    }
+    p[n++] = 0x0Fu;
+    p[n++] = op;
+    p[n++] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return n;
+  }
+  case 108: /* MOVAPS [base+disp8], xmm -- 0F 29 /r, mod=01 */
+  case 110: /* MOVSS xmm, [base+disp8] -- F3 0F 10 /r: lanes 1-3 zeroed */
+  case 111: /* MOVSS [base+disp8], xmm -- F3 0F 11 /r */
+  case 115: /* ANDNPS xmm, [base+disp8] -- 0F 55 /r */
+  case 117: /* XORPS xmm, [base+disp8] -- 0F 57 /r */
+  case 118: /* MOVLPS xmm, [base+disp8] -- 0F 12 /r, mod=01 */
+  case 119: /* MOVHPS xmm, [base+disp8] -- 0F 16 /r, mod=01 */
+  case 122: /* MOVLPS [base+disp8], xmm -- 0F 13 /r */
+  case 123: /* MOVHPS [base+disp8], xmm -- 0F 17 /r */
+  {
+    const uint8_t op = pick == 108u   ? 0x29u
+                       : pick == 110u ? 0x10u
+                       : pick == 111u ? 0x11u
+                       : pick == 115u ? 0x55u
+                       : pick == 117u ? 0x57u
+                       : pick == 118u ? 0x12u
+                       : pick == 119u ? 0x16u
+                       : pick == 122u ? 0x13u
+                                      : 0x17u;
+    uint32_t n = 0;
+    if (pick == 110u || pick == 111u) {
+      p[n++] = 0xF3u;
+    }
+    p[n++] = 0x0Fu;
+    p[n++] = op;
+    p[n++] = (uint8_t)(0x40u | ((dst & 7u) << 3) | membase);
+    p[n++] = memdisp;
+    return n;
+  }
+  case 112: /* SHUFPS xmm, xmm, imm8 -- 0F C6 /r ib */
+    p[0] = 0x0Fu;
+    p[1] = 0xC6u;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    p[3] = (uint8_t)(r >> 40);
+    return 4;
+  case 113: /* SHUFPS xmm, [base+disp8], imm8 */
+    p[0] = 0x0Fu;
+    p[1] = 0xC6u;
+    p[2] = (uint8_t)(0x40u | ((dst & 7u) << 3) | membase);
+    p[3] = memdisp;
+    p[4] = (uint8_t)(r >> 40);
+    return 5;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
