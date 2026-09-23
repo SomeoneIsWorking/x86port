@@ -110,7 +110,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 99u);
+  unsigned pick = (unsigned)(r % 107u);
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -641,6 +641,52 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0x40u | (3u << 3) | membase);
     p[2] = memdisp;
     return 3;
+  case 99: /* SAR r/m8, imm8 -- C0 /7. The host shifts 32 bits, so a narrow
+              SAR must sign-extend first: without it the sign never reaches
+              the byte and a negative AH shifts in zeroes. */
+    p[0] = 0xC0u;
+    p[1] = (uint8_t)(0xF8u | dst);
+    p[2] = (uint8_t)((r >> 20) & 0x1Fu);
+    return 3;
+  case 100: /* SAR r/m16, CL -- 66 D3 /7. Sign extension and a run-time count
+               that may be zero, past the width, or masked from >= 32. */
+    p[0] = 0x66u;
+    p[1] = 0xD3u;
+    p[2] = (uint8_t)(0xF8u | dst);
+    return 3;
+  case 101: /* SHR r/m32, CL -- D3 /5 */
+    p[0] = 0xD3u;
+    p[1] = (uint8_t)(0xE8u | dst);
+    return 2;
+  case 102: /* SHL [base+disp8], imm8 -- C1 /4, mod=01. Faults with the flags
+               untouched, or shifts memory in place. */
+    p[0] = 0xC1u;
+    p[1] = (uint8_t)(0x40u | (4u << 3) | membase);
+    p[2] = memdisp;
+    p[3] = (uint8_t)((r >> 14) & 0x3Fu);
+    return 4;
+  case 103: /* SHR dword [base+disp8], CL -- D3 /5, mod=01 */
+    p[0] = 0xD3u;
+    p[1] = (uint8_t)(0x40u | (5u << 3) | membase);
+    p[2] = memdisp;
+    return 3;
+  case 104: /* ADDPS xmm, [base+disp8] -- 0F 58 /r, mod=01. A vector source
+               from guest memory at any alignment. */
+    p[0] = 0x0Fu;
+    p[1] = 0x58u;
+    p[2] = (uint8_t)(0x40u | ((dst & 7u) << 3) | membase);
+    p[3] = memdisp;
+    return 4;
+  case 105: /* SUBPS xmm, xmm -- 0F 5C /r. Not commutative. */
+    p[0] = 0x0Fu;
+    p[1] = 0x5Cu;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return 3;
+  case 106: /* DIVPS xmm, xmm -- 0F 5E /r */
+    p[0] = 0x0Fu;
+    p[1] = 0x5Eu;
+    p[2] = (uint8_t)(0xC0u | ((dst & 7u) << 3) | (src & 7u));
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -689,6 +735,23 @@ static Prog generate(uint64_t *rng, uint32_t want_insns) {
  */
 #define DATA_OFF 0x400u
 
+/*
+ * Vector lanes where packed arithmetic can go wrong: signed zero, both
+ * infinities, two NaNs with different payloads (which one survives is
+ * operand order), a denormal, the largest finite value and two inexact ones.
+ * Left at reset every lane would be zero and every operation 0 op 0.
+ */
+static const uint32_t kXmmLanes[] = {0x3FC00000u,
+                                     0x80000000u,
+                                     0x7F800000u,
+                                     0xFF800000u,
+                                     0x7FC00001u,
+                                     0xFFC00002u,
+                                     0x00000001u,
+                                     0x7F7FFFFFu,
+                                     0xC0490FDBu,
+                                     0x3EAAAAABu};
+
 static void seed_cpu(X86pCpu *cpu, uint64_t r) {
   int i;
   x86p_cpu_reset(cpu);
@@ -717,6 +780,12 @@ static void seed_cpu(X86pCpu *cpu, uint64_t r) {
    * fires and one whose check always fires are equally broken, and a corpus
    * that only exercises one of them cannot tell.
    */
+  for (i = 0; i < 8 * 4; i++) {
+    uint32_t lane;
+    r = r * 6364136223846793005ull + 1442695040888963407ull;
+    lane = kXmmLanes[(r >> 33) % (sizeof kXmmLanes / sizeof kXmmLanes[0])];
+    memcpy(&cpu->xmm[i / 4][(i % 4) * 4], &lane, sizeof lane);
+  }
   cpu->reg[kX86pEbx] = GUEST_BASE + DATA_OFF;
   cpu->reg[kX86pEbp] = GUEST_BASE + DATA_OFF + 0x40u;
   /*

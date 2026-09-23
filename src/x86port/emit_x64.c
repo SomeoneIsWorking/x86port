@@ -227,20 +227,43 @@ void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
   modrm_reg(e, src, dst);
 }
 
-void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count) {
+/* C1 /digit ib. */
+void x86p_emit_shift_r32_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count) {
   rex(e, 0, kX64Rax, dst);
   put(e, 0xC1u);
-  put(e, (uint8_t)(0xE0u | ((unsigned)dst & 7u))); /* /4 */
+  put(e, (uint8_t)(0xC0u | ((unsigned)op << 3) | ((unsigned)dst & 7u)));
   put(e, count);
 }
 
-/* sar r32, imm8 -- the second half of a MOVSX synthesised from shifts, and the
-   whole of CDQ/CWDE's sign fill. C1 /7. */
-void x86p_emit_sar_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count) {
+/* D3 /digit. */
+void x86p_emit_shift_r32_cl(X86pEmit *e, X86pHostShift op, X86pHostReg dst) {
   rex(e, 0, kX64Rax, dst);
-  put(e, 0xC1u);
-  put(e, (uint8_t)(0xF8u | ((unsigned)dst & 7u))); /* /7 */
-  put(e, count);
+  put(e, 0xD3u);
+  put(e, (uint8_t)(0xC0u | ((unsigned)op << 3) | ((unsigned)dst & 7u)));
+}
+
+/* [REX] 0F 10 /r and 0F 11 /r. The XMM number takes the ModRM reg field and
+   REX.R exactly as a general register would. */
+void x86p_emit_movups_load(X86pEmit *e, X86pHostXmm dst, X86pHostReg base, int32_t disp) {
+  rex(e, 0, (X86pHostReg)dst, base);
+  put(e, 0x0Fu);
+  put(e, 0x10u);
+  modrm_mem(e, (X86pHostReg)dst, base, disp);
+}
+
+void x86p_emit_movups_store(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostXmm src) {
+  rex(e, 0, (X86pHostReg)src, base);
+  put(e, 0x0Fu);
+  put(e, 0x11u);
+  modrm_mem(e, (X86pHostReg)src, base, disp);
+}
+
+/* [REX] 0F op /r, register direct. */
+void x86p_emit_packed_ps(X86pEmit *e, X86pHostPacked op, X86pHostXmm dst, X86pHostXmm src) {
+  rex(e, 0, (X86pHostReg)dst, (X86pHostReg)src);
+  put(e, 0x0Fu);
+  put(e, (uint8_t)op);
+  modrm_reg(e, (X86pHostReg)dst, (X86pHostReg)src);
 }
 
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {

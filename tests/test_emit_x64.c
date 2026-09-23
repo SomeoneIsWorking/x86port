@@ -422,6 +422,74 @@ static void test_test_r32_r32(void) {
   }
 }
 
+/* Every shift, both count forms, every register: the digit selects the
+   operation, and a wrong one is another valid shift. */
+static void test_shift_every_op_and_register(void) {
+  static const X86pHostShift ops[3] = {kX64Shl, kX64Shr, kX64Sar};
+  static const ZydisMnemonic want[3] = {ZYDIS_MNEMONIC_SHL, ZYDIS_MNEMONIC_SHR, ZYDIS_MNEMONIC_SAR};
+  int k, a;
+  for (k = 0; k < 3; k++) {
+    for (a = 0; a < kX64RegCount; a++) {
+      uint8_t buf[16];
+      X86pEmit e;
+      Decoded d;
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_emit_shift_r32_imm8(&e, ops[k], (X86pHostReg)a, 29u);
+      d = emit_and_decode(&e);
+      CHECK(d.ok && d.insn.mnemonic == want[k] && reg_id(d.ops[0].reg.value) == a &&
+            ZydisRegisterGetClass(d.ops[0].reg.value) == ZYDIS_REGCLASS_GPR32 && d.ops[1].imm.value.u == 29u);
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_emit_shift_r32_cl(&e, ops[k], (X86pHostReg)a);
+      d = emit_and_decode(&e);
+      CHECK(d.ok && d.insn.mnemonic == want[k] && reg_id(d.ops[0].reg.value) == a &&
+            ZydisRegisterGetClass(d.ops[0].reg.value) == ZYDIS_REGCLASS_GPR32 &&
+            d.ops[1].reg.value == ZYDIS_REGISTER_CL);
+    }
+  }
+}
+
+/* The vector moves against every base and a displacement of each size, and
+   each packed operation: the opcode byte picks the operation, and a wrong one
+   is another valid instruction. */
+static void test_packed_single(void) {
+  static const X86pHostPacked ops[4] = {kX64Addps, kX64Mulps, kX64Subps, kX64Divps};
+  static const ZydisMnemonic want[4] = {
+      ZYDIS_MNEMONIC_ADDPS, ZYDIS_MNEMONIC_MULPS, ZYDIS_MNEMONIC_SUBPS, ZYDIS_MNEMONIC_DIVPS};
+  static const int32_t disps[3] = {0, 0x70, 0x1230};
+  int b, k, x;
+  for (b = 0; b < kX64RegCount; b++) {
+    for (k = 0; k < 3; k++) {
+      for (x = 0; x < 2; x++) {
+        uint8_t buf[16];
+        X86pEmit e;
+        Decoded d;
+        x86p_emit_init(&e, buf, sizeof buf);
+        x86p_emit_movups_load(&e, (X86pHostXmm)x, (X86pHostReg)b, disps[k]);
+        d = emit_and_decode(&e);
+        CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOVUPS &&
+              d.ops[0].reg.value == (ZydisRegister)(ZYDIS_REGISTER_XMM0 + x) && reg_id(d.ops[1].mem.base) == b &&
+              d.ops[1].mem.index == ZYDIS_REGISTER_NONE && d.ops[1].mem.disp.value == disps[k]);
+        x86p_emit_init(&e, buf, sizeof buf);
+        x86p_emit_movups_store(&e, (X86pHostReg)b, disps[k], (X86pHostXmm)x);
+        d = emit_and_decode(&e);
+        CHECK(d.ok && d.insn.mnemonic == ZYDIS_MNEMONIC_MOVUPS &&
+              d.ops[1].reg.value == (ZydisRegister)(ZYDIS_REGISTER_XMM0 + x) && reg_id(d.ops[0].mem.base) == b &&
+              d.ops[0].mem.index == ZYDIS_REGISTER_NONE && d.ops[0].mem.disp.value == disps[k]);
+      }
+    }
+  }
+  for (k = 0; k < 4; k++) {
+    uint8_t buf[16];
+    X86pEmit e;
+    Decoded d;
+    x86p_emit_init(&e, buf, sizeof buf);
+    x86p_emit_packed_ps(&e, ops[k], kX64Xmm0, kX64Xmm1);
+    d = emit_and_decode(&e);
+    CHECK(d.ok && d.insn.mnemonic == want[k] && d.ops[0].reg.value == ZYDIS_REGISTER_XMM0 &&
+          d.ops[1].reg.value == ZYDIS_REGISTER_XMM1);
+  }
+}
+
 /*
  * All sixteen conditions, decoded.
  *
@@ -950,6 +1018,8 @@ int main(void) {
   RUN(test_alu_r64_imm8_stack_adjust);
   RUN(test_memory_counter_and_jump);
   RUN(test_call_rel32);
+  RUN(test_shift_every_op_and_register);
+  RUN(test_packed_single);
   RUN(test_host_abi_argument_locations);
   RUN(test_host_abi_frames);
   RUN(test_win64_fifth_argument_slot);
