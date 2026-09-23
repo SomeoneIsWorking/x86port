@@ -19,6 +19,7 @@
  * caught HERE rather than by an engine rejecting a module far from the cause.
  */
 #include "emit_wasm.h"
+#include "host_pipe.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -384,24 +385,6 @@ static const Case kCases[] = {
 };
 
 #define CASE_COUNT ((int)(sizeof(kCases) / sizeof(kCases[0])))
-
-/* popen/pclose, spelled once so the two Windows underscores are not repeated
-   at every call site. */
-static FILE *open_pipe(const char *command) {
-#if defined(_WIN32)
-  return _popen(command, "r");
-#else
-  return popen(command, "r");
-#endif
-}
-
-static int close_pipe(FILE *pipe) {
-#if defined(_WIN32)
-  return _pclose(pipe);
-#else
-  return pclose(pipe);
-#endif
-}
 
 /*
  * Is there a WebAssembly engine at all?

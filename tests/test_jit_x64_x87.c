@@ -22,6 +22,7 @@
 #include "exec.h"
 #include "jit_x64.h"
 #include "jit_x64_harness.h"
+#include "jit_x87_predicates.h"
 #include "x87.h"
 
 #include <stdio.h>
@@ -604,6 +605,13 @@ int main(void) {
   void *code;
   if (!x86p_jit_available()) {
     printf("SKIP: no x86-64 JIT backend on this host\n");
+    return 77;
+  }
+  if (!x87_values_are_emittable()) {
+    /* Every case here starts with an x87 value, which a host without an
+       admitted value representation (an MSVC long double is binary64)
+       refuses at entry: the emitters are not in this build to test. */
+    printf("SKIP: this build admits no x87 values to the JIT\n");
     return 77;
   }
   g_guest = jit_x64_harness_guest_init();
