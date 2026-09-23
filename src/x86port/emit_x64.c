@@ -215,10 +215,15 @@ void x86p_emit_alu_r32_r32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
 }
 
 void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint32_t imm) {
+  const int short_form = (int32_t)imm >= -128 && (int32_t)imm <= 127;
   rex(e, 0, kX64Rax, dst);
-  put(e, 0x81u);
+  put(e, short_form ? 0x83u : 0x81u);
   put(e, (uint8_t)(0xC0u | (((unsigned)op & 7u) << 3) | ((unsigned)dst & 7u)));
-  put32(e, imm);
+  if (short_form) {
+    put(e, (uint8_t)imm);
+  } else {
+    put32(e, imm);
+  }
 }
 
 void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src) {

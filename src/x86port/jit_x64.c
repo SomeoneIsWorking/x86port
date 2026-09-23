@@ -368,48 +368,38 @@ static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32
 }
 
 /*
- * Which host ALU opcode computes a guest ALU op, and which flag kind it
- * records. Returns 0 for the ops that are not inlined.
+ * Whether an instruction leaves the host-stack x87 mirror in place.
  *
- * ADC and SBB are deliberately absent. They do not use the lazy tuple at all --
- * x86p_alu computes a real EFLAGS word for them and stores it as Explicit,
- * because the triple cannot carry a carry-in. Reproducing that inline would be
- * a second implementation of the eager derivation, which is exactly what this
- * backend does not do; they keep calling x86p_alu.
+ * The mirror must be empty wherever the block calls out or exits, since a call
+ * finds the host x87 stack empty under both ABIs and the next block starts
+ * with none. It need not be empty anywhere else: nothing but an x87 form reads
+ * the register file between two instructions, and a memory fault stores and
+ * empties the host stack in the shared stub. So the instructions whose
+ * emitters never call keep it, and the integer work between two x87 forms no
+ * longer costs the second one a reload. INC and DEC are among them because
+ * their one possible call, the carry-in after an unknown predecessor, empties
+ * the mirror itself before it calls.
  */
-static int inline_alu_shape(uint8_t alu, X86pHostAlu *host, X86pFlagKind *kind, int *writes_dest) {
-  *writes_dest = 1;
-  switch (alu) {
-  case kX86pAluAdd:
-    *host = kX64Add;
-    *kind = kX86pFlagsAdd;
+static int keeps_x87_mirror(const X86pInsn *insn) {
+  X86pHostAlu host;
+  X86pFlagKind kind;
+  int writes_dest;
+  switch (insn->op) {
+  case kX86pInsnX87:
+  case kX86pInsnMov:
+  case kX86pInsnMovzx:
+  case kX86pInsnMovsx:
+  case kX86pInsnLea:
+  case kX86pInsnNop:
+  case kX86pInsnPush:
+  case kX86pInsnPop:
+  case kX86pInsnXchg:
+  case kX86pInsnCdq:
+  case kX86pInsnLeave:
+  case kX86pInsnAluUnary:
     return 1;
-  case kX86pAluSub:
-    *host = kX64Sub;
-    *kind = kX86pFlagsSub;
-    return 1;
-  case kX86pAluCmp:
-    *host = kX64Sub;
-    *kind = kX86pFlagsSub;
-    *writes_dest = 0;
-    return 1;
-  case kX86pAluOr:
-    *host = kX64Or;
-    *kind = kX86pFlagsLogic;
-    return 1;
-  case kX86pAluAnd:
-    *host = kX64And;
-    *kind = kX86pFlagsLogic;
-    return 1;
-  case kX86pAluTest:
-    *host = kX64And;
-    *kind = kX86pFlagsLogic;
-    *writes_dest = 0;
-    return 1;
-  case kX86pAluXor:
-    *host = kX64Xor;
-    *kind = kX86pFlagsLogic;
-    return 1;
+  case kX86pInsnAlu:
+    return inline_alu_shape(insn->alu, &host, &kind, &writes_dest) || is_inline_shift(insn->alu);
   default:
     return 0;
   }
@@ -525,194 +515,6 @@ static int flag_write_is_dead(const X86pMem *mem,
     return 0;
   }
   return 0;
-}
-
-/*
- * Store `carry_in`: the CF the flag state held BEFORE this operation overwrites
- * it. x86p_flags_set records it because INC and DEC preserve CF, and guest code
- * really does put an INC between an ADD and an ADC.
- *
- * WHY THIS CAN BE INLINED AT ALL. CF's derivation depends on the PREVIOUS
- * operation's kind, which is runtime data in general -- but inside a block it
- * is known at translation time, because this file emitted the previous
- * operation and knows what kind it recorded. Only the first flag write in a
- * block faces an unknown predecessor, and that one calls x86p_flag_cf. So the
- * call happens once per block instead of once per instruction.
- *
- * The derivations mirror x86p_flag_cf exactly, at w == 4 where the width mask
- * is the identity. A shift predecessor takes the default arm and asks the real
- * function: its CF depends on the count and the width.
- */
-static int emit_compute_carry_in(X86pEmit *e, int last_kind) {
-  switch (last_kind) {
-  case kX86pFlagsNone:
-  case kX86pFlagsLogic:
-    /* Both give CF == 0 with no computation at all. */
-    x86p_emit_mov_r32_imm32(e, CARRY_REG, 0u);
-    return 0;
-  case kX86pFlagsAdd:
-    /* CF = r < a, unsigned */
-    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_R);
-    x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_A);
-    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
-    return 0;
-  case kX86pFlagsExplicit:
-    /* A real EFLAGS word, which ADC and SBB leave behind: CF is bit 0 of `a`,
-       so masking it IS the 0-or-1 the field wants. Known at translation time
-       like any other kind -- x86p_alu always records Explicit for those two --
-       so it needs no more of a helper call than an ADD does. */
-    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_A);
-    x86p_emit_alu_r32_imm32(e, kX64And, CARRY_REG, X86P_CF);
-    return 0;
-  case kX86pFlagsInc:
-  case kX86pFlagsDec:
-    /* PRESERVED. INC and DEC do not write CF, so the carry the state already
-       holds IS the carry, and x86p_flag_cf returns exactly this byte. */
-    x86p_emit_load8_zx(e, CARRY_REG, CPU_REG, FLAG_CARRY_IN);
-    return 0;
-  case kX86pFlagsSub:
-    /* CF = a < b, unsigned */
-    x86p_emit_load32(e, CARRY_REG, CPU_REG, FLAG_A);
-    x86p_emit_alu_r32_mem(e, kX64Cmp, CARRY_REG, CPU_REG, FLAG_B);
-    x86p_emit_setcc_r8(e, (unsigned)kX86pCondB, CARRY_REG);
-    return 0;
-  default:
-    /* Unknown predecessor: ask the one authority. Once per block. */
-    x86p_emit_lea64(e, X86P_JIT_HOST_ARG0, CPU_REG, flags_off());
-    x86p_emit_mov_r64_imm64(e, kX64Rax, (uint64_t)(uintptr_t)&x86p_flag_cf);
-    x86p_emit_call_r64(e, kX64Rax);
-    x86p_emit_mov_r32_r32(e, CARRY_REG, kX64Rax);
-    return 1;
-  }
-}
-
-/* x86p_alu(op, a, b, w, &cpu->flags) -> result in EAX. Argument placement is
- * owned by jit_x64_abi.h. The operand loads run first because they read through
- * CPU_REG; the later argument setup writes registers they would otherwise have
- * to avoid. */
-/*
- * The inlined form: native host arithmetic plus the lazy tuple written
- * directly, with no call at all.
- *
- * This is the same computation x86p_alu performs, not a second opinion about
- * it: the host ALU op is chosen to compute exactly what the guest op computes
- * at 32 bits, and the tuple stored is field for field what x86p_flags_set
- * stores. What it does NOT duplicate is any policy -- widths other than 4,
- * shifts, ADC/SBB and the flag DERIVATIONS all still live in one place and
- * still go through it. The differential is what keeps that claim honest.
- */
-static uint32_t width_mask(int w) {
-  return (w == 1) ? 0xFFu : ((w == 2) ? 0xFFFFu : 0xFFFFFFFFu);
-}
-
-/* The non-memory side of an ALU operand, at width `w`. An immediate is masked
-   HERE, at translation time, because x86p_alu masks its `b` and the tuple has
-   to match: `83 /r` sign-extends an imm8 to a dword that the operation then
-   narrows again. */
-static void emit_read_alu_src(BlockCtx *c, X86pHostReg dst, const X86pOperand *o, int w) {
-  if (o->kind == kX86pOperandImm) {
-    x86p_emit_mov_r32_imm32(c->e, dst, o->imm & width_mask(w));
-    return;
-  }
-  emit_load_w(c->e, dst, CPU_REG, reg_off_w(o->reg, w), w);
-}
-
-static void emit_alu_inline(BlockCtx *c,
-                            const X86pInsn *insn,
-                            X86pHostAlu host,
-                            X86pFlagKind kind,
-                            int writes_dest,
-                            int last_kind,
-                            int flags_dead,
-                            uint32_t insn_eip) {
-  const X86pOperand *dst = &insn->operand[0];
-  const X86pOperand *src = &insn->operand[1];
-
-  /*
-   * COMPUTED first, while the old flag state is still intact -- and STORED only
-   * after the memory operand's bounds check, because a refused access must
-   * leave every flag field exactly as it was. Writing carry_in before the check
-   * left the flags half-updated on a fault: a divergence that only appears
-   * three instructions later, when something finally reads CF.
-   *
-   * `flags_dead` (from flag_write_is_dead) means a later instruction rewrites
-   * every EFLAGS bit before anything reads them: the whole tuple, carry_in
-   * included, is skipped. The native arithmetic and its write-back stay.
-   */
-  /*
-   * A binary ALU operation records Add, Sub or Logic, and
-   * x86p_flags_carry_in_is_live says none of those ever reads carry_in again.
-   * So the derivation AND the store are dead here -- only the unary INC/DEC
-   * path below, which records a kind that does preserve CF, still pays for
-   * them. Measured on the arm64 Android build, the derivation's
-   * unknown-predecessor arm alone (one call to x86p_flag_cf per block, paid on
-   * every entry to that block) was 5.07% of the port library's samples.
-   */
-  const int carry_live = x86p_flags_carry_in_is_live(kind);
-
-  if (!flags_dead && carry_live) {
-    c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
-  }
-
-  /*
-   * The memory operand, whichever side it is on, is prepared ONCE and its
-   * pointer reused for both the read and the write-back. Recomputing the
-   * address for the store would double the cost and, worse, would recompute it
-   * from registers the operation may have just modified -- `ADD [EAX+4], EAX`
-   * must store where it loaded.
-   */
-  const int w = dst->size;
-
-  if (dst->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, dst, insn_eip, w);
-    if (!flags_dead && carry_live) {
-      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    }
-    emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
-    emit_read_alu_src(c, kX64Rdx, src, w);
-  } else if (src->kind == kX86pOperandMem) {
-    emit_mem_prepare_w(c, src, insn_eip, w);
-    if (!flags_dead && carry_live) {
-      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    }
-    emit_load_w(c->e, kX64Rdx, HOSTPTR_REG, 0, w);
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
-  } else {
-    if (!flags_dead && carry_live) {
-      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    }
-    emit_read_alu_src(c, kX64Rdx, src, w);
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
-  }
-
-  x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
-  x86p_emit_alu_r32_r32(c->e, host, kX64Rax, kX64Rdx); /* r */
-  if (w != 4) {
-    /*
-     * The tuple must hold the values x86p_alu would have stored, and it masks
-     * a, b and r to the operand width. `a` and `b` arrive masked because they
-     * were loaded zero-extended; `r` is the 32-bit result of a 32-bit host
-     * operation and is not. Every DERIVED flag masks by w and would agree
-     * either way -- it is the raw tuple that would differ, which is exactly
-     * the field a caller inspecting flag state reads.
-     */
-    x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
-  }
-
-  if (!flags_dead) {
-    x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
-    x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
-    x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
-  }
-
-  if (writes_dest) {
-    if (dst->kind == kX86pOperandMem) {
-      emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
-    } else {
-      emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
-    }
-  }
 }
 
 /*
@@ -954,106 +756,6 @@ static void emit_popfd(BlockCtx *c, uint32_t insn_eip) {
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_popfd_apply);
   x86p_emit_call_r64(c->e, kX64Rax);
-}
-
-/*
- * INC, DEC, NEG and NOT.
- *
- * NOT writes NO FLAGS AT ALL, which is why it is a separate case rather than
- * `XOR a, -1`: the XOR would clear CF and OF. It therefore leaves last_kind
- * alone as well -- an instruction that writes no flags does not become the
- * predecessor of the next one.
- *
- * INC and DEC PRESERVE CF, which is the entire reason `carry_in` exists: guest
- * code really does put an INC between an ADD and an ADC.
- *
- * Returns the flag kind recorded, or -1 for NOT, which records none.
- */
-static int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int flags_dead, uint32_t insn_eip) {
-  const X86pOperand *o = &insn->operand[0];
-  const int w = o->size;
-  const int is_mem = (o->kind == kX86pOperandMem);
-  X86pFlagKind kind;
-
-  if (insn->alu == (uint8_t)kX86pAluNot) {
-    if (is_mem) {
-      emit_mem_prepare_w(c, o, insn_eip, w);
-      emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, w);
-    } else {
-      emit_load_w(c->e, kX64Rax, CPU_REG, reg_off_w(o->reg, w), w);
-    }
-    /* XOR with all ones is the host's NOT; the guest's flag rule is honoured by
-       storing nothing, not by choosing a different host opcode. */
-    x86p_emit_alu_r32_imm32(c->e, kX64Xor, kX64Rax, 0xFFFFFFFFu);
-    if (w != 4) {
-      x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
-    }
-    if (is_mem) {
-      emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
-    } else {
-      emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
-    }
-    return -1;
-  }
-
-  if (!flags_dead) {
-    c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
-  }
-
-  if (is_mem) {
-    emit_mem_prepare_w(c, o, insn_eip, w);
-    if (!flags_dead) {
-      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    }
-    emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
-  } else {
-    if (!flags_dead) {
-      x86p_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
-    }
-    emit_load_w(c->e, kX64Rsi, CPU_REG, reg_off_w(o->reg, w), w);
-  }
-
-  if (insn->alu == (uint8_t)kX86pAluNeg) {
-    /* 0 - a, recorded as the SUB it is, so CF falls out of the borrow rather
-       than being special-cased as "a was nonzero". */
-    x86p_emit_mov_r32_imm32(c->e, kX64Rax, 0u);
-    x86p_emit_alu_r32_r32(c->e, kX64Sub, kX64Rax, kX64Rsi);
-    kind = kX86pFlagsSub;
-  } else {
-    x86p_emit_mov_r32_r32(c->e, kX64Rax, kX64Rsi);
-    if (insn->alu == (uint8_t)kX86pAluInc) {
-      x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rax, 1u);
-      kind = kX86pFlagsInc;
-    } else {
-      x86p_emit_alu_r32_imm32(c->e, kX64Sub, kX64Rax, 1u);
-      kind = kX86pFlagsDec;
-    }
-  }
-  if (w != 4) {
-    x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rax, width_mask(w));
-  }
-
-  /* NEG's operands are (0, a); INC and DEC's are (a, 1). The tuple must be
-     what x86p_alu_unary would have stored, because every derived flag reads it
-     and so does the next instruction's carry-in. */
-  if (!flags_dead) {
-    if (kind == kX86pFlagsSub) {
-      x86p_emit_store32_imm(c->e, CPU_REG, FLAG_A, 0u);
-      x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rsi);
-    } else {
-      x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
-      x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
-    }
-    x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
-  }
-
-  if (is_mem) {
-    emit_store_w(c->e, HOSTPTR_REG, 0, kX64Rax, w);
-  } else {
-    emit_store_w(c->e, CPU_REG, reg_off_w(o->reg, w), kX64Rax, w);
-  }
-  return (int)kind;
 }
 
 static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -1349,9 +1051,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     }
 
-    /* Only x87 forms keep the host-stack mirror; anything else may call or
-       exit, which needs the host x87 stack empty. */
-    if (insn.op != (uint8_t)kX86pInsnX87) {
+    if (!keeps_x87_mirror(&insn)) {
       x87_cache_flush(&ctx);
     }
 
@@ -1565,7 +1265,6 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   }
 
   x86p_x64_emit_cond_slow_path(&ctx);
-  x87_cache_emit_loader(&ctx);
 
   /*
    * The shared fault stub, AFTER the normal return so it is never fallen into.
@@ -1578,7 +1277,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     for (f = 0; f < ctx.nfaults; f++) {
       x86p_emit_bind(&e, ctx.faults[f]);
     }
-    x87_cache_discard(&e);
+    x87_cache_spill(&ctx);
     x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitMemoryFault);
     emit_restore_host_frame(&e);
@@ -1595,6 +1294,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     emit_restore_host_frame(&e);
     x86p_emit_ret(&e);
   }
+  x87_cache_emit_routines(&ctx);
 
   if (e.len - tail_start > EPILOGUE_BYTES) {
     say(reason,

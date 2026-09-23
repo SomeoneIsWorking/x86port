@@ -33,17 +33,32 @@
  * microcoded, and that store-to-load chain was about a third of the samples
  * inside translated code on the Dead Zone route.
  *
- * The mirror is a cache of the register file and never its owner. Every
- * result is still stored to the guest register (write-through), with its tag
- * and TOP, so the guest state in memory is complete at every instruction
- * boundary. That is what keeps each way out cheap and exact:
+ * WRITE-BACK IS LAZY. A result stays on the host stack, marked dirty in
+ * BlockCtx.x87_dirty, and reaches the register file only when something needs
+ * it there. TOP, the tags and the status word are still written at every
+ * instruction; only the ten-byte values wait. A value is stored when:
  *
- *   - a guard's slow path discards the host stack before its helper call, as
- *     the ABI requires, and reloads the mirror from memory afterwards;
- *   - the memory fault stub discards it before returning (x87_cache_discard);
- *   - any instruction that is not an inline form, and the end of the block,
- *     first pops it (x87_cache_flush), so a call, a helper or an exit always
- *     finds the host stack empty.
+ *   - it is popped, because a popped register keeps its value (FSAVE writes
+ *     all eight), by the block's store_pop routine;
+ *   - a full mirror lets go of it to make room for a push;
+ *   - the mirror is flushed (x87_cache_flush) before an instruction that calls
+ *     out or ends the block, so a call or an exit always finds the host stack
+ *     empty and the register file complete. The mirror's depth and dirty set
+ *     are known there, so up to two stores are inline and more are one call
+ *     to the block's write_back routine with that state in ECX;
+ *   - a guard takes its slow path: the same, with the state the guards left
+ *     with -- unless a sequence's guards left with different ones, when the
+ *     slow path cannot tell which jumped;
+ *   - an access faults, from a site the shared stub cannot tell either. Those
+ *     two call the block's spill routine, which stores whatever the host stack
+ *     holds and empties it. The host stack holds the mirror and nothing else,
+ *     so that needs no record of the depth at the site.
+ *
+ * Before this, every result was also written through with an FLD ST(0) and a
+ * ten-byte FSTP, and those two were a fifth of the samples inside translated
+ * code on the Dead Zone route. Storing a clean value again is exact -- FLD
+ * and FSTP of a ten-byte value change no bits -- so a path that merges a clean
+ * register with a dirty one keeps it dirty.
  *
  * A mirrored register may be EMPTY in the guest -- a slow path's reload
  * copies whatever bits an empty slot holds -- so every tag guard stays: the
@@ -53,6 +68,10 @@
 #define X86PORT_JIT_X64_X87_INLINE_H
 
 #include "jit_x64_internal.h"
+
+/* X87Inline.spill for guards that leave with different mirrors: the slow path
+   then spills whatever the host stack holds. */
+#define X87_SPILL_UNKNOWN (~0u)
 
 /* The most guards one inline sequence emits. */
 #define X87_INLINE_MAX_SLOW 8
@@ -68,8 +87,13 @@ typedef struct X87Inline {
   X86pEmitSite slow[X87_INLINE_MAX_SLOW];
   unsigned nslow;
   X86pEmitSite done;
-  /* The mirror depth the fast path ends with, which the slow path rebuilds. */
+  /* The mirror depth the fast path ends with, which the slow path rebuilds,
+     and its dirty set. */
   unsigned depth;
+  unsigned dirty;
+  /* The mirror state every guard jumps with, as the write-back routine takes
+     it; 0 for an empty mirror, X87_SPILL_UNKNOWN when the guards differ. */
+  unsigned spill;
 } X87Inline;
 
 /* The host x87 control word, read now; 0 where this unit emits nothing. The
@@ -83,14 +107,16 @@ void x87_inline_begin_slow(BlockCtx *c, X87Inline *fast);
    fast path's completion jump. */
 void x87_inline_end(BlockCtx *c, X87Inline *fast);
 
-/* Pop the mirror: the host stack is empty after this, statically. */
+/* Store the mirror's dirty values and pop it: the host stack is empty after
+   this, statically. */
 void x87_cache_flush(BlockCtx *c);
-/* Empty the host stack at a point whose mirror depth is not known statically:
-   the shared memory fault stub. */
-void x87_cache_discard(X86pEmit *e);
-/* The block's mirror loader, which every mirror reload calls: after the
-   exits, and only when a reload was emitted. */
-void x87_cache_emit_loader(BlockCtx *c);
+/* Store and empty whatever the host stack holds, at a point whose mirror
+   depth is not known statically: the shared memory fault stub. */
+void x87_cache_spill(BlockCtx *c);
+/* The block's mirror loader and write-back routines, which the mirror's
+   reloads, stores and spills call: after the exits and the fault stubs, and
+   only those that were called. */
+void x87_cache_emit_routines(BlockCtx *c);
 
 /* FLD m32/m64, FILD m16/m32/m64 and FLD ST(i). A memory operand must already
    be prepared in HOSTPTR_REG. */

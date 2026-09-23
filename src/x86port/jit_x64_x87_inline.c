@@ -15,9 +15,9 @@
  * stores kTagValid and never classifies the value it wrote.
  *
  * THE HOST x87 STACK holds the mirror (jit_x64_x87_inline.h) and nothing else,
- * at most X87_MIRROR_MAX deep: one host register always stays free, because a
- * write-through duplicates the value it stores and the divisor guard pushes a
- * zero. Every guard is emitted before the sequence changes the host stack or
+ * at most X87_MIRROR_MAX deep: one host register always stays free, because
+ * storing a register the mirror does not pop duplicates it first and the
+ * divisor guard pushes a zero. Every guard is emitted before the sequence changes the host stack or
  * any guest state, so a slow path starts from the guest state the helper
  * expects.
  */
@@ -77,7 +77,20 @@ static int32_t census_off(void) {
   return x87_field(offsetof(X86pX87, op_census));
 }
 
-static void note_slow(X86pEmit *e, X87Inline *fast, unsigned cc) {
+/* The mirror as the write-back routine takes it: bit k is guest ST(k)'s dirty
+   bit, and a stop bit sits at the depth. Zero for an empty mirror. */
+static unsigned mirror_state(const BlockCtx *c) {
+  return c->x87_depth ? c->x87_dirty | 1u << c->x87_depth : 0u;
+}
+
+static void note_slow(BlockCtx *c, X87Inline *fast, unsigned cc) {
+  X86pEmit *e = c->e;
+  const unsigned state = mirror_state(c);
+  if (fast->nslow == 0u) {
+    fast->spill = state;
+  } else if (fast->spill != state) {
+    fast->spill = X87_SPILL_UNKNOWN;
+  }
   if (fast->nslow >= X87_INLINE_MAX_SLOW) {
     /* A sequence with more guards than this table holds would leave one
        unbound; refuse the whole block rather than emit it. */
@@ -110,17 +123,19 @@ static void emit_reg_slot(X86pEmit *e, X86pHostReg slot) {
 }
 
 /* Jump to the slow path when the tag at [tag] is `tag_value`. */
-static void guard_tag_is(X86pEmit *e, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
+static void guard_tag_is(BlockCtx *c, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
+  X86pEmit *e = c->e;
   x86p_emit_load8_zx(e, kX64Rcx, tag, tag0_off());
   x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, tag_value);
-  note_slow(e, fast, kCcE);
+  note_slow(c, fast, kCcE);
 }
 
 /* Jump to the slow path when the tag at [tag] is anything BUT `tag_value`. */
-static void guard_tag_is_not(X86pEmit *e, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
+static void guard_tag_is_not(BlockCtx *c, X87Inline *fast, X86pHostReg tag, unsigned tag_value) {
+  X86pEmit *e = c->e;
   x86p_emit_load8_zx(e, kX64Rcx, tag, tag0_off());
   x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, tag_value);
-  note_slow(e, fast, kCcNe);
+  note_slow(c, fast, kCcNe);
 }
 
 /*
@@ -138,15 +153,16 @@ static void guard_tag_is_not(X86pEmit *e, X87Inline *fast, X86pHostReg tag, unsi
 static void guard_host_control(BlockCtx *c, X87Inline *fast) {
   x86p_emit_load16_zx(c->e, kX64Rcx, CPU_REG, control_off());
   x86p_emit_alu_r32_imm32(c->e, kX64Cmp, kX64Rcx, c->host_state);
-  note_slow(c->e, fast, kCcNe);
+  note_slow(c, fast, kCcNe);
 }
 
 /* The op census counts inside x86p_x87_arith_raw; while one is armed every
    operation goes there, or the instrument would silently under-report. */
-static void guard_census_disarmed(X86pEmit *e, X87Inline *fast) {
+static void guard_census_disarmed(BlockCtx *c, X87Inline *fast) {
+  X86pEmit *e = c->e;
   x86p_emit_load32(e, kX64Rax, CPU_REG, census_off());
   x86p_emit_alu_r32_mem(e, kX64Or, kX64Rax, CPU_REG, census_off() + 4);
-  note_slow(e, fast, kCcNe);
+  note_slow(c, fast, kCcNe);
 }
 
 /* The register whose tag byte is at [tag] is now occupied. */
@@ -192,30 +208,89 @@ static void host_pop(X86pEmit *e) {
 }
 
 /* Store host ST(i) into the guest register at [slot]; the host stack is left
-   as it was. x87 has no non-popping ten-byte store. */
+   as it was. x87 has no non-popping ten-byte store. For a register the mirror
+   does not hold, whose value only memory has. */
 static void write_through(X86pEmit *e, unsigned host_index, X86pHostReg slot) {
   host_fld_st(e, host_index);
   fstp_ext80(e, slot);
 }
 
+/* Call the block's store_pop routine: host ST(0) into guest ST(ECX)'s slot,
+   popped. It addresses the slot from TOP in memory. */
+static void call_store_pop(BlockCtx *c, unsigned guest_index) {
+  if (c->nx87_store_pops >= sizeof c->x87_store_pops / sizeof c->x87_store_pops[0]) {
+    c->e->overflow = 1; /* an unbound call would jump anywhere; refuse the block */
+    return;
+  }
+  x86p_emit_mov_r32_imm32(c->e, kX64Rcx, guest_index);
+  c->x87_store_pops[c->nx87_store_pops++] = x86p_emit_call_rel32(c->e);
+}
+
+/* Call the block's spill routine: every value on the host stack stored to its
+   guest register, and the host stack left empty. */
+static void call_spill(BlockCtx *c) {
+  if (c->nx87_spills >= sizeof c->x87_spills / sizeof c->x87_spills[0]) {
+    c->e->overflow = 1;
+    return;
+  }
+  c->x87_spills[c->nx87_spills++] = x86p_emit_call_rel32(c->e);
+}
+
+/* Call the block's write_back routine for a mirror whose state is `state`
+   (mirror_state). */
+static void call_write_back(BlockCtx *c, unsigned state) {
+  if (c->nx87_write_backs >= sizeof c->x87_write_backs / sizeof c->x87_write_backs[0]) {
+    c->e->overflow = 1;
+    return;
+  }
+  x86p_emit_mov_r32_imm32(c->e, kX64Rcx, state);
+  c->x87_write_backs[c->nx87_write_backs++] = x86p_emit_call_rel32(c->e);
+}
+
+/* Host ST(i) now holds guest ST(i)'s value and the register file does not. */
+static void mirror_dirty(BlockCtx *c, unsigned host_index) {
+  c->x87_dirty |= 1u << host_index;
+}
+
+/* The host push this sequence just made mirrors guest ST(0), a new value. */
+static void mirror_pushed(BlockCtx *c) {
+  c->x87_depth++;
+  c->x87_dirty = (c->x87_dirty << 1) | 1u;
+  c->x87_used = 1;
+}
+
+/* Host ST(0) popped, as guest ST(`guest_index`) relative to TOP in memory:
+   stored on the way when the register file does not have it, because a popped
+   register keeps its value (FSAVE writes all eight). */
+static void mirror_pop(BlockCtx *c, unsigned guest_index) {
+  if (c->x87_dirty & 1u) {
+    call_store_pop(c, guest_index);
+  } else {
+    host_pop(c->e);
+  }
+  c->x87_dirty >>= 1;
+  c->x87_depth--;
+}
+
 /*
  * Host ST(0..depth-1) = guest ST(0..depth-1), read from the register file into
- * an empty host stack. The loads are the block's shared loader
- * (x87_cache_emit_loader), called with TOP in EAX: a reload inline was about
- * 25 bytes per register at every rebuild, which put a single x87 instruction
- * past twice the per-instruction code budget.
+ * an empty host stack. The loads are the block's shared loader, called with the
+ * depth in ECX: a reload inline was about 25 bytes per register at every
+ * rebuild, which put a single x87 instruction past twice the per-instruction
+ * code budget, and a loader unrolled per depth was most of the block tail.
  */
 static void mirror_load(BlockCtx *c, unsigned depth) {
   c->x87_depth = depth;
+  c->x87_dirty = 0u;
   if (depth == 0u) {
     return;
   }
+  c->x87_used = 1;
   if (c->nx87_loads >= sizeof c->x87_loads / sizeof c->x87_loads[0]) {
     c->e->overflow = 1; /* an unbound call would jump anywhere; refuse the block */
     return;
   }
-  x86p_emit_load8_zx(c->e, kX64Rax, CPU_REG, top_off());
-  c->x87_load_depth[c->nx87_loads] = (uint8_t)depth;
+  x86p_emit_mov_r32_imm32(c->e, kX64Rcx, depth);
   c->x87_loads[c->nx87_loads++] = x86p_emit_call_rel32(c->e);
 }
 
@@ -229,11 +304,19 @@ static void mirror_ensure(BlockCtx *c, unsigned depth) {
   mirror_load(c, depth);
 }
 
-/* Room for one push: a full mirror lets go of its deepest value. FFREE leaves
-   that host register empty, which is where the host's own push lands. */
+/* Room for one push: a full mirror lets go of its deepest value, storing it
+   first when only the host has it. FFREE leaves that host register empty,
+   which is where the host's own push lands. Called after the push has moved
+   TOP in memory, so host ST(6) is guest ST(7) there. */
 static void mirror_make_room(BlockCtx *c) {
+  const unsigned deepest = X87_MIRROR_MAX - 1u;
   if (c->x87_depth == X87_MIRROR_MAX) {
-    x86p_emit_x87_reg(c->e, 0xDDu, (uint8_t)(0xC0u + X87_MIRROR_MAX - 1u)); /* ffree st(6) */
+    if (c->x87_dirty & (1u << deepest)) {
+      host_fld_st(c->e, deepest);
+      call_store_pop(c, deepest + 1u);
+    }
+    x86p_emit_x87_reg(c->e, 0xDDu, (uint8_t)(0xC0u + deepest)); /* ffree st(6) */
+    c->x87_dirty &= ~(1u << deepest);
     c->x87_depth--;
   }
 }
@@ -269,12 +352,13 @@ static unsigned sti_field(X86pX87Op op, int reverse) {
  * directly and pops the zero again: equal is ZF with PF clear, and unordered
  * (a NaN) sets PF as well.
  */
-static void guard_mirrored_nonzero(X86pEmit *e, X87Inline *fast, unsigned i) {
+static void guard_mirrored_nonzero(BlockCtx *c, X87Inline *fast, unsigned i) {
+  X86pEmit *e = c->e;
   X86pEmitSite unordered;
   x86p_emit_x87_reg(e, 0xD9u, 0xEEu);                     /* fldz */
   x86p_emit_x87_reg(e, 0xDFu, (uint8_t)(0xE8u + i + 1u)); /* fucomip st(0), st(i+1) */
   unordered = x86p_emit_jcc_rel32(e, kCcP);
-  note_slow(e, fast, kCcE);
+  note_slow(c, fast, kCcE);
   x86p_emit_bind(e, unordered);
 }
 
@@ -284,7 +368,8 @@ static void guard_mirrored_nonzero(X86pEmit *e, X87Inline *fast, unsigned i) {
  * significand are both zero. That is exactly the condition the helper's
  * `y == 0.0L` names after the exact widening.
  */
-static void guard_memory_nonzero(X86pEmit *e, X87Inline *fast, int w, int integer) {
+static void guard_memory_nonzero(BlockCtx *c, X87Inline *fast, int w, int integer) {
+  X86pEmit *e = c->e;
   if (integer) {
     if (w == 2) {
       x86p_emit_load16_zx(e, kX64Rcx, HOSTPTR_REG, 0);
@@ -300,7 +385,7 @@ static void guard_memory_nonzero(X86pEmit *e, X87Inline *fast, int w, int intege
     x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, 0x7FFFFFFFu);
     x86p_emit_alu_r32_mem(e, kX64Or, kX64Rcx, HOSTPTR_REG, 0);
   }
-  note_slow(e, fast, kCcE);
+  note_slow(c, fast, kCcE);
 }
 
 /*
@@ -310,8 +395,9 @@ static void guard_memory_nonzero(X86pEmit *e, X87Inline *fast, int w, int intege
  * owns IE and the all-three answer. EAX and ECX were zeroed before the
  * comparison, since MOV does not touch EFLAGS and XOR would.
  */
-static void finish_compare(X86pEmit *e, X87Inline *fast, unsigned below_cc) {
-  note_slow(e, fast, (unsigned)kX86pCondP);
+static void finish_compare(BlockCtx *c, X87Inline *fast, unsigned below_cc) {
+  X86pEmit *e = c->e;
+  note_slow(c, fast, (unsigned)kX86pCondP);
   x86p_emit_setcc_r8(e, below_cc, kX64Rax);
   x86p_emit_setcc_r8(e, (unsigned)kX86pCondZ, kX64Rcx);
   x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, 8u);  /* C0 */
@@ -328,21 +414,42 @@ static void zero_compare_scratch(X86pEmit *e) {
   x86p_emit_mov_r32_imm32(e, kX64Rcx, 0u);
 }
 
-/* `pops` guest pops of values the mirror holds, and their host pops. */
+/* `pops` guest pops of values the mirror holds, and their host pops. The host
+   pop stores from TOP in memory, so it goes first. */
 static void pop_mirrored(BlockCtx *c, unsigned pops) {
   while (pops--) {
+    mirror_pop(c, 0u);
     emit_pop(c->e);
-    host_pop(c->e);
-    c->x87_depth--;
   }
 }
 
 static void finish_fast(BlockCtx *c, X87Inline *fast) {
   fast->done = x86p_emit_jmp_rel32(c->e);
   fast->depth = c->x87_depth;
+  fast->dirty = c->x87_dirty;
   fast->emitted = 1;
 }
 
+/* More dirty values than this go through the write_back routine, which
+   bounds the sequence to one call. */
+#define X87_FLUSH_INLINE_STORES 2u
+
+/* Store the dirty values of a mirror in `state` (mirror_state) and pop it,
+   inline or through the routine. The host stack is empty after this. */
+static void write_back(BlockCtx *c, unsigned state) {
+  unsigned guest_index;
+  if (__builtin_popcount(state) - 1 > (int)X87_FLUSH_INLINE_STORES) {
+    call_write_back(c, state);
+    return;
+  }
+  for (guest_index = 0u; state > 1u; guest_index++, state >>= 1) {
+    if (state & 1u) {
+      call_store_pop(c, guest_index);
+    } else {
+      host_pop(c->e);
+    }
+  }
+}
 #endif /* X87_INLINE_HOST */
 
 uint32_t x87_inline_host_control(void) {
@@ -359,60 +466,162 @@ static void begin(X87Inline *fast) {
   fast->emitted = 0;
   fast->nslow = 0;
   fast->depth = 0;
+  fast->dirty = 0;
+  fast->spill = 0;
 }
 
 void x87_cache_flush(BlockCtx *c) {
 #if X87_INLINE_HOST
-  while (c->x87_depth) {
-    host_pop(c->e);
-    c->x87_depth--;
+  write_back(c, mirror_state(c));
+  c->x87_depth = 0u;
+  c->x87_dirty = 0u;
+#else
+  (void)c;
+#endif
+}
+
+void x87_cache_spill(BlockCtx *c) {
+#if X87_INLINE_HOST
+  if (c->x87_used) {
+    call_spill(c);
   }
 #else
   (void)c;
 #endif
 }
 
-void x87_cache_discard(X86pEmit *e) {
+/*
+ * store_pop: host ST(0) into the slot of guest ST(ECX), relative to TOP in
+ * memory, and popped. Clobbers RAX; ECX survives.
+ *
+ * spill: store_pop for guest ST(0), ST(1), ... while the host stack holds
+ * anything. The host stack holds the mirror and nothing else, so what it holds
+ * IS the mirror, however deep: a fault or a slow path needs no record of the
+ * depth at its site. Clobbers RAX and RCX.
+ */
 #if X87_INLINE_HOST
-  x86p_emit_byte(e, 0x0Fu); /* emms: every host x87 register empty */
-  x86p_emit_byte(e, 0x77u);
-#else
-  (void)e;
-#endif
+/*
+ * write_back: ECX holds a mirror_state. Guest ST(0) upward, each host ST(0) is
+ * stored through store_pop when its bit is set and popped when it is not,
+ * until only the stop bit is left. The state moves to EDX, which is saved
+ * because a flush inside an inline sequence can find it holding a slot, and
+ * ECX counts the guest index store_pop takes.
+ */
+static void emit_write_back(BlockCtx *c, size_t *entry, size_t store_pop) {
+  X86pEmit *e = c->e;
+  X86pEmitSite done;
+  X86pEmitSite clean;
+  X86pEmitSite next;
+  size_t loop;
+  *entry = x86p_emit_here(e);
+  x86p_emit_push_r64(e, kX64Rdx);
+  x86p_emit_mov_r32_r32(e, kX64Rdx, kX64Rcx);
+  x86p_emit_alu_r32_r32(e, kX64Xor, kX64Rcx, kX64Rcx);
+  loop = x86p_emit_here(e);
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rdx, 1u);
+  done = x86p_emit_jcc_rel32(e, kCcE);
+  x86p_emit_mov_r32_r32(e, kX64Rax, kX64Rdx);
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 1u);
+  clean = x86p_emit_jcc_rel32(e, kCcE);
+  x86p_emit_bind_to(e, x86p_emit_call_rel32(e), store_pop);
+  next = x86p_emit_jmp_rel32(e);
+  x86p_emit_bind(e, clean);
+  host_pop(e);
+  x86p_emit_bind(e, next);
+  x86p_emit_alu_r32_imm32(e, kX64Add, kX64Rcx, 1u);
+  x86p_emit_shift_r32_imm8(e, kX64Shr, kX64Rdx, 1u);
+  x86p_emit_bind_to(e, x86p_emit_jmp_rel32(e), loop);
+  x86p_emit_bind(e, done);
+  x86p_emit_pop_r64(e, kX64Rdx);
+  x86p_emit_ret(e);
+}
+
+static void emit_write_back_routines(BlockCtx *c) {
+  X86pEmit *e = c->e;
+  size_t store_pop = 0u;
+  size_t spill = 0u;
+  size_t write_back_entry = 0u;
+  unsigned i;
+  if (c->nx87_store_pops || c->nx87_spills || c->nx87_write_backs) {
+    X86pEmitSite empty;
+    size_t loop;
+    store_pop = x86p_emit_here(e);
+    x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top_off());
+    x86p_emit_alu_r32_r32(e, kX64Add, kX64Rax, kX64Rcx);
+    x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
+    x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, 4u);
+    x86p_emit_alu_r64_r64(e, kX64Add, kX64Rax, CPU_REG);
+    fstp_ext80(e, kX64Rax);
+    x86p_emit_ret(e);
+    if (c->nx87_write_backs) {
+      emit_write_back(c, &write_back_entry, store_pop);
+    }
+    if (c->nx87_spills) {
+      spill = x86p_emit_here(e);
+      x86p_emit_mov_r32_imm32(e, kX64Rcx, 0u);
+      loop = x86p_emit_here(e);
+      x86p_emit_x87_reg(e, 0xD9u, 0xE5u); /* fxam */
+      x86p_emit_x87_reg(e, 0xDFu, 0xE0u); /* fnstsw ax */
+      /* Empty is C3 and C0 with C2 clear. */
+      x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, X86P_X87_C3 | X86P_X87_C2 | X86P_X87_C0);
+      x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rax, X86P_X87_C3 | X86P_X87_C0);
+      empty = x86p_emit_jcc_rel32(e, kCcE);
+      x86p_emit_bind_to(e, x86p_emit_call_rel32(e), store_pop);
+      x86p_emit_alu_r32_imm32(e, kX64Add, kX64Rcx, 1u);
+      x86p_emit_bind_to(e, x86p_emit_jmp_rel32(e), loop);
+      x86p_emit_bind(e, empty);
+      x86p_emit_ret(e);
+    }
+  }
+  for (i = 0; i < c->nx87_store_pops; i++) {
+    x86p_emit_bind_to(e, c->x87_store_pops[i], store_pop);
+  }
+  for (i = 0; i < c->nx87_spills; i++) {
+    x86p_emit_bind_to(e, c->x87_spills[i], spill);
+  }
+  for (i = 0; i < c->nx87_write_backs; i++) {
+    x86p_emit_bind_to(e, c->x87_write_backs[i], write_back_entry);
+  }
 }
 
 /*
- * One entry per depth, deepest first, each loading one register and falling
- * into the next: entry k loads ST(k-1) and then everything above it, so the
- * last value loaded is ST(0). EAX holds TOP; RCX is the only other register
- * touched, and the caller's RDX, RSI, RDI and HOSTPTR_REG survive.
+ * The loader: guest ST(ECX-1) down to ST(0) pushed in that order, so host ST(k)
+ * ends as guest ST(k). EAX walks the physical index down from TOP + depth - 1,
+ * wrapping at eight; it is scaled to the sixteen-byte slot for one load and
+ * back. Clobbers EAX, ECX and the flags, as every call here may.
  */
-void x87_cache_emit_loader(BlockCtx *c) {
-#if X87_INLINE_HOST
-  size_t entry[X87_MIRROR_MAX + 1u];
-  unsigned deepest = 0u;
+static void emit_loader(BlockCtx *c) {
+  X86pEmit *e = c->e;
+  size_t loop;
+  size_t entry;
   unsigned i;
-  unsigned k;
+  if (!c->nx87_loads) {
+    return;
+  }
+  entry = x86p_emit_here(e);
+  x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top_off());
+  x86p_emit_alu_r32_r32(e, kX64Add, kX64Rax, kX64Rcx);
+  loop = x86p_emit_here(e);
+  x86p_emit_alu_r32_imm32(e, kX64Sub, kX64Rax, 1u);
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, 4u);
+  x86p_emit_alu_r64_r64(e, kX64Add, kX64Rax, CPU_REG);
+  fld_ext80(e, kX64Rax);
+  x86p_emit_alu_r64_r64(e, kX64Sub, kX64Rax, CPU_REG);
+  x86p_emit_shift_r32_imm8(e, kX64Shr, kX64Rax, 4u);
+  x86p_emit_alu_r32_imm32(e, kX64Sub, kX64Rcx, 1u);
+  x86p_emit_bind_to(e, x86p_emit_jcc_rel32(e, kCcNe), loop);
+  x86p_emit_ret(e);
   for (i = 0; i < c->nx87_loads; i++) {
-    deepest = c->x87_load_depth[i] > deepest ? c->x87_load_depth[i] : deepest;
+    x86p_emit_bind_to(e, c->x87_loads[i], entry);
   }
-  for (k = deepest; k > 0u; k--) {
-    entry[k] = x86p_emit_here(c->e);
-    x86p_emit_mov_r32_r32(c->e, kX64Rcx, kX64Rax);
-    if (k > 1u) {
-      x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rcx, k - 1u);
-      x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rcx, 7u);
-    }
-    x86p_emit_shift_r32_imm8(c->e, kX64Shl, kX64Rcx, 4u);
-    x86p_emit_alu_r64_r64(c->e, kX64Add, kX64Rcx, CPU_REG);
-    fld_ext80(c->e, kX64Rcx);
-  }
-  if (deepest) {
-    x86p_emit_ret(c->e);
-  }
-  for (i = 0; i < c->nx87_loads; i++) {
-    x86p_emit_bind_to(c->e, c->x87_loads[i], entry[c->x87_load_depth[i]]);
-  }
+}
+#endif
+
+void x87_cache_emit_routines(BlockCtx *c) {
+#if X87_INLINE_HOST
+  emit_loader(c);
+  emit_write_back_routines(c);
 #else
   (void)c;
 #endif
@@ -426,7 +635,17 @@ void x87_inline_begin_slow(BlockCtx *c, X87Inline *fast) {
   for (i = 0; i < fast->nslow; i++) {
     x86p_emit_bind(c->e, fast->slow[i]);
   }
-  x87_cache_discard(c->e);
+#if X87_INLINE_HOST
+  if (fast->spill == X87_SPILL_UNKNOWN) {
+    call_spill(c);
+  } else if (fast->spill) {
+    write_back(c, fast->spill);
+  }
+  /* The helper sequence runs with the host stack empty and the register file
+     complete. */
+  c->x87_depth = 0u;
+  c->x87_dirty = 0u;
+#endif
 }
 
 void x87_inline_end(BlockCtx *c, X87Inline *fast) {
@@ -435,6 +654,9 @@ void x87_inline_end(BlockCtx *c, X87Inline *fast) {
   }
 #if X87_INLINE_HOST
   mirror_load(c, fast->depth);
+  /* The paths meet with the fast path's dirty set: after the slow path those
+     registers are clean, and storing a clean value again is exact. */
+  c->x87_dirty = fast->dirty;
 #endif
   x86p_emit_bind(c->e, fast->done);
 }
@@ -450,13 +672,12 @@ void x87_inline_load(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       /* FLD ST(i): the source is read BEFORE the push renumbers the stack. */
       emit_phys(e, src);
       emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
       emit_reg_slot(e, kX64Rdi);
     }
     emit_phys(e, 7u); /* the slot a push fills: TOP - 1 */
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is_not(e, fast, kX64Rsi, kTagEmpty); /* full: the helper reports the overflow */
-    emit_reg_slot(e, kX64Rdx);
+    guard_tag_is_not(c, fast, kX64Rsi, kTagEmpty); /* full: the helper reports the overflow */
     x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
     mirror_make_room(c);
     if (o->kind == kX86pOperandMem) {
@@ -466,8 +687,7 @@ void x87_inline_load(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     } else {
       fld_ext80(e, kX64Rdi);
     }
-    c->x87_depth++;
-    write_through(e, 0u, kX64Rdx);
+    mirror_pushed(c);
     emit_occupied(e, kX64Rsi);
     finish_fast(c, fast);
   }
@@ -501,31 +721,37 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
         return;
       }
       guard_host_control(c, fast);
-      guard_census_disarmed(e, fast);
+      guard_census_disarmed(c, fast);
       emit_phys(e, src);
       emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
       emit_phys(e, dst);
       emit_tag_slot(e, kX64Rsi);
-      guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-      emit_reg_slot(e, kX64Rdx);
+      guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
       mirror_ensure(c, deepest + 1u);
       if (divide) {
-        guard_mirrored_nonzero(e, fast, reverse ? dst : src);
+        guard_mirrored_nonzero(c, fast, reverse ? dst : src);
       }
       if (dst == 0u) {
         x86p_emit_x87_reg(e, 0xD8u, (uint8_t)(0xC0u | (st0_field(op, reverse) << 3) | src));
-        write_through(e, 0u, kX64Rdx);
+        mirror_dirty(c, 0u);
       } else if (pops) {
         /* fop st(dst), st(0) and pop: the result is host ST(dst - 1) now, and
-           guest ST(dst - 1) once the guest pop below renumbers the stack. */
+           guest ST(dst - 1) once the guest pop below renumbers the stack. The
+           popped ST(0) keeps its value, so a copy only the host has is
+           stored first. */
+        if (c->x87_dirty & 1u) {
+          host_fld_st(e, 0u);
+          call_store_pop(c, 0u);
+        }
         x86p_emit_x87_reg(e, 0xDEu, (uint8_t)(0xC0u | (sti_field(op, reverse) << 3) | dst));
         c->x87_depth--;
-        write_through(e, dst - 1u, kX64Rdx);
+        c->x87_dirty >>= 1;
+        mirror_dirty(c, dst - 1u);
         emit_pop(e);
       } else {
         x86p_emit_x87_reg(e, 0xDCu, (uint8_t)(0xC0u | (sti_field(op, reverse) << 3) | dst));
-        write_through(e, dst, kX64Rdx);
+        mirror_dirty(c, dst);
       }
       finish_fast(c, fast);
       return;
@@ -536,17 +762,16 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       return;
     }
     guard_host_control(c, fast);
-    guard_census_disarmed(e, fast);
+    guard_census_disarmed(c, fast);
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-    emit_reg_slot(e, kX64Rdx);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     if (divide && !reverse) {
-      guard_memory_nonzero(e, fast, o0->size, insn->x87_mem_int);
+      guard_memory_nonzero(c, fast, o0->size, insn->x87_mem_int);
     }
     mirror_ensure(c, 1u);
     if (divide && reverse) {
-      guard_mirrored_nonzero(e, fast, 0u);
+      guard_mirrored_nonzero(c, fast, 0u);
     }
     /* fop st(0), m: D8 m32 and DC m64 floats, DA m32 and DE m16 integers. */
     x86p_emit_x87_m(e,
@@ -554,7 +779,7 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
                     st0_field(op, reverse),
                     HOSTPTR_REG,
                     0);
-    write_through(e, 0u, kX64Rdx);
+    mirror_dirty(c, 0u);
     finish_fast(c, fast);
   }
 #else
@@ -575,20 +800,20 @@ void x87_inline_store_reg(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     }
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     emit_phys(e, dst);
     emit_tag_slot(e, kX64Rsi);
     emit_reg_slot(e, kX64Rdx);
     mirror_ensure(c, 1u);
     if (dst != 0u && dst < c->x87_depth) {
       x86p_emit_x87_reg(e, 0xDDu, (uint8_t)(0xD0u + dst)); /* fst st(dst) */
+      mirror_dirty(c, dst);
+    } else if (dst != 0u) {
+      write_through(e, 0u, kX64Rdx); /* a register only memory holds */
     }
-    write_through(e, 0u, kX64Rdx);
     emit_occupied(e, kX64Rsi);
     if (insn->x87_pops) {
-      emit_pop(e);
-      host_pop(e);
-      c->x87_depth--;
+      pop_mirrored(c, 1u);
     }
     finish_fast(c, fast);
   }
@@ -614,16 +839,21 @@ void x87_inline_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, 
     guard_host_control(c, fast);
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     mirror_ensure(c, 1u);
     /* Only now may the access fault: ST(0) holds a value to store. The fault
-       stub discards the mirror. */
+       stub spills the mirror. */
     emit_mem_prepare_w(c, o0, insn_eip, w);
-    /* fst / fstp m32 (D9 /2, /3) or m64 (DD /2, /3) */
-    x86p_emit_x87_m(e, w == 4 ? 0xD9u : 0xDDu, insn->x87_pops ? 3u : 2u, HOSTPTR_REG, 0);
-    if (insn->x87_pops) {
+    /* fst / fstp m32 (D9 /2, /3) or m64 (DD /2, /3). A popped value only the
+       host has goes to its register too, through the ordinary pop. */
+    if (insn->x87_pops && !(c->x87_dirty & 1u)) {
+      x86p_emit_x87_m(e, w == 4 ? 0xD9u : 0xDDu, 3u, HOSTPTR_REG, 0);
       c->x87_depth--;
+      c->x87_dirty >>= 1;
       emit_pop(e);
+    } else {
+      x86p_emit_x87_m(e, w == 4 ? 0xD9u : 0xDDu, 2u, HOSTPTR_REG, 0);
+      pop_mirrored(c, insn->x87_pops);
     }
     finish_fast(c, fast);
   }
@@ -650,30 +880,28 @@ void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     }
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-    emit_reg_slot(e, kX64Rdx);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     if (unary) {
       mirror_ensure(c, 1u);
       x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnAbs ? 0xE1u : 0xE0u); /* fabs / fchs */
-      write_through(e, 0u, kX64Rdx);
+      mirror_dirty(c, 0u);
       finish_fast(c, fast);
       return;
     }
     emit_phys(e, index);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
-    emit_reg_slot(e, kX64Rdi);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     mirror_ensure(c, index + 1u);
     if (exchange) {
       x86p_emit_x87_reg(e, 0xD9u, (uint8_t)(0xC8u + index)); /* fxch st(i) */
-      write_through(e, 0u, kX64Rdx);
-      write_through(e, index, kX64Rdi);
+      mirror_dirty(c, 0u);
+      mirror_dirty(c, index);
       finish_fast(c, fast);
       return;
     }
     zero_compare_scratch(e);
     x86p_emit_x87_reg(e, 0xDBu, (uint8_t)(0xE8u + index)); /* fucomi st(0), st(i) */
-    finish_compare(e, fast, (unsigned)kX86pCondB);
+    finish_compare(c, fast, (unsigned)kX86pCondB);
     pop_mirrored(c, pops);
     finish_fast(c, fast);
   }
@@ -695,14 +923,14 @@ void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) 
     }
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    guard_tag_is(c, fast, kX64Rsi, kTagEmpty);
     mirror_ensure(c, 1u);
     zero_compare_scratch(e);
     /* The operand goes on top and FUCOMIP drops it again, so the flags compare
        the operand with ST(0): ST(0) is below it when the operand is ABOVE. */
     fld_guest(e, o0->size, insn->x87_mem_int);
     x86p_emit_x87_reg(e, 0xDFu, 0xE9u); /* fucomip st(0), st(1) */
-    finish_compare(e, fast, (unsigned)kX86pCondA);
+    finish_compare(c, fast, (unsigned)kX86pCondA);
     pop_mirrored(c, insn->x87_pops);
     finish_fast(c, fast);
   }
@@ -723,13 +951,11 @@ void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
     }
     emit_phys(e, 7u); /* the slot a push fills: TOP - 1 */
     emit_tag_slot(e, kX64Rsi);
-    guard_tag_is_not(e, fast, kX64Rsi, kTagEmpty);
-    emit_reg_slot(e, kX64Rdx);
+    guard_tag_is_not(c, fast, kX64Rsi, kTagEmpty);
     x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
     mirror_make_room(c);
     x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnConstZero ? 0xEEu : 0xE8u); /* fldz / fld1 */
-    c->x87_depth++;
-    write_through(e, 0u, kX64Rdx);
+    mirror_pushed(c);
     emit_occupied(e, kX64Rsi);
     finish_fast(c, fast);
   }

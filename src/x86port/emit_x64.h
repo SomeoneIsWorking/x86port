@@ -180,7 +180,8 @@ void x86p_emit_store8_imm(X86pEmit *e, X86pHostReg base, int32_t disp, uint8_t i
 /* <alu> r32, r32 */
 void x86p_emit_alu_r32_r32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src);
 
-/* <alu> r32, imm32 */
+/* <alu> r32, imm32 -- as 83 /digit ib when the value is a sign-extended
+   byte, which computes the same result and flags in half the bytes. */
 void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint32_t imm);
 
 /* <alu> r64, r64 -- 64-bit, for host pointer arithmetic. Guest values are

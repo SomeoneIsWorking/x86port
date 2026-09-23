@@ -104,21 +104,26 @@ const char *x86p_jit_status_name(X86pJitStatus s);
  * cannot fit. Below this, x86p_jit_translate refuses with kX86pJitOutOfSpace;
  * at or above it, a block of at least one instruction always comes back.
  */
-#define X86P_JIT_WORST_CASE_INSN_BYTES 320u
-/* The block tail: the x87 mirror's last pops, the normal exit (a chained exit
-   is about 80 bytes on Win64), the two fault stubs (about 16 each), the one
-   out-of-line x86p_cond path a Jcc's inline condition can need (a Jcc ends its
-   block, so there is never more than one; about 30 bytes, and then its two
-   exits are the instruction's own), and the x87 mirror loader (about 135
-   bytes at its deepest).
+#define X86P_JIT_WORST_CASE_INSN_BYTES 352u
+/* The block tail, bounded by its parts rather than by what a corpus happened
+   to reach: the x87 mirror's last stores and pops (at most 34 bytes), the
+   normal exit (a chained exit is about 80 bytes on Win64), the two fault stubs
+   (about 25 each), the one out-of-line x86p_cond path a Jcc's inline condition
+   can need (a Jcc ends its block, so there is never more than one; about 30
+   bytes, and then its two exits are the instruction's own), and the x87
+   mirror's loader and write-back routines (153 bytes with all four). That is
+   about 350.
 
    Both numbers are enforced, not trusted: x86p_jit_translate refuses a block
    in which one instruction, or the tail, emitted more, naming the count. The
    instruction bound had drifted to 224 while forms emitted up to 303 bytes,
    which nothing noticed because a budget is only exceeded near the end of a
-   buffer. The largest measured over the test corpora is 306 per instruction
-   and 191 for a tail. */
-#define X86P_JIT_EPILOGUE_BYTES 320u
+   buffer; the tail bound was once passed by the game at 337 bytes while no
+   test corpus reached 200. The largest instruction measured over the test
+   corpora is 321 bytes (an x87 form with its guards, a slow path that writes
+   two values back, and its helper sequence), which the 352 above holds with
+   room for an addressing form the corpora do not reach. */
+#define X86P_JIT_EPILOGUE_BYTES 384u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {
