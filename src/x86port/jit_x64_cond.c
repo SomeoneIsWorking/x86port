@@ -117,14 +117,16 @@ static void load_aligned(X86pEmit *e, X86pHostReg reg, int32_t offset, int w) {
   }
 }
 
-/* Host EFLAGS for `lowering`, then RAX = the condition as 0 or 1. RCX and RDX
-   are scratch here exactly as they are across the helper call. */
-static void emit_inline_value(X86pEmit *e, uint8_t cond, CondLowering lowering, int w) {
+/* Host EFLAGS for `lowering`, so that the guest condition code read as a host
+   one is the condition; 0, emitting nothing, for a lowering that is a
+   constant. RCX and RDX are scratch here exactly as they are across the
+   helper call. */
+static int emit_inline_flags(X86pEmit *e, CondLowering lowering, int w) {
   switch (lowering) {
   case kCondFalse:
   case kCondTrue:
-    x86p_emit_mov_r32_imm32(e, kX64Rax, lowering == kCondTrue ? 1u : 0u);
-    return;
+  case kCondHelper:
+    return 0;
   case kCondParity:
     x86p_emit_load32(e, kX64Rcx, CPU_REG, FLAG_R);
     x86p_emit_test_r32_r32(e, kX64Rcx, kX64Rcx);
@@ -139,7 +141,14 @@ static void emit_inline_value(X86pEmit *e, uint8_t cond, CondLowering lowering, 
     load_aligned(e, kX64Rcx, FLAG_R, w);
     x86p_emit_test_r32_r32(e, kX64Rcx, kX64Rcx);
     break;
-  case kCondHelper:
+  }
+  return 1;
+}
+
+/* RAX = the condition as 0 or 1, by `lowering`. */
+static void emit_inline_value(X86pEmit *e, uint8_t cond, CondLowering lowering, int w) {
+  if (!emit_inline_flags(e, lowering, w)) {
+    x86p_emit_mov_r32_imm32(e, kX64Rax, lowering == kCondTrue ? 1u : 0u);
     return;
   }
   /* MOV leaves EFLAGS alone; SETcc then writes only AL. */
@@ -154,12 +163,19 @@ static void emit_helper_value(X86pEmit *e, uint8_t cond) {
   x86p_emit_call_r64(e, kX64Rax);
 }
 
-/* RAX = the condition as 0 or 1: inline behind the recorded-kind guard when
-   the block's predecessor has a lowering, otherwise through x86p_cond. A Jcc
-   (`out_of_line`) puts the guard's helper side after the block's exits, off
-   the straight-line code; a SETcc, which can repeat within a block, keeps it
-   in place so the block tail stays bounded. */
-static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w, int out_of_line) {
+/* Where emit_condition_value left the condition. */
+typedef enum CondPlace {
+  kCondInRax,      /* RAX = 0 or 1 */
+  kCondOnHostFlags /* host EFLAGS, read with the guest condition code */
+} CondPlace;
+
+/* The condition, inline behind the recorded-kind guard when the block's
+   predecessor has a lowering, unguarded under THE PROOF, otherwise through
+   x86p_cond. A Jcc (`out_of_line`) puts the guard's helper side after the
+   block's exits, off the straight-line code, and takes a proven condition on
+   the host flags; a SETcc, which can repeat within a block, keeps the helper
+   side in place so the block tail stays bounded. */
+static CondPlace emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w, int out_of_line) {
   X86pEmit *e = c->e;
   CondLowering lowering = kCondHelper;
   X86pEmitSite slow;
@@ -175,14 +191,17 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
       c->cond_unknown_kind++;
     }
     emit_helper_value(e, cond);
-    return;
+    return kCondInRax;
   }
   c->cond_inline++;
   const uint16_t word = flag_kind_word((unsigned)last_kind, (unsigned)last_w);
   if (c->flag_word_known && c->flag_word == word && c->flag_word_epoch == block_flow_epoch(e)) {
     c->cond_proven++;
+    if (out_of_line && emit_inline_flags(e, lowering, last_w)) {
+      return kCondOnHostFlags;
+    }
     emit_inline_value(e, cond, lowering, last_w);
-    return;
+    return kCondInRax;
   }
   x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, flag_kind_off());
   x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, word);
@@ -195,7 +214,7 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
     gpr_forget(c);
     c->cond_slow_resume = x86p_emit_here(e);
     c->cond_slow_cond = cond;
-    return;
+    return kCondInRax;
   }
   {
     X86pEmitSite done = x86p_emit_jmp_rel32(e);
@@ -203,6 +222,7 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
     emit_helper_value(e, cond);
     x86p_emit_bind(e, done);
   }
+  return kCondInRax;
 }
 
 /* The guard's other side for a Jcc: a recorded kind the translator did not
@@ -219,7 +239,10 @@ void x86p_x64_emit_cond_slow_path(BlockCtx *c) {
 
 void x86p_x64_emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
   c->conds++;
-  emit_condition_value(c, cond, last_kind, last_w, 1);
+  if (emit_condition_value(c, cond, last_kind, last_w, 1) == kCondOnHostFlags) {
+    emit_exits_on(c, cond, target, fallthrough);
+    return;
+  }
   emit_two_way_exit(c, target, fallthrough);
 }
 

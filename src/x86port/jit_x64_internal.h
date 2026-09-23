@@ -285,6 +285,9 @@ void emit_exit_from(BlockCtx *c, X86pHostReg eip_reg);
 void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit);
 /* EAX nonzero: to `taken`; zero: to `not_taken`. */
 void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken);
+/* The same two exits, chosen by host condition `host_cond` on the current
+   host EFLAGS instead of by RAX. */
+void emit_exits_on(BlockCtx *c, uint8_t host_cond, uint32_t taken, uint32_t not_taken);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
 
 /* The guest ALU operations emitted as host arithmetic plus the lazy tuple
