@@ -173,9 +173,12 @@ size_t x86p_jit_chain_entry_offset(void) {
 /* EAX nonzero: to `taken`; zero: to `not_taken`. Two exits rather than one
    exit to a selected address, so each keeps its own slot. */
 void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken) {
-  X86pEmitSite branch;
   x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
-  branch = x86p_emit_jcc_rel32(c->e, kX86pCondNZ);
+  emit_exits_on(c, (uint8_t)kX86pCondNZ, taken, not_taken);
+}
+
+void emit_exits_on(BlockCtx *c, uint8_t host_cond, uint32_t taken, uint32_t not_taken) {
+  const X86pEmitSite branch = x86p_emit_jcc_rel32(c->e, host_cond);
   emit_exit(c, not_taken);
   x86p_emit_bind(c->e, branch);
   emit_exit(c, taken);
