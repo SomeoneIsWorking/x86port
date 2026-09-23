@@ -55,7 +55,7 @@ void x86p_wasm_state_init(
   if (plan) {
     s->plan = *plan;
   }
-  x86p_wasm_chain_exits_init(&s->chain, chain);
+  x86p_wasm_chain_exits_init(&s->chain, chain, entry);
 }
 
 void x86p_wasm_state_cpu(X86pWasmState *s) {

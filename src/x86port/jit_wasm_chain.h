@@ -50,8 +50,9 @@ extern "C" {
 #define X86P_WASM_CHAIN_SLOTS 4u
 /* The most transfers one dispatch may make: each holds an engine frame. */
 #define X86P_WASM_CHAIN_TRANSFERS 256u
-/* One chained exit's instructions beyond a plain exit, with room to spare. */
-#define X86P_WASM_CHAIN_EXIT_BYTES 160u
+/* One chained exit's instructions beyond a plain exit, its front-array probe
+   included, with room to spare. */
+#define X86P_WASM_CHAIN_EXIT_BYTES 320u
 
 /* Where a block's exits find their slots. */
 typedef struct X86pWasmChainUse {
@@ -64,13 +65,15 @@ typedef struct X86pWasmChainUse {
 
 typedef struct X86pWasmChainExits {
   X86pWasmChainUse use;
+  uint32_t entry;     /* the block's own guest address, which a probe never enters */
   int64_t first;      /* the block's first slot, or -1 */
   unsigned slotted;   /* exits given a slot */
   unsigned unslotted; /* exits that asked for one and had none */
 } X86pWasmChainExits;
 
-/* `use` may be NULL, for a block that does not chain. */
-void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use);
+/* `use` may be NULL, for a block that does not chain. `entry` is the guest
+   address of the block being lowered. */
+void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use, uint32_t entry);
 
 /* Bytes to keep free for the chained exits this block may still emit. */
 size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);
@@ -80,6 +83,10 @@ size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);
  * that local `local` holds when `local` is not negative. Called with cpu->eip
  * already stored; leaves the stack as it found it. Emits nothing when the
  * block does not chain or has no slot left.
+ *
+ * An exit to a computed EIP -- a RET, an indirect JMP or CALL -- that misses
+ * its slot then asks the block cache's front array (jit_chain.h, THE PROBE),
+ * which clobbers kX86pWasmLocalAddr; `local` must be another local.
  */
 void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, int local);
 
