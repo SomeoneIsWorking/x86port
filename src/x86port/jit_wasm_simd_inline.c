@@ -28,9 +28,12 @@ typedef struct PackedForm {
  *
  * ONLY WHERE THE HOST INSTRUCTION IS UNCONDITIONALLY THE SAME FUNCTION.
  * The four bitwise rows are exact on every input. The four arithmetic rows are
- * IEEE 754 binary32 in the default environment, which is what simd_packed.c's
- * `a[i] op b[i]` compiles to -- see the header on why no MXCSR guard is
- * emitted. MINPS and MAXPS are deliberately absent: WebAssembly's f32x4.min
+ * IEEE 754 binary32 in the default environment -- see the header on why no
+ * MXCSR guard is emitted -- and agree with simd_packed.c on every non-NaN
+ * result. They do NOT pin a NaN result: WebAssembly leaves the payload and
+ * sign of a NaN from f32x4 arithmetic nondeterministic, where SSE returns the
+ * destination's NaN (x86p_sse_nan_result). Only which NaN comes out differs;
+ * a NaN operand still yields a NaN. MINPS and MAXPS are deliberately absent: WebAssembly's f32x4.min
  * and f32x4.max differ from x86 on NaN and on signed zero, and while
  * f32x4.pmin / f32x4.pmax are defined to match, nothing on the measured route
  * runs either, so they stay on the helper rather than being added untested.

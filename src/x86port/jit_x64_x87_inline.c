@@ -692,7 +692,6 @@ static void emit_loader(BlockCtx *c) {
     x86p_emit_bind_to(e, c->x87_loads[i], entry);
   }
 }
-#endif
 
 /*
  * sync: R14 = TOP and R15 = the occupancy relative to it, from memory. A
@@ -730,6 +729,7 @@ static void emit_regs_sync(BlockCtx *c) {
     x86p_emit_bind_to(e, c->x87_syncs[i], entry);
   }
 }
+#endif
 
 void x87_cache_emit_routines(BlockCtx *c) {
 #if X87_INLINE_HOST

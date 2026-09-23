@@ -228,8 +228,11 @@ static void invalid_module(void) {
   if (!host.user) {
     return;
   }
-  check(host.instantiate(host.user, invalid, sizeof invalid) < 0, "invalid module was accepted");
+  char refusal[256] = {0};
+  check(host.instantiate(host.user, invalid, sizeof invalid, refusal, sizeof refusal) < 0,
+        "invalid module was accepted");
   check(x86p_wasm_host_error(&host)[0] != '\0', "module refusal discarded the engine's diagnostic");
+  check(refusal[0] != '\0', "module refusal did not reach the caller's buffer");
   check(live_modules() == 0u, "invalid module mutated publication state");
   x86p_wasm_host_destroy(&host);
 }
