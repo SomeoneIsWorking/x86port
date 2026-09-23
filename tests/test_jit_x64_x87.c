@@ -227,6 +227,7 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define INC_EAX 0x40
 #define JMP_NEXT 0xEB, 0x00
 #define FSQRT 0xD9, 0xFA
+#define FRNDINT 0xD9, 0xFC
 #define FCHS 0xD9, 0xE0
 #define FABS 0xD9, 0xE1
 #define FLDZ 0xD9, 0xEE
@@ -449,10 +450,11 @@ static const Case kCases[] = {
      6,
      {F32_ONE, F32_THREE},
      0},
-    /* FSQRT runs its helper, so the cache is read back from memory with TOP at
-       3 and ST(0..4) occupied: a rotate the wrong way reports ST(6) occupied. */
+    /* FRNDINT runs its helper, so the cache is read back from memory with TOP
+       at 3 and ST(0..4) occupied: a rotate the wrong way reports ST(6)
+       occupied. */
     {"an empty register after the cache is read back",
-     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FLD_M32(0), FSQRT, FMUL_ST0_ST(6), FSTP_M32(8)),
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FLD_M32(0), FRNDINT, FMUL_ST0_ST(6), FSTP_M32(8)),
      8,
      {F32_ONE, F32_THREE},
      0},
@@ -509,6 +511,50 @@ static const Case kCases[] = {
      CODE(FLD_M32(0), FLD_M32(4), FXCH_ST(1), FCHS, FSUB_ST0_ST(1), FABS, FXCH_ST(1), FSTP_M32(8), FSTP_M32(12)),
      9,
      {F32_ONE, F32_THREE},
+     0},
+    /* FSQRT is inline: the host instruction on the mirror, C1 cleared. The
+       status word is stored between roots, so a C1 left set shows. */
+    {"square roots inside a chain",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FSQRT,
+          FMUL_ST0_ST(1),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FSTP_M32(8),
+          FSQRT,
+          FSTP_M64(24)),
+     10,
+     {0x40000000u, F32_THREE},
+     0},
+    {"square roots of a negative, a negative zero and an infinity",
+     CODE(FLD_M32(0), FSQRT, FSTP_M32(12), FLD_M32(4), FSQRT, FSTP_M32(16), FLD_M32(8), FSQRT, FSTP_M32(20)),
+     9,
+     {0xBF800000u, F32_NEG_ZERO, F32_INF},
+     0},
+    /* A ninth push overflows and sets C1; the root clears it. */
+    {"a square root after an overflow set C1",
+     CODE(FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FLD_M32(0),
+          FSQRT,
+          FNSTSW_AX,
+          MOV_M_EAX(32)),
+     12,
+     {F32_THREE},
+     0},
+    {"a square root of an empty register", CODE(FSQRT, FNSTSW_AX, MOV_M_EAX(32)), 3, {0}, 0},
+    {"a square root under a truncating control word",
+     CODE(FLDCW(16), FLD_M32(0), FSQRT, FSTP_M64(24)),
+     4,
+     {F32_THREE, 0, 0, 0, CW_TRUNCATE},
      0},
     {"sign of a NaN and a zero",
      CODE(FLD_M32(0), FABS, FLD_M32(4), FCHS, FLD_M32(8), FABS, FSTP_M32(12), FSTP_M32(16), FSTP_M32(20)),

@@ -30,8 +30,12 @@ int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
   }
   /* C1 and C2 are guest-visible: C2 reports an incomplete FPREM reduction
      and an out-of-range trigonometric argument, and guest code loops on it. */
-  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
-  f->status |= (uint16_t)(sw & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
+  /* FSQRT defines only C1; the host's leftover C0/C2/C3 are not the guest's,
+     so they keep the guest's values -- as the x64 inline form does. */
+  const uint16_t written =
+      fn == kX86pX87FnSqrt ? (uint16_t)X86P_X87_C1 : (uint16_t)(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
+  f->status &= (uint16_t)~written;
+  f->status |= (uint16_t)(sw & written);
 #if !defined(__x86_64__) && !defined(__i386__)
   /* The software environment starts clean for each guest operation. Native
      x87 status also contains unrelated host sticky flags and is not copied. */

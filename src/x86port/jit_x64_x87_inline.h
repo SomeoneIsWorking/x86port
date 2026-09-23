@@ -144,6 +144,9 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 /* FXCH, FCHS, FABS, and FCOM/FCOMP/FCOMPP/FUCOM* against a register. */
 void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 
+/* FSQRT; the other function forms take the helper alone. */
+void x87_inline_fn(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
+
 /* FCOM/FCOMP m32/m64 and FICOM m16/m32 with the operand prepared in
    HOSTPTR_REG. */
 void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
