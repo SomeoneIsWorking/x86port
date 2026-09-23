@@ -332,6 +332,31 @@ static void test_the_guest_control_word_governs_a_transcendental(void) {
 #endif
 }
 
+/* FPREM reports the quotient's low bits in C0 (Q2), C3 (Q1) and C1 (Q0). The
+   helper once read the status after storing the result, and the store cleared
+   C1: 3 rem 2 (quotient 1) and 4 rem 2 (quotient 2) then looked alike. */
+static void test_fprem_reports_its_quotient_in_c1(void) {
+  static const struct {
+    long double dividend;
+    unsigned c1;
+  } kQuotients[] = {{3.0L, X86P_X87_C1}, {4.0L, 0u}};
+  for (unsigned i = 0; i < sizeof kQuotients / sizeof kQuotients[0]; i++) {
+    long double r0 = 0.0L;
+    long double r1 = 0.0L;
+    int pushed = 0;
+    uint16_t status = 0u;
+    g_checks++;
+    if (!x86p_x87_fn(kX86pX87FnPrem, X86P_X87_CW_INIT, kQuotients[i].dividend, 2.0L, &r0, &r1, &pushed, &status) ||
+        (status & X86P_X87_C1) != kQuotients[i].c1) {
+      printf("FAIL: FPREM %.0Lf rem 2 reported C1 %u, want %u\n",
+             kQuotients[i].dividend,
+             (unsigned)((status & X86P_X87_C1) != 0u),
+             kQuotients[i].c1 != 0u);
+      g_failed++;
+    }
+  }
+}
+
 int main(void) {
   unsigned i;
   unsigned v;
@@ -342,6 +367,7 @@ int main(void) {
     }
   }
   test_the_guest_control_word_governs_a_transcendental();
+  test_fprem_reports_its_quotient_in_c1();
 #if HAVE_ORACLE
   if (g_oracle_runs == 0u) {
     printf("REFUSED: the host oracle never ran, so nothing here was verified\n");

@@ -49,39 +49,40 @@ int x86p_x87_fn_available(void) {
  * happens. Loading and storing explicitly makes each block self-contained, and
  * the cost is irrelevant beside a transcendental.
  *
- * The status word is read with FNSTSW after the operation, before anything
- * else can disturb it. C1 (which reports rounding direction and stack
+ * The status word is read with FNSTSW straight after the operation, before
+ * the stores: FSTP clears C1, which lost FPREM's quotient bit and FSQRT's
+ * rounding direction while the read came last. C1 (which reports rounding direction and stack
  * overflow) and C2 (which reports an incomplete FPREM reduction, and an
  * out-of-range argument to the trigonometric functions) are both things guest
  * code branches on.
  */
 #define X87_UNARY(op)                                                                                                  \
-  __asm__ volatile("fldt %2\n\t" op "\n\tfstpt %0\n\tfnstsw %1"                                                        \
-                   : "=m"(*r0), "=a"(sw)                                                                               \
+  __asm__ volatile("fldt %2\n\t" op "\n\tfnstsw %1\n\tfstpt %0"                                                        \
+                   : "=m"(*r0), "=&a"(sw)                                                                              \
                    : "m"(a)                                                                                            \
                    : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)")
 
 /* Two results, ST(0) then the pushed one. The pushed value ends up ON TOP, so
    it is stored first and the original second. */
 #define X87_UNARY2(op)                                                                                                 \
-  __asm__ volatile("fldt %3\n\t" op "\n\tfstpt %0\n\tfstpt %1\n\tfnstsw %2"                                            \
-                   : "=m"(*r1), "=m"(*r0), "=a"(sw)                                                                    \
+  __asm__ volatile("fldt %3\n\t" op "\n\tfnstsw %2\n\tfstpt %0\n\tfstpt %1"                                            \
+                   : "=m"(*r1), "=m"(*r0), "=&a"(sw)                                                                   \
                    : "m"(a)                                                                                            \
                    : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)")
 
 /* Two operands: ST(1) is loaded first so that ST(0) ends up on top, which is
    the arrangement every two-operand x87 instruction is specified against. */
 #define X87_BINARY(op)                                                                                                 \
-  __asm__ volatile("fldt %2\n\tfldt %3\n\t" op "\n\tfstpt %0\n\tfnstsw %1"                                             \
-                   : "=m"(*r0), "=a"(sw)                                                                               \
+  __asm__ volatile("fldt %2\n\tfldt %3\n\t" op "\n\tfnstsw %1\n\tfstpt %0"                                             \
+                   : "=m"(*r0), "=&a"(sw)                                                                              \
                    : "m"(b), "m"(a)                                                                                    \
                    : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)")
 
 /* FSCALE and FPREM do NOT pop, so both registers survive and ST(0) is the
    result; the second operand is discarded here because the caller keeps it. */
 #define X87_BINARY_NOPOP(op)                                                                                           \
-  __asm__ volatile("fldt %2\n\tfldt %3\n\t" op "\n\tfstpt %0\n\tfstp %%st(0)\n\tfnstsw %1"                             \
-                   : "=m"(*r0), "=a"(sw)                                                                               \
+  __asm__ volatile("fldt %2\n\tfldt %3\n\t" op "\n\tfnstsw %1\n\tfstpt %0\n\tfstp %%st(0)"                             \
+                   : "=m"(*r0), "=&a"(sw)                                                                              \
                    : "m"(b), "m"(a)                                                                                    \
                    : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)")
 #endif
