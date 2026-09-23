@@ -123,20 +123,21 @@ static void x87_lea_scratch(X86pEmit *e, X86pHostReg destination) {
 }
 
 void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
+  X87Inline fast;
+  x87_inline_constant(c, insn, &fast);
+  x87_inline_begin_slow(c, &fast);
   x87_lea_self(c->e);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, insn->x87);
   x87_call(c->e, (const void *)&x86p_x87_push_constant);
+  x87_inline_end(c, &fast);
 }
 
-/* FNSTSW AX. x86p_x87_status is the one owner that replaces any stale TOP
-   bits in the stored status field with the live stack pointer. A 16-bit store
-   into the guest EAX slot preserves its upper half exactly like
-   x86p_reg_write(..., width=2), and none of this materialises or changes the
-   separate integer EFLAGS model. */
+/* FNSTSW AX: the status word with the live TOP merged in, as x86p_x87_status
+   builds it, stored to AX with EAX's upper half kept, like
+   x86p_reg_write(..., width=2). No call, so the mirror survives it, and none
+   of this materialises or changes the separate integer EFLAGS model. */
 void emit_x87_status_ax(BlockCtx *c) {
-  x87_lea_self(c->e);
-  x87_call(c->e, (const void *)&x86p_x87_status);
-  x86p_emit_store16_reg(c->e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rax);
+  x87_inline_status_ax(c);
 }
 
 /* FNCLEX changes no integer flags or registers. The shared semantic owner
@@ -285,9 +286,12 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pEmit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
+  X87Inline fast;
   int i;
 
   emit_mem_prepare_w(c, o0, insn_eip, o0->size);
+  x87_inline_compare_mem(c, insn, &fast);
+  x87_inline_begin_slow(c, &fast);
   x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
   x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
   x87_lea_self(e);
@@ -299,6 +303,7 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
     x87_call(e, (const void *)&x86p_x87_pop);
   }
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
+  x87_inline_end(c, &fast);
 }
 
 /*
@@ -418,10 +423,21 @@ void emit_x87_fn(BlockCtx *c, const X86pInsn *insn) {
   x87_call(c->e, (const void *)&x86p_x87_apply_fn);
 }
 
+/* FXCH, FCHS, FABS and the register compares: inline, with the helper as the
+   slow path. FTST has no inline form and takes the helper alone. */
+static void emit_x87_register_inline(BlockCtx *c, const X86pInsn *insn) {
+  X87Inline fast;
+  x87_inline_register(c, insn, &fast);
+  x87_inline_begin_slow(c, &fast);
+  emit_x87_register(c, insn);
+  x87_inline_end(c, &fast);
+}
+
 /*
- * One X87 instruction. The four inline forms keep the host-stack mirror
- * (jit_x64_x87_inline.h) across themselves; every other form calls a helper,
- * so the mirror is popped first. FWAIT emits nothing and keeps it.
+ * One X87 instruction. The forms with an inline path keep the host-stack
+ * mirror (jit_x64_x87_inline.h) across themselves, and pop it themselves when
+ * a shape has no inline form; the rest call a helper, so the mirror is popped
+ * first. FWAIT emits nothing and keeps it.
  */
 void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (insn->x87 == kX86pX87InsnWait) {
@@ -430,34 +446,30 @@ void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
   if (x87_arith_is_emittable(insn)) {
     emit_x87_arith(c, insn, insn_eip);
-    return;
-  }
-  if (x87_store_reg_is_emittable(insn)) {
+  } else if (x87_store_reg_is_emittable(insn)) {
     emit_x87_store_reg(c, insn);
-    return;
-  }
-  if (x87_store_mem_is_emittable(insn)) {
+  } else if (x87_store_mem_is_emittable(insn)) {
     emit_x87_store_mem(c, insn, insn_eip);
-    return;
-  }
-  if (x87_load_is_emittable(insn)) {
+  } else if (x87_load_is_emittable(insn)) {
     emit_x87_load(c, insn, insn_eip);
-    return;
-  }
-  x87_cache_flush(c);
-  if (x87_register_is_emittable(insn)) {
-    emit_x87_register(c, insn);
-  } else if (x87_fn_is_emittable(insn)) {
-    emit_x87_fn(c, insn);
-  } else if (x87_control_is_emittable(insn)) {
-    emit_x87_control(c, insn, insn_eip);
+  } else if (x87_register_is_emittable(insn)) {
+    emit_x87_register_inline(c, insn);
   } else if (x87_compare_mem_is_emittable(insn)) {
     emit_x87_compare_mem(c, insn, insn_eip);
   } else if (x87_constant_is_emittable(insn)) {
     emit_x87_constant(c, insn);
   } else if (x87_status_ax_is_emittable(insn)) {
     emit_x87_status_ax(c);
+  } else if (x87_control_is_emittable(insn)) {
+    /* FLDCW/FNSTCW move a word and call nothing. A new guest control word
+       sends the inline forms after it to their slow paths by itself. */
+    emit_x87_control(c, insn, insn_eip);
   } else {
-    emit_x87_clear_exceptions(c);
+    x87_cache_flush(c);
+    if (x87_fn_is_emittable(insn)) {
+      emit_x87_fn(c, insn);
+    } else {
+      emit_x87_clear_exceptions(c);
+    }
   }
 }

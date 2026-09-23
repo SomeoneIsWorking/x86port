@@ -23,6 +23,7 @@
  */
 #include "jit_x64_x87_inline.h"
 
+#include "cond.h"
 #include "cpu.h"
 #include "emit_x64.h"
 #include "x87.h"
@@ -62,6 +63,10 @@ static int32_t tag0_off(void) {
 
 static int32_t top_off(void) {
   return x87_field(offsetof(X86pX87, top));
+}
+
+static int32_t status_off(void) {
+  return x87_field(offsetof(X86pX87, status));
 }
 
 static int32_t control_off(void) {
@@ -296,6 +301,40 @@ static void guard_memory_nonzero(X86pEmit *e, X87Inline *fast, int w, int intege
     x86p_emit_alu_r32_mem(e, kX64Or, kX64Rcx, HOSTPTR_REG, 0);
   }
   note_slow(e, fast, kCcE);
+}
+
+/*
+ * The condition codes of an ordered comparison, from the EFLAGS an FUCOMI just
+ * wrote: C0 for below and C3 for equal, C2 clear, exactly what
+ * x86p_x87_compare stores. An unordered result goes to the slow path, which
+ * owns IE and the all-three answer. EAX and ECX were zeroed before the
+ * comparison, since MOV does not touch EFLAGS and XOR would.
+ */
+static void finish_compare(X86pEmit *e, X87Inline *fast, unsigned below_cc) {
+  note_slow(e, fast, (unsigned)kX86pCondP);
+  x86p_emit_setcc_r8(e, below_cc, kX64Rax);
+  x86p_emit_setcc_r8(e, (unsigned)kX86pCondZ, kX64Rcx);
+  x86p_emit_shl_r32_imm8(e, kX64Rax, 8u);  /* C0 */
+  x86p_emit_shl_r32_imm8(e, kX64Rcx, 14u); /* C3 */
+  x86p_emit_alu_r32_r32(e, kX64Or, kX64Rax, kX64Rcx);
+  x86p_emit_load16_zx(e, kX64Rdx, CPU_REG, status_off());
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, ~(uint32_t)(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3));
+  x86p_emit_alu_r32_r32(e, kX64Or, kX64Rdx, kX64Rax);
+  x86p_emit_store16_reg(e, CPU_REG, status_off(), kX64Rdx);
+}
+
+static void zero_compare_scratch(X86pEmit *e) {
+  x86p_emit_mov_r32_imm32(e, kX64Rax, 0u);
+  x86p_emit_mov_r32_imm32(e, kX64Rcx, 0u);
+}
+
+/* `pops` guest pops of values the mirror holds, and their host pops. */
+static void pop_mirrored(BlockCtx *c, unsigned pops) {
+  while (pops--) {
+    emit_pop(c->e);
+    host_pop(c->e);
+    c->x87_depth--;
+  }
 }
 
 static void finish_fast(BlockCtx *c, X87Inline *fast) {
@@ -593,4 +632,124 @@ void x87_inline_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, 
   (void)insn;
   (void)insn_eip;
 #endif
+}
+
+void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
+  begin(fast);
+#if X87_INLINE_HOST
+  {
+    X86pEmit *e = c->e;
+    const unsigned index = insn->operands ? (unsigned)insn->operand[0].reg : 1u;
+    const unsigned pops = insn->x87_pops;
+    const int unary = insn->x87 == kX86pX87InsnChangeSign || insn->x87 == kX86pX87InsnAbs;
+    const int exchange = insn->x87 == kX86pX87InsnExchange;
+    if (!(unary || exchange || insn->x87 == kX86pX87InsnCompare) || index >= X87_MIRROR_MAX ||
+        pops > (exchange || unary ? 0u : 2u) || (pops == 2u && index != 1u)) {
+      x87_cache_flush(c);
+      return;
+    }
+    emit_phys(e, 0u);
+    emit_tag_slot(e, kX64Rsi);
+    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    emit_reg_slot(e, kX64Rdx);
+    if (unary) {
+      mirror_ensure(c, 1u);
+      x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnAbs ? 0xE1u : 0xE0u); /* fabs / fchs */
+      write_through(e, 0u, kX64Rdx);
+      finish_fast(c, fast);
+      return;
+    }
+    emit_phys(e, index);
+    emit_tag_slot(e, kX64Rsi);
+    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    emit_reg_slot(e, kX64Rdi);
+    mirror_ensure(c, index + 1u);
+    if (exchange) {
+      x86p_emit_x87_reg(e, 0xD9u, (uint8_t)(0xC8u + index)); /* fxch st(i) */
+      write_through(e, 0u, kX64Rdx);
+      write_through(e, index, kX64Rdi);
+      finish_fast(c, fast);
+      return;
+    }
+    zero_compare_scratch(e);
+    x86p_emit_x87_reg(e, 0xDBu, (uint8_t)(0xE8u + index)); /* fucomi st(0), st(i) */
+    finish_compare(e, fast, (unsigned)kX86pCondB);
+    pop_mirrored(c, pops);
+    finish_fast(c, fast);
+  }
+#else
+  (void)c;
+  (void)insn;
+#endif
+}
+
+void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
+  begin(fast);
+#if X87_INLINE_HOST
+  {
+    X86pEmit *e = c->e;
+    const X86pOperand *o0 = &insn->operand[0];
+    if (insn->x87_pops > 1u) {
+      x87_cache_flush(c);
+      return;
+    }
+    emit_phys(e, 0u);
+    emit_tag_slot(e, kX64Rsi);
+    guard_tag_is(e, fast, kX64Rsi, kTagEmpty);
+    mirror_ensure(c, 1u);
+    zero_compare_scratch(e);
+    /* The operand goes on top and FUCOMIP drops it again, so the flags compare
+       the operand with ST(0): ST(0) is below it when the operand is ABOVE. */
+    fld_guest(e, o0->size, insn->x87_mem_int);
+    x86p_emit_x87_reg(e, 0xDFu, 0xE9u); /* fucomip st(0), st(1) */
+    finish_compare(e, fast, (unsigned)kX86pCondA);
+    pop_mirrored(c, insn->x87_pops);
+    finish_fast(c, fast);
+  }
+#else
+  (void)c;
+  (void)insn;
+#endif
+}
+
+void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
+  begin(fast);
+#if X87_INLINE_HOST
+  {
+    X86pEmit *e = c->e;
+    if (insn->x87 != kX86pX87InsnConstZero && insn->x87 != kX86pX87InsnConstOne) {
+      x87_cache_flush(c);
+      return;
+    }
+    emit_phys(e, 7u); /* the slot a push fills: TOP - 1 */
+    emit_tag_slot(e, kX64Rsi);
+    guard_tag_is_not(e, fast, kX64Rsi, kTagEmpty);
+    emit_reg_slot(e, kX64Rdx);
+    x86p_emit_store8_reg(e, CPU_REG, top_off(), kX64Rax);
+    mirror_make_room(c);
+    x86p_emit_x87_reg(e, 0xD9u, insn->x87 == kX86pX87InsnConstZero ? 0xEEu : 0xE8u); /* fldz / fld1 */
+    c->x87_depth++;
+    write_through(e, 0u, kX64Rdx);
+    emit_occupied(e, kX64Rsi);
+    finish_fast(c, fast);
+  }
+#else
+  (void)c;
+  (void)insn;
+#endif
+}
+
+/* x86p_x87_status: the stored word with TOP merged into bits 11..13, written
+   to AX with EAX's upper half kept. */
+void x87_inline_status_ax(BlockCtx *c) {
+  X86pEmit *e = c->e;
+  const int32_t status = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, status));
+  const int32_t top = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, top));
+  x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, status);
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, ~(7u << X86P_X87_TOP_SHIFT) & 0xFFFFu);
+  x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top);
+  x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
+  x86p_emit_shl_r32_imm8(e, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
+  x86p_emit_alu_r32_r32(e, kX64Or, kX64Rcx, kX64Rax);
+  x86p_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rcx);
 }
