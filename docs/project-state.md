@@ -186,9 +186,9 @@ binary64 path described below.
 Gap: the ARM64 backend does not link blocks to their successors
 (`x86p_jit_chain_slots_per_block` returns 0), so every block exit returns to the
 dispatcher; x64 and WebAssembly chain. A WebAssembly transfer is a
-`call_indirect` through the host table rather than a jump, so the engine caps a
-dispatch at `X86P_WASM_CHAIN_TRANSFERS` (256) transfers to bound the engine
-frames it holds, and a block chains its first `X86P_WASM_CHAIN_SLOTS` (4) exits;
+tail call through the `x86p_wasm_chain_call` import rather than a jump, so a
+chain runs in constant stack; a block chains its first
+`X86P_WASM_CHAIN_SLOTS` (4) exits;
 a block relowered into a shared module reuses the slots it was published with,
 and an exit to a computed EIP that misses its slot probes the block cache's
 front array (`jit_wasm_chain.h`). `test_jit_engine` checks that a non-chaining backend

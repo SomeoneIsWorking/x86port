@@ -13,6 +13,10 @@ static const uint32_t kRunStop = (uint32_t)offsetof(X86pJitChainRun, stop);
 static const uint32_t kRunLast = (uint32_t)offsetof(X86pJitChainRun, last);
 static const uint32_t kRunPending = (uint32_t)offsetof(X86pJitChainRun, pending);
 
+#if defined(__wasm__) && !defined(__wasm_tail_call__)
+#error "a chained transfer is a tail call: build this unit with -mtail-call"
+#endif
+
 _Static_assert(sizeof(JcBlockFront) == 16u, "the probe scales the front index by a shift of 4");
 
 void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use, uint32_t entry) {
@@ -119,8 +123,7 @@ static void emit_transfer(X86pWasmEmit *e, uint32_t base, uint32_t imm, int loca
     x86p_wasm_i32_const(e, (int32_t)base);
     x86p_wasm_i32_load(e, ALIGN_NONE, disp + (uint32_t)offsetof(X86pJitChainSlot, host));
   }
-  x86p_wasm_call(e, (uint32_t)kX86pWasmImportChainCall);
-  x86p_wasm_return(e);
+  x86p_wasm_return_call(e, (uint32_t)kX86pWasmImportChainCall);
 }
 
 /*
@@ -201,7 +204,16 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
 uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host) {
   /* On the wasm host a function pointer IS a table index (jit_wasm.c says why
      the conversion goes through a pointer-sized integer). */
-  uint32_t (*fn)(X86pCpu *);
+  /* The block's second word is this one's, which a tail call needs; the
+     block ignores it (jit_wasm_module.h). */
+  uint32_t (*fn)(X86pCpu *, uint32_t);
   *(void **)&fn = (void *)(uintptr_t)host;
-  return fn(cpu);
+#if defined(__wasm__)
+  /* The block tail-called here, and this tail-calls on: a chain of any length
+     holds no frame (jit_wasm_chain.h). */
+  __attribute__((musttail)) return fn(cpu, host);
+#else
+  /* Never called off the wasm host, which has no chain to call through. */
+  return fn(cpu, host);
+#endif
 }

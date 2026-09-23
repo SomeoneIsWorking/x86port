@@ -450,6 +450,10 @@ void x86p_wasm_call(X86pWasmEmit *e, uint32_t func_index) {
   emit_index_op(e, 0x10, func_index);
 }
 
+void x86p_wasm_return_call(X86pWasmEmit *e, uint32_t func_index) {
+  emit_index_op(e, 0x12, func_index);
+}
+
 void x86p_wasm_call_indirect(X86pWasmEmit *e, uint32_t type_index) {
   x86p_wasm_byte(e, 0x11);
   x86p_wasm_u32(e, type_index);

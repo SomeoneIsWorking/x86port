@@ -370,18 +370,21 @@ static void chaining(const X86pMem *mem) {
   check(cpu.eip == kGuestBase, "a chained ring stopped at the wrong block");
   /* An exit links to a block the dispatcher found cached, so the first two
      laps dispatch every block; after that only the depth cap returns. */
-  check(first >= 10000u - 2u * kRingBlocks - 10000u / X86P_WASM_CHAIN_TRANSFERS - 1u,
-        "a warm ring still went through the dispatcher");
+  check(first >= 10000u - 2u * kRingBlocks - 1u, "a warm ring still went through the dispatcher");
   const uint64_t warm = chained_run(engine, &cpu, &no_stop, 10000u, kX86pRunBudget);
   check(cpu.reg[kX86pEax] == 20000u, "a relowered ring did not run every block once per entry");
-  /* Only the depth cap sends a transfer back: one dispatch per 256 entries. */
-  check(warm >= 10000u - 10000u / X86P_WASM_CHAIN_TRANSFERS - 1u, "relowered blocks lost their links");
+  /* One dispatch, and every other entry a transfer. */
+  check(warm >= 10000u - 1u, "relowered blocks lost their links");
+  /* A million transfers from one dispatch: as ordinary calls, two engine
+     frames each, this overflows any worker's stack. */
+  const uint64_t deep = chained_run(engine, &cpu, &no_stop, 1000000u, kX86pRunBudget);
+  check(deep == 1000000u - 1u && cpu.reg[kX86pEax] == 1020000u, "a long chain did not run in constant stack");
 
   uint32_t stop = kGuestBase + 50u * kRingStride;
   policy.take = stop;
   chained_run(engine, &cpu, &stop, 10000u, kX86pRunIntercept);
   check(cpu.eip == stop, "a transfer entered the run's stop address");
-  check(cpu.reg[kX86pEax] == 20050u, "the stop was not reached by the ring");
+  check(cpu.reg[kX86pEax] == 1020050u, "the stop was not reached by the ring");
   policy.take = 0u;
 
   /* Block 1 now spins. A link still naming its old code keeps the ring going. */
@@ -440,7 +443,7 @@ static void probing(const X86pMem *mem) {
   check(cpu.reg[kX86pEax] == 4u * kRingBlocks + 10000u, "a probed RET skipped or repeated a call");
   check(cpu.eip == kGuestBase, "a probed RET returned to the wrong caller");
   check(cpu.reg[kX86pEsp] == kGuestBase + kGuestBytes - 64u, "a probed RET unbalanced the stack");
-  check(warm >= 30000u - 30000u / X86P_WASM_CHAIN_TRANSFERS - 1u, "a RET that missed its slot went to the dispatcher");
+  check(warm >= 30000u - 1u, "a RET that missed its slot went to the dispatcher");
   printf("probe: %llu of 30000 entries chained through a shared RET\n", (unsigned long long)warm);
   x86p_jit_engine_destroy(engine);
 }

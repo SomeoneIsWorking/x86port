@@ -231,6 +231,9 @@ target_include_directories(x86port_runtime PUBLIC src/x86port)
 if(EMSCRIPTEN)
   target_link_libraries(x86port_runtime PUBLIC jitcommon_cache PRIVATE Zydis)
   target_link_options(x86port_runtime INTERFACE "-sALLOW_TABLE_GROWTH=1")
+  # A chained transfer is a tail call (jit_wasm_chain.h): the unit that makes
+  # it needs the feature, and refuses to build without it.
+  set_source_files_properties(src/x86port/jit_wasm_chain.c PROPERTIES COMPILE_OPTIONS "-mtail-call")
 else()
   target_link_libraries(x86port_runtime PUBLIC jitcommon PRIVATE Zydis)
 endif()

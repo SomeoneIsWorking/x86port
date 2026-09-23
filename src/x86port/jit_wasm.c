@@ -52,8 +52,9 @@ unsigned x86p_jit_chain_slots_per_block(void) {
   return X86P_WASM_CHAIN_SLOTS;
 }
 
+/* A transfer is a tail call, which holds no frame (jit_wasm_chain.h). */
 uint64_t x86p_jit_chain_transfer_limit(void) {
-  return X86P_WASM_CHAIN_TRANSFERS;
+  return UINT64_MAX;
 }
 
 uint32_t x86p_jit_host_state(void) {
@@ -152,7 +153,6 @@ int x86p_jit_wasm_publish(
 }
 
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
-  uint32_t (*fn)(X86pCpu *);
   if (!b || !b->entry || !cpu) {
     /* A block that was translated but never published has a NULL entry, which
        is exactly the case this refuses -- on this host that is the difference
@@ -160,14 +160,13 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
     return kX86pJitExitUnsupported;
   }
   /*
-   * The cast goes through a function-pointer-sized integer because ISO C does
-   * not define object-to-function pointer conversion. Here the value really IS
-   * an index into the indirect function table, which is what a function
-   * pointer is on this host, so the conversion is the intended mechanism
-   * rather than a portability compromise.
+   * The entry converts to a function pointer through a pointer-sized integer
+   * because ISO C does not define object-to-function pointer conversion. Here
+   * the value really IS an index into the indirect function table, which is
+   * what a function pointer is on this host, so the conversion is the intended
+   * mechanism rather than a portability compromise.
    */
-  *(void **)&fn = b->entry;
-  return (X86pJitExit)fn(cpu);
+  return (X86pJitExit)x86p_jit_call_entry(b->entry, cpu);
 }
 
 int x86p_jit_can_translate(const X86pInsn *insn) {

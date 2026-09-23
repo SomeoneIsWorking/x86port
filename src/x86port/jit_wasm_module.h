@@ -124,8 +124,13 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
 #define X86P_WASM_MEMORY_FIELD "memory"
 
 /*
- * The locals a block body has. Index 0 is the parameter: the guest X86pCpu
- * address, which on a wasm host is an ordinary 32-bit linear-memory offset.
+ * The locals a block body has. Index 0 is the first parameter: the guest
+ * X86pCpu address, which on a wasm host is an ordinary 32-bit linear-memory
+ * offset. Index 1 is the second, a word the block ignores: it is there so a
+ * chained transfer can tail-call the block from x86p_wasm_chain_call, whose
+ * signature it must share (jit_wasm_chain.h). The block zeroes it on entry and
+ * uses it as the Addr scratch local, so a chained entry and a dispatched one
+ * start from the same locals.
  *
  * The rest are named roles rather than numbers because a collision between two
  * of them is silent -- the block simply computes with the wrong value -- and
@@ -133,7 +138,7 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
  */
 typedef enum X86pWasmLocal {
   kX86pWasmLocalCpu = 0, /* parameter: the X86pCpu address */
-  kX86pWasmLocalAddr,    /* an effective address, then the host address for it */
+  kX86pWasmLocalAddr,    /* parameter, zeroed: an effective address, then the host address for it */
   kX86pWasmLocalA,       /* the flag tuple's first operand */
   kX86pWasmLocalB,       /* the flag tuple's second operand */
   kX86pWasmLocalR,       /* the flag tuple's result, and the value written back */
@@ -176,11 +181,12 @@ typedef enum X86pWasmLocal64 {
  */
 
 /*
- * The block function's signature, as an index into the module's type section.
+ * The block function's signature, as an index into the module's type section:
+ * two i32 parameters (the cpu and the ignored word) and an i32 result.
  * Published because x86p_jit_enter has to call it and the arena has to describe
  * it to the engine.
  */
-#define X86P_WASM_BLOCK_TYPE 0u
+#define X86P_WASM_BLOCK_TYPE 1u
 
 /* The most bodies one module may hold. */
 #define X86P_WASM_MAX_BODIES 64u

@@ -389,6 +389,24 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
 
 /*
+ * Call a translation's entry: the one place the dispatcher's side of the entry
+ * ABI is written. A WebAssembly block takes a second word, which it ignores,
+ * so that a chained transfer can tail-call it from x86p_wasm_chain_call, whose
+ * signature a tail call must match (jit_wasm_chain.h).
+ */
+static inline uint32_t x86p_jit_call_entry(void *entry, X86pCpu *cpu) {
+#if defined(__wasm__)
+  uint32_t (*fn)(X86pCpu *, uint32_t);
+  *(void **)&fn = entry;
+  return fn(cpu, 0u);
+#else
+  uint32_t (*fn)(X86pCpu *);
+  *(void **)&fn = entry;
+  return fn(cpu);
+#endif
+}
+
+/*
  * Where a chained exit enters a translation, as an offset from its entry: past
  * its prologue, whose frame the jumping block already has, or zero where a
  * transfer enters the translation itself.

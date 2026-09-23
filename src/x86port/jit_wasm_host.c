@@ -101,7 +101,7 @@ EM_JS(int, host_resolve, (void *key, int id, const char *field), {
   if (typeof fn != 'function') {
     return 0;
   }
-  const entry = addFunction(fn, 'ii');
+  const entry = addFunction(fn, 'iii');
   module.entries.set(name, entry);
   return entry;
 });

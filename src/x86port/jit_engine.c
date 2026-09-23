@@ -806,8 +806,6 @@ X86pJitRunStatus x86p_jit_engine_run(
                e->stats.blocks_entered != 0u,
                cpu);
     }
-    uint32_t (*fn)(X86pCpu *);
-    *(void **)&fn = host;
     uint64_t allowed = 0u;
     if (chain_run) {
       /* One more than the transfers this call may make; 1 allows none. */
@@ -819,7 +817,7 @@ X86pJitRunStatus x86p_jit_engine_run(
       chain_run->last = before_eip;
       chain_run->pending = 0u;
     }
-    exit = (X86pJitExit)fn(cpu);
+    exit = (X86pJitExit)x86p_jit_call_entry(host, cpu);
     const uint64_t transfers = chain_run ? chained_transfers(chain_run, allowed) : 0u;
     /*
      * The block just entered was the one just left: a guest loop going round
