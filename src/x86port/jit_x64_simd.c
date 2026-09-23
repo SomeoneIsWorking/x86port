@@ -1,6 +1,5 @@
 #include "jit_x64_internal.h"
 #include "simd.h"
-#include "simd_packed.h"
 #include <stddef.h>
 
 static int xmm(const X86pOperand *o) {
@@ -84,16 +83,25 @@ void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
     }
     return;
   }
-  void (*arithmetic)(void *, const void *) = insn->simd == kX86pSimdAddps   ? x86p_simd_addps
-                                             : insn->simd == kX86pSimdSubps ? x86p_simd_subps
-                                             : insn->simd == kX86pSimdMulps ? x86p_simd_mulps
-                                             : insn->simd == kX86pSimdDivps ? x86p_simd_divps
-                                                                            : NULL;
-  if (arithmetic) {
-    x86p_emit_lea64(c->e, X86P_JIT_HOST_ARG0, CPU_REG, dst);
-    x86p_emit_lea64(c->e, X86P_JIT_HOST_ARG1, memory_src ? HOSTPTR_REG : CPU_REG, memory_src ? 0 : source);
-    x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)arithmetic);
-    x86p_emit_call_r64(c->e, kX64Rax);
+  /*
+   * The four arithmetic forms are the host instruction itself. x86p_simd_addps
+   * and its siblings compute `a[i] op b[i]` on host binary32 in the host's
+   * default environment, which is exactly what these do; neither reads the
+   * guest MXCSR (simd_float.c states why that holds for every process this
+   * framework targets). Operand order is the guest's -- the destination
+   * first -- so when both lanes are NaN the result is the destination's, as
+   * on the hardware the guest was written for.
+   */
+  const int packed = insn->simd == kX86pSimdAddps   ? kX64Addps
+                     : insn->simd == kX86pSimdSubps ? kX64Subps
+                     : insn->simd == kX86pSimdMulps ? kX64Mulps
+                     : insn->simd == kX86pSimdDivps ? kX64Divps
+                                                    : 0;
+  if (packed) {
+    x86p_emit_movups_load(c->e, kX64Xmm0, CPU_REG, dst);
+    x86p_emit_movups_load(c->e, kX64Xmm1, memory_src ? HOSTPTR_REG : CPU_REG, memory_src ? 0 : source);
+    x86p_emit_packed_ps(c->e, (X86pHostPacked)packed, kX64Xmm0, kX64Xmm1);
+    x86p_emit_movups_store(c->e, CPU_REG, dst, kX64Xmm0);
     return;
   }
   if (insn->simd == kX86pSimdShufps) {

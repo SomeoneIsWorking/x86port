@@ -187,12 +187,32 @@ void x86p_emit_alu_r32_imm32(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, uint3
    never 64-bit; this is only ever used on addresses. */
 void x86p_emit_alu_r64_r64(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg src);
 
-/* shl r32, imm8 -- the scale of a guest index operand. */
-void x86p_emit_shl_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count);
+/* The C1 / D3 group's ModRM.reg digit for each shift, so the enum IS the
+   encoding. */
+typedef enum X86pHostShift { kX64Shl = 4, kX64Shr = 5, kX64Sar = 7 } X86pHostShift;
 
-/* sar r32, imm8 -- arithmetic (sign-propagating) right shift. Pairs with shl
-   to synthesise MOVSX, and fills the sign word for CDQ/CWDE. */
-void x86p_emit_sar_r32_imm8(X86pEmit *e, X86pHostReg dst, uint8_t count);
+/* <shift> r32, imm8 -- guest shifts, index scales, the halves of a MOVSX
+   synthesised from shifts, and the sign fill of CDQ/CWDE. */
+void x86p_emit_shift_r32_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count);
+
+/* <shift> r32, cl -- the count is whatever CL holds, masked to five bits by
+   the host exactly as the guest masks it. */
+void x86p_emit_shift_r32_cl(X86pEmit *e, X86pHostShift op, X86pHostReg dst);
+
+/* The host XMM registers the backend uses, numbered as the encoding numbers
+   them. Every one is caller-saved under both host ABIs. */
+typedef enum X86pHostXmm { kX64Xmm0 = 0, kX64Xmm1 = 1 } X86pHostXmm;
+
+/* The packed single-precision arithmetic, as its 0F-map opcode. */
+typedef enum X86pHostPacked { kX64Addps = 0x58, kX64Mulps = 0x59, kX64Subps = 0x5C, kX64Divps = 0x5E } X86pHostPacked;
+
+/* movups xmm, [base+disp] and movups [base+disp], xmm -- unaligned, so a
+   guest vector at any address can be moved. */
+void x86p_emit_movups_load(X86pEmit *e, X86pHostXmm dst, X86pHostReg base, int32_t disp);
+void x86p_emit_movups_store(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostXmm src);
+
+/* <op>ps xmm, xmm -- dst = dst op src, lane by lane. */
+void x86p_emit_packed_ps(X86pEmit *e, X86pHostPacked op, X86pHostXmm dst, X86pHostXmm src);
 
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */

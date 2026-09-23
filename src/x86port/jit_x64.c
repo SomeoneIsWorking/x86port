@@ -60,15 +60,6 @@ static int32_t eip_off(void) {
   return (int32_t)offsetof(X86pCpu, eip);
 }
 
-static int32_t flag_off(size_t field) {
-  return (int32_t)(offsetof(X86pCpu, flags) + field);
-}
-
-#define FLAG_A flag_off(offsetof(X86pFlags, a))
-#define FLAG_B flag_off(offsetof(X86pFlags, b))
-#define FLAG_R flag_off(offsetof(X86pFlags, r))
-#define FLAG_CARRY_IN flag_off(offsetof(X86pFlags, carry_in))
-
 /* ---- can this instruction be emitted? ----------------------------------- */
 
 /*
@@ -366,30 +357,6 @@ static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_ei
   emit_mem_prepare_w(c, o, insn_eip, 4);
 }
 
-/* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
-   cleared rather than left alone because the value is about to be stored back
-   at that width, and stale high bits would be written into the neighbouring
-   part of a register the guest still owns. */
-static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
-  if (w == 1) {
-    x86p_emit_load8_zx(e, dst, base, disp);
-  } else if (w == 2) {
-    x86p_emit_load16_zx(e, dst, base, disp);
-  } else {
-    x86p_emit_load32(e, dst, base, disp);
-  }
-}
-
-static void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
-  if (w == 1) {
-    x86p_emit_store8_reg(e, base, disp, src);
-  } else if (w == 2) {
-    x86p_emit_store16_reg(e, base, disp, src);
-  } else {
-    x86p_emit_store32(e, base, disp, src);
-  }
-}
-
 static void emit_store_imm_w(X86pEmit *e, X86pHostReg base, int32_t disp, uint32_t imm, int w) {
   if (w == 1) {
     x86p_emit_store8_imm(e, base, disp, (uint8_t)(imm & 0xFFu));
@@ -530,7 +497,11 @@ static int flag_write_is_dead(const X86pMem *mem,
           insn.operand[1].kind != kX86pOperandMem) {
         return 1;
       }
-      return 0; /* shift / ADC / SBB / memory ALU: reads CF or can fault */
+      if (is_inline_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
+          insn.operand[1].kind == kX86pOperandImm && (insn.operand[1].imm & 0x1Fu) != 0u) {
+        return 1; /* a nonzero constant count rewrites the whole tuple */
+      }
+      return 0; /* CL shift / rotate / ADC / SBB / memory ALU: may keep, read CF, or fault */
     }
     if (insn.op == (uint8_t)kX86pInsnAluUnary) {
       if (insn.alu == (uint8_t)kX86pAluNeg && insn.operand[0].kind != kX86pOperandMem) {
@@ -569,9 +540,8 @@ static int flag_write_is_dead(const X86pMem *mem,
  * call happens once per block instead of once per instruction.
  *
  * The derivations mirror x86p_flag_cf exactly, at w == 4 where the width mask
- * is the identity. Shl/Shr/Sar and Explicit never appear as a known
- * predecessor because this backend does not emit them; they can only arrive
- * through the unknown-predecessor path, which asks the real function.
+ * is the identity. A shift predecessor takes the default arm and asks the real
+ * function: its CF depends on the count and the width.
  */
 static int emit_compute_carry_in(X86pEmit *e, int last_kind) {
   switch (last_kind) {
@@ -791,7 +761,7 @@ static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
 
 static void emit_cdq(X86pEmit *e) {
   x86p_emit_load32(e, kX64Rax, CPU_REG, reg_off(kX86pEax));
-  x86p_emit_sar_r32_imm8(e, kX64Rax, 31u);
+  x86p_emit_shift_r32_imm8(e, kX64Sar, kX64Rax, 31u);
   x86p_emit_store32(e, CPU_REG, reg_off(kX86pEdx), kX64Rax);
 }
 
@@ -1164,8 +1134,8 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
 
   if (is_signed) {
     const uint8_t fill = (uint8_t)(32 - 8 * sw);
-    x86p_emit_shl_r32_imm8(c->e, kX64Rax, fill);
-    x86p_emit_sar_r32_imm8(c->e, kX64Rax, fill);
+    x86p_emit_shift_r32_imm8(c->e, kX64Shl, kX64Rax, fill);
+    x86p_emit_shift_r32_imm8(c->e, kX64Sar, kX64Rax, fill);
   }
 
   emit_store_w(c->e, CPU_REG, reg_off_w(dst->reg, dw), kX64Rax, dw);
@@ -1543,11 +1513,21 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_kind = (int)kind;
           last_w = insn.operand[0].size;
         }
+      } else if (is_inline_shift(insn.alu)) {
+        int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+        int k = emit_shift_inline(&ctx, &insn, dead, pc);
+        if (k == SHIFT_FLAGS_UNKNOWN) {
+          last_kind = -1;
+          last_w = -1;
+        } else if (k != SHIFT_FLAGS_UNCHANGED && !dead) {
+          last_kind = k;
+          last_w = insn.operand[0].size;
+        }
       } else {
         emit_alu_helper(&ctx, &insn, pc);
         if (insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluRcr) {
-          /* A shift's recorded kind depends on its COUNT, which is not known
-             until the block runs: a zero count writes no flags, leaving
+          /* A rotate's recorded state depends on its COUNT, which is not
+             known until the block runs: a zero count writes no flags, leaving
              whatever was there. Genuinely unknown, so the next carry-in asks
              the real function. */
           last_kind = -1;

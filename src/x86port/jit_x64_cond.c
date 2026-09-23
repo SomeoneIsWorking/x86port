@@ -38,10 +38,6 @@
 
 #include <stddef.h>
 
-#define FLAG_A (flags_off() + (int32_t)offsetof(X86pFlags, a))
-#define FLAG_B (flags_off() + (int32_t)offsetof(X86pFlags, b))
-#define FLAG_R (flags_off() + (int32_t)offsetof(X86pFlags, r))
-
 /* How a condition is read after one recorded kind. */
 typedef enum CondLowering {
   kCondHelper = 0, /* no inline form: call x86p_cond */
@@ -62,6 +58,9 @@ static CondLowering lowering_for(uint8_t cond, int kind) {
     case kX86pFlagsLogic:
     case kX86pFlagsInc:
     case kX86pFlagsDec:
+    case kX86pFlagsShl:
+    case kX86pFlagsShr:
+    case kX86pFlagsSar:
       return kCondParity;
     default:
       return kCondHelper;
@@ -86,8 +85,12 @@ static CondLowering lowering_for(uint8_t cond, int kind) {
     return kCondResult;
   case kX86pFlagsInc:
   case kX86pFlagsDec:
-    /* INC/DEC preserve CF and give OF its own rule; only ZF and SF, the
-       `dec ecx; jnz` idiom, read off the result. */
+  case kX86pFlagsShl:
+  case kX86pFlagsShr:
+  case kX86pFlagsSar:
+    /* INC/DEC preserve CF and a shift's CF and OF depend on its count; only
+       ZF and SF, the `dec ecx; jnz` and `shr eax, 1; jz` idioms, read off the
+       result. */
     if (cond == (uint8_t)kX86pCondZ || cond == (uint8_t)kX86pCondNZ || cond == (uint8_t)kX86pCondS ||
         cond == (uint8_t)kX86pCondNS) {
       return kCondResult;
@@ -101,7 +104,7 @@ static CondLowering lowering_for(uint8_t cond, int kind) {
 static void load_aligned(X86pEmit *e, X86pHostReg reg, int32_t offset, int w) {
   x86p_emit_load32(e, reg, CPU_REG, offset);
   if (w != 4) {
-    x86p_emit_shl_r32_imm8(e, reg, (uint8_t)(32 - 8 * w));
+    x86p_emit_shift_r32_imm8(e, kX64Shl, reg, (uint8_t)(32 - 8 * w));
   }
 }
 

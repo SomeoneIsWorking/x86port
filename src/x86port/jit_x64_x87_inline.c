@@ -105,7 +105,7 @@ static void emit_tag_slot(X86pEmit *e, X86pHostReg tag) {
 /* slot = CPU + eax * 16: [slot + reg0_off()] is that register's value. */
 static void emit_reg_slot(X86pEmit *e, X86pHostReg slot) {
   x86p_emit_mov_r32_r32(e, slot, kX64Rax);
-  x86p_emit_shl_r32_imm8(e, slot, 4u);
+  x86p_emit_shift_r32_imm8(e, kX64Shl, slot, 4u);
   x86p_emit_alu_r64_r64(e, kX64Add, slot, CPU_REG);
 }
 
@@ -314,8 +314,8 @@ static void finish_compare(X86pEmit *e, X87Inline *fast, unsigned below_cc) {
   note_slow(e, fast, (unsigned)kX86pCondP);
   x86p_emit_setcc_r8(e, below_cc, kX64Rax);
   x86p_emit_setcc_r8(e, (unsigned)kX86pCondZ, kX64Rcx);
-  x86p_emit_shl_r32_imm8(e, kX64Rax, 8u);  /* C0 */
-  x86p_emit_shl_r32_imm8(e, kX64Rcx, 14u); /* C3 */
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, 8u);  /* C0 */
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rcx, 14u); /* C3 */
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rax, kX64Rcx);
   x86p_emit_load16_zx(e, kX64Rdx, CPU_REG, status_off());
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, ~(uint32_t)(X86P_X87_C0 | X86P_X87_C2 | X86P_X87_C3));
@@ -403,7 +403,7 @@ void x87_cache_emit_loader(BlockCtx *c) {
       x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rcx, k - 1u);
       x86p_emit_alu_r32_imm32(c->e, kX64And, kX64Rcx, 7u);
     }
-    x86p_emit_shl_r32_imm8(c->e, kX64Rcx, 4u);
+    x86p_emit_shift_r32_imm8(c->e, kX64Shl, kX64Rcx, 4u);
     x86p_emit_alu_r64_r64(c->e, kX64Add, kX64Rcx, CPU_REG);
     fld_ext80(c->e, kX64Rcx);
   }
@@ -749,7 +749,7 @@ void x87_inline_status_ax(BlockCtx *c) {
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, ~(7u << X86P_X87_TOP_SHIFT) & 0xFFFFu);
   x86p_emit_load8_zx(e, kX64Rax, CPU_REG, top);
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
-  x86p_emit_shl_r32_imm8(e, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
+  x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rcx, kX64Rax);
   x86p_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kX64Rcx);
 }

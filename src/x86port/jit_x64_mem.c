@@ -65,7 +65,7 @@ void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
     }
     x86p_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
     if (shift) {
-      x86p_emit_shl_r32_imm8(e, ADDR_TMP, (uint8_t)shift);
+      x86p_emit_shift_r32_imm8(e, kX64Shl, ADDR_TMP, (uint8_t)shift);
     }
     x86p_emit_alu_r32_r32(e, kX64Add, EA_REG, ADDR_TMP);
   }

@@ -11,7 +11,7 @@ CONFIG_OWNER = Path("src/x86port/config.c")
 SOURCE_LINE_LIMIT = 1200
 # Existing x64 lowering debt is frozen, not permission for new monoliths.
 # Ratchet this exact ceiling downward as responsibilities are extracted.
-LEGACY_SOURCE_LIMITS = {Path("src/x86port/jit_x64.c"): 1671}
+LEGACY_SOURCE_LIMITS = {Path("src/x86port/jit_x64.c"): 1651}
 
 _TARGET_PATTERN = re.compile(
     r"add_library\(\s*(?P<target>[A-Za-z0-9_]+)\s+STATIC(?P<body>.*?)\)",

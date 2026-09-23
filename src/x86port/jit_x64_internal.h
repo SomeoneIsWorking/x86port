@@ -147,6 +147,12 @@ static inline int32_t flags_off(void) {
 _Static_assert(offsetof(X86pFlags, w) == offsetof(X86pFlags, kind) + 1u,
                "kind and width are stored and read as one 16-bit value");
 
+/* The lazy tuple's fields. */
+#define FLAG_A (flags_off() + (int32_t)offsetof(X86pFlags, a))
+#define FLAG_B (flags_off() + (int32_t)offsetof(X86pFlags, b))
+#define FLAG_R (flags_off() + (int32_t)offsetof(X86pFlags, r))
+#define FLAG_CARRY_IN (flags_off() + (int32_t)offsetof(X86pFlags, carry_in))
+
 static inline int32_t flag_kind_off(void) {
   return flags_off() + (int32_t)offsetof(X86pFlags, kind);
 }
@@ -177,6 +183,30 @@ static inline int32_t reg_off_w(int index, int w) {
   return reg_off(index);
 }
 
+/* Load a guest value of width `w` into `dst`, zero-extended. The upper bits are
+   cleared rather than left alone because the value is about to be stored back
+   at that width, and stale high bits would be written into the neighbouring
+   part of a register the guest still owns. */
+static inline void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
+  if (w == 1) {
+    x86p_emit_load8_zx(e, dst, base, disp);
+  } else if (w == 2) {
+    x86p_emit_load16_zx(e, dst, base, disp);
+  } else {
+    x86p_emit_load32(e, dst, base, disp);
+  }
+}
+
+static inline void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
+  if (w == 1) {
+    x86p_emit_store8_reg(e, base, disp, src);
+  } else if (w == 2) {
+    x86p_emit_store16_reg(e, base, disp, src);
+  } else {
+    x86p_emit_store32(e, base, disp, src);
+  }
+}
+
 void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit);
 /* The block's exits to a next guest EIP: chained through a slot of
@@ -190,6 +220,15 @@ void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
 
 void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
+
+/* What emit_shift_inline says the flag state holds afterwards, besides a kind
+   it recorded: a count known to be zero writes no flags, and a CL count is not
+   known until the block runs. */
+#define SHIFT_FLAGS_UNKNOWN (-1)
+#define SHIFT_FLAGS_UNCHANGED (-2)
+
+int is_inline_shift(uint8_t alu);
+int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_t insn_eip);
 
 void emit_cpu_transfer(BlockCtx *c, uint8_t op);
 

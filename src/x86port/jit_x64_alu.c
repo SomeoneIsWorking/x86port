@@ -4,26 +4,6 @@
 #include "jit_x64_internal.h"
 #include <stddef.h>
 
-static void emit_load_w(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp, int w) {
-  if (w == 1) {
-    x86p_emit_load8_zx(e, dst, base, disp);
-  } else if (w == 2) {
-    x86p_emit_load16_zx(e, dst, base, disp);
-  } else {
-    x86p_emit_load32(e, dst, base, disp);
-  }
-}
-
-static void emit_store_w(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src, int w) {
-  if (w == 1) {
-    x86p_emit_store8_reg(e, base, disp, src);
-  } else if (w == 2) {
-    x86p_emit_store16_reg(e, base, disp, src);
-  } else {
-    x86p_emit_store32(e, base, disp, src);
-  }
-}
-
 static int alu_writes_dest(uint8_t op) {
   return op != (uint8_t)kX86pAluCmp && op != (uint8_t)kX86pAluTest;
 }
@@ -81,6 +61,94 @@ void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 8 + X86P_JIT_HOST_CALL_FRAME_BYTES);
     x86p_emit_pop_r64(e, kX64R12);
   }
+}
+
+int is_inline_shift(uint8_t alu) {
+  return alu == (uint8_t)kX86pAluShl || alu == (uint8_t)kX86pAluShr || alu == (uint8_t)kX86pAluSar;
+}
+
+/*
+ * SHL, SHR and SAR on the host, recording the tuple x86p_alu records: the
+ * masked operand, the masked count, the result and the kind. Every flag is
+ * then derived from that tuple by flags.c exactly as before; only the
+ * arithmetic moved. On the Dead Zone route shifts were nearly every call to
+ * x86p_alu, and with its x86p_flags_set and x86p_flag_cf about 5% of cycles.
+ *
+ * A count of zero (after the architectural five-bit mask) writes no flags and
+ * leaves the destination alone, so it skips everything but a memory operand's
+ * bounds check: known at translation for an immediate, tested at run time for
+ * CL.
+ *
+ * The narrow widths come out of the 32-bit host shift unchanged: the operand
+ * is loaded zero-extended, so SHR cannot pull in stray bits and SHL's are
+ * masked off; SAR sign-extends first, so a count past the width fills with the
+ * sign as x86p_alu's does.
+ */
+int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_t insn_eip) {
+  X86pEmit *e = c->e;
+  const X86pOperand *dst = &insn->operand[0];
+  const X86pOperand *src = &insn->operand[1];
+  const int w = dst->size;
+  const int by_cl = src->kind != kX86pOperandImm;
+  const uint32_t count = src->imm & 0x1Fu;
+  const X86pHostShift op = insn->alu == (uint8_t)kX86pAluShl   ? kX64Shl
+                           : insn->alu == (uint8_t)kX86pAluShr ? kX64Shr
+                                                               : kX64Sar;
+  const X86pFlagKind kind = op == kX64Shl ? kX86pFlagsShl : op == kX64Shr ? kX86pFlagsShr : kX86pFlagsSar;
+  X86pEmitSite zero = {0};
+
+  if (dst->kind == kX86pOperandMem) {
+    /* Even at a zero count: the access still happens, and faults. */
+    emit_mem_prepare_w(c, dst, insn_eip, w);
+  }
+  if (!by_cl && count == 0u) {
+    return SHIFT_FLAGS_UNCHANGED;
+  }
+  if (dst->kind == kX86pOperandMem) {
+    emit_load_w(e, kX64Rsi, HOSTPTR_REG, 0, w);
+  } else {
+    emit_load_w(e, kX64Rsi, CPU_REG, reg_off_w(dst->reg, w), w);
+  }
+  if (by_cl) {
+    emit_load_w(e, kX64Rcx, CPU_REG, reg_off_w(src->reg, src->size), src->size);
+    x86p_emit_alu_r32_imm32(e, kX64And, kX64Rcx, 0x1Fu);
+    zero = x86p_emit_jcc_rel32(e, (unsigned)kX86pCondZ);
+  }
+
+  x86p_emit_mov_r32_r32(e, kX64Rax, kX64Rsi);
+  if (op == kX64Sar && w != 4) {
+    x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, (uint8_t)(32 - 8 * w));
+    x86p_emit_shift_r32_imm8(e, kX64Sar, kX64Rax, (uint8_t)(32 - 8 * w));
+  }
+  if (by_cl) {
+    x86p_emit_shift_r32_cl(e, op, kX64Rax);
+  } else {
+    x86p_emit_shift_r32_imm8(e, op, kX64Rax, (uint8_t)count);
+  }
+  if (op != kX64Shr && w != 4) {
+    x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, x86p_width_mask(w));
+  }
+
+  if (!flags_dead) {
+    x86p_emit_store32(e, CPU_REG, FLAG_A, kX64Rsi);
+    if (by_cl) {
+      x86p_emit_store32(e, CPU_REG, FLAG_B, kX64Rcx);
+    } else {
+      x86p_emit_store32_imm(e, CPU_REG, FLAG_B, count);
+    }
+    x86p_emit_store32(e, CPU_REG, FLAG_R, kX64Rax);
+    x86p_emit_store16_imm(e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
+  }
+  if (dst->kind == kX86pOperandMem) {
+    emit_store_w(e, HOSTPTR_REG, 0, kX64Rax, w);
+  } else {
+    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kX64Rax, w);
+  }
+  if (by_cl) {
+    x86p_emit_bind(e, zero);
+    return SHIFT_FLAGS_UNKNOWN;
+  }
+  return (int)kind;
 }
 
 void emit_cpu_transfer(BlockCtx *c, uint8_t op) {
