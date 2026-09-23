@@ -396,6 +396,55 @@ static void chaining(const X86pMem *mem) {
   x86p_jit_engine_destroy(engine);
 }
 
+/* Caller k: CALL F; then JMP caller k+1. F, after the callers: INC EAX; RET. */
+static void shared_return(void) {
+  const uint32_t f = kRingBlocks * 16u;
+  memset(guest, 0x90, sizeof guest);
+  for (uint32_t k = 0; k < kRingBlocks; k++) {
+    const uint32_t at = k * 16u;
+    const int32_t call = (int32_t)f - (int32_t)(at + 5u);
+    const int32_t jump = (int32_t)((k + 1u) % kRingBlocks * 16u) - (int32_t)(at + 10u);
+    guest[at] = 0xe8;
+    memcpy(guest + at + 1u, &call, sizeof call);
+    guest[at + 5u] = 0xe9;
+    memcpy(guest + at + 6u, &jump, sizeof jump);
+  }
+  guest[f] = 0x40;
+  guest[f + 1u] = 0xc3;
+}
+
+/*
+ * THE PROBE's positive: one RET returning to a hundred call sites misses its
+ * slot on nearly every exit, and only the front-array probe keeps it from
+ * returning to the dispatcher each time -- without it a third of the entries
+ * would be dispatches.
+ */
+static void probing(const X86pMem *mem) {
+  char reason[256] = {0};
+  ChainPolicy policy = {0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu cpu;
+  X86pJitEngine *engine = create(mem, 1u << 20, 512u);
+  if (!engine) {
+    return;
+  }
+  x86p_jit_engine_set_intercept(engine, chain_intercept, &policy);
+  x86p_jit_engine_set_boundary(engine, chain_boundary, &policy);
+  check(x86p_jit_engine_set_run_stop(engine, chain_stop, reason, sizeof reason), reason);
+  shared_return();
+  x86p_cpu_reset(&cpu);
+  cpu.eip = kGuestBase;
+  cpu.reg[kX86pEsp] = kGuestBase + kGuestBytes - 64u;
+  (void)chained_run(engine, &cpu, &no_stop, 3u * kRingBlocks * 4u, kX86pRunBudget);
+  const uint64_t warm = chained_run(engine, &cpu, &no_stop, 30000u, kX86pRunBudget);
+  check(cpu.reg[kX86pEax] == 4u * kRingBlocks + 10000u, "a probed RET skipped or repeated a call");
+  check(cpu.eip == kGuestBase, "a probed RET returned to the wrong caller");
+  check(cpu.reg[kX86pEsp] == kGuestBase + kGuestBytes - 64u, "a probed RET unbalanced the stack");
+  check(warm >= 30000u - 30000u / X86P_WASM_CHAIN_TRANSFERS - 1u, "a RET that missed its slot went to the dispatcher");
+  printf("probe: %llu of 30000 entries chained through a shared RET\n", (unsigned long long)warm);
+  x86p_jit_engine_destroy(engine);
+}
+
 int main(void) {
   X86pMem mem = {.host = guest, .lo = kGuestBase, .size = sizeof guest};
   helpers_and_invalidation(&mem);
@@ -405,6 +454,7 @@ int main(void) {
   invalid_module();
   chain_census(&mem);
   chaining(&mem);
+  probing(&mem);
   printf("WebAssembly shipping runtime: %u checks, %u failures\n", checks, failures);
   return failures ? 1 : 0;
 }

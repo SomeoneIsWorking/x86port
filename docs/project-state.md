@@ -189,8 +189,9 @@ dispatcher; x64 and WebAssembly chain. A WebAssembly transfer is a
 `call_indirect` through the host table rather than a jump, so the engine caps a
 dispatch at `X86P_WASM_CHAIN_TRANSFERS` (256) transfers to bound the engine
 frames it holds, and a block chains its first `X86P_WASM_CHAIN_SLOTS` (4) exits;
-a block relowered into a shared module reuses the slots it was published with
-(`jit_wasm_chain.h`). `test_jit_engine` checks that a non-chaining backend
+a block relowered into a shared module reuses the slots it was published with,
+and an exit to a computed EIP that misses its slot probes the block cache's
+front array (`jit_wasm_chain.h`). `test_jit_engine` checks that a non-chaining backend
 chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the ARM64 and WebAssembly backends
 never call one in place (`x86p_jit_engine_set_leaves`), so every CALL to a
 consumer's leaf, direct or through a leaf site, reaches it through the
@@ -417,10 +418,12 @@ clang-format and clang-tidy. Emscripten warns that combining pthreads with
 memory growth can slow JavaScript accesses; product performance remains
 unqualified. Recorded synthetic results:
 
-- `test_wasm_runtime`: 6,440 checks, zero failures. A 100-block ring, past a
+- `test_wasm_runtime`: 6,448 checks, zero failures. A 100-block ring, past a
   compaction batch, chains 9,762 of 10,000 entries cold and 9,960 warm (the rest
   are the depth cap's dispatches), counts every block in EAX, never transfers
-  into the run's stop address, and drops a link whose target was invalidated. The helper chain, warm cache,
+  into the run's stop address, and drops a link whose target was invalidated.
+  One RET shared by a hundred call sites chains 29,882 of 30,000 entries
+  through the probe, against 19,999 without it. The helper chain, warm cache,
   interior-byte invalidation and unsupported-instruction discriminator report
   three translated blocks, 17 entries and one refusal. Two 1,040-block runs
   cross module and cache capacity respectively, release discarded modules,
