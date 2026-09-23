@@ -1,5 +1,6 @@
 #include "jit_wasm_host.h"
 
+#include "jit_wasm_chain.h"
 #include "jit_wasm_module.h"
 
 #include <emscripten.h>
@@ -8,8 +9,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The trampoline is a few dozen bytes; this is room to spare. */
+#define TRAMPOLINE_CAPACITY 128u
+
 typedef struct X86pWasmHostState {
   char error[256];
+  unsigned char trampoline[TRAMPOLINE_CAPACITY];
+  size_t trampoline_len;
   const char *names[kX86pWasmImportCount];
   uintptr_t addresses[kX86pWasmImportCount];
 } X86pWasmHostState;
@@ -36,6 +42,11 @@ EM_JS(int,
        const char *const *names,
        const uintptr_t *addresses,
        unsigned count,
+       const void *trampoline,
+       size_t trampoline_len,
+       const char *chain_import,
+       const char *chain_table,
+       const char *chain_export,
        char *error,
        unsigned error_len),
       {
@@ -43,7 +54,23 @@ EM_JS(int,
         if (!host.env) {
           const env = {memory : wasmMemory};
           for (let i = 0; i < count; ++i) {
-            env[UTF8ToString(HEAPU32[(names >>> 2) + i])] = getWasmTableEntry(HEAPU32[(addresses >>> 2) + i]);
+            const address = HEAPU32[(addresses >>> 2) + i];
+            if (address) {
+              env[UTF8ToString(HEAPU32[(names >>> 2) + i])] = getWasmTableEntry(address);
+            }
+          }
+          // The one import no C function can be (jit_wasm_chain.h): a module
+          // of its own, the only one that imports the table. A failure here is
+          // this side's defect, and the block that needed the env refuses.
+          const start = trampoline >>> 0;
+          try {
+            const chain =
+                new WebAssembly.Instance(new WebAssembly.Module(HEAPU8.subarray(start, start + trampoline_len)),
+                                         {env : {[UTF8ToString(chain_table)] : wasmTable}});
+            env[UTF8ToString(chain_import)] = chain.exports[UTF8ToString(chain_export)];
+          } catch (failure) {
+            stringToUTF8("chain trampoline: " + failure.name + ": " + failure.message, error, error_len);
+            return -2;
           }
           host.env = env;
           host.importBindings++;
@@ -166,8 +193,19 @@ static int instantiate(void *user, const void *bytes, size_t length, char *error
   X86pWasmHostState *state = user;
   int module;
   state->error[0] = '\0';
-  module = host_instantiate(
-      user, bytes, length, state->names, state->addresses, kX86pWasmImportCount, state->error, sizeof state->error);
+  module = host_instantiate(user,
+                            bytes,
+                            length,
+                            state->names,
+                            state->addresses,
+                            kX86pWasmImportCount,
+                            state->trampoline,
+                            state->trampoline_len,
+                            x86p_wasm_import_field(kX86pWasmImportChainCall),
+                            X86P_WASM_CHAIN_TABLE_FIELD,
+                            X86P_WASM_CHAIN_TRAMPOLINE_EXPORT,
+                            state->error,
+                            sizeof state->error);
   if (module < 0 && error && error_len) {
     snprintf(error, error_len, "%s", state->error);
   }
@@ -207,6 +245,15 @@ int x86p_wasm_host_create(X86pWasmHost *host, char *reason, unsigned reason_len)
   for (i = 0; i < kX86pWasmImportCount; ++i) {
     state->names[i] = x86p_wasm_import_field((X86pWasmImport)i);
     state->addresses[i] = (uintptr_t)x86p_wasm_import_address((X86pWasmImport)i);
+  }
+  state->trampoline_len = x86p_wasm_chain_trampoline(state->trampoline, sizeof state->trampoline);
+  if (state->trampoline_len == 0u) {
+    if (reason && reason_len) {
+      snprintf(reason, reason_len, "the chain trampoline does not fit in %u bytes", TRAMPOLINE_CAPACITY);
+    }
+    host_destroy(state);
+    free(state);
+    return 0;
   }
   host->instantiate = instantiate;
   host->resolve = resolve;

@@ -116,6 +116,9 @@ typedef void (*X86pWasmImportFn)(void);
  * own symbol table: on the wasm host these are indirect-table indices, and a
  * glue layer that looked the name up itself would be a second opinion about
  * which implementation the emitted code calls.
+ *
+ * NULL for kX86pWasmImportChainCall alone, which no C function can be: the host
+ * binds it to the chain trampoline's export (jit_wasm_chain.h).
  */
 X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
 
@@ -127,7 +130,7 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
  * The locals a block body has. Index 0 is the first parameter: the guest
  * X86pCpu address, which on a wasm host is an ordinary 32-bit linear-memory
  * offset. Index 1 is the second, a word the block ignores: it is there so a
- * chained transfer can tail-call the block from x86p_wasm_chain_call, whose
+ * chained transfer can tail-call the block from the chain trampoline, whose
  * signature it must share (jit_wasm_chain.h). The block zeroes it on entry and
  * uses it as the Addr scratch local, so a chained entry and a dispatched one
  * start from the same locals.
