@@ -53,7 +53,8 @@ extern "C" {
 /* Framing/types/exports plus a bounded field name and import descriptor per helper. */
 #define X86P_WASM_MODULE_OVERHEAD_BYTES (512u + 48u * (unsigned)kX86pWasmImportCount)
 #define X86P_WASM_MIN_MODULE_BYTES                                                                                     \
-  (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES + X86P_WASM_EXIT_BYTES)
+  (X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES + X86P_WASM_EXIT_BYTES +                          \
+   X86P_WASM_CHAIN_SLOTS * X86P_WASM_CHAIN_EXIT_BYTES)
 /*
  * The largest a single lowered module can be, which is what a caller has to
  * size a scratch buffer to. A block holds at most X86P_WASM_MAX_INSNS guest
@@ -63,7 +64,7 @@ extern "C" {
  */
 #define X86P_WASM_MAX_MODULE_BYTES                                                                                     \
   ((size_t)X86P_WASM_MAX_INSNS * X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_MODULE_OVERHEAD_BYTES +                   \
-   X86P_WASM_EXIT_BYTES)
+   X86P_WASM_EXIT_BYTES + (size_t)X86P_WASM_CHAIN_SLOTS * X86P_WASM_CHAIN_EXIT_BYTES)
 
 /*
  * Where the guest memory a block is lowered against will live in the ENGINE's
@@ -85,6 +86,8 @@ void x86p_wasm_plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan);
  * from the other; keeping them apart is what lets a test lower against an
  * image it merely holds the bytes of.
  *
+ * `chain` names the slots its exits chain through, or is NULL (jit_wasm_chain.h).
+ *
  * `out->entry` is NOT set: a module is not an address, and it becomes callable
  * only once the engine has instantiated it. jit_wasm_arena.h owns that step.
  * Every other field of `out` is filled in as the other backends fill it.
@@ -95,6 +98,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
                                     uint32_t eip,
                                     X86pJitBoundaryFn boundary,
                                     void *boundary_user,
+                                    const X86pWasmChainUse *chain,
                                     X86pJitBlock *out,
                                     char *reason,
                                     unsigned reason_len);

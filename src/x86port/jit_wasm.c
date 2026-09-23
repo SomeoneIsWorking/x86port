@@ -44,7 +44,16 @@ int x86p_jit_available(void) {
 }
 
 size_t x86p_jit_chain_entry_offset(void) {
+  /* A transfer enters the block's function itself, by its table index. */
   return 0u;
+}
+
+unsigned x86p_jit_chain_slots_per_block(void) {
+  return X86P_WASM_CHAIN_SLOTS;
+}
+
+uint64_t x86p_jit_chain_transfer_limit(void) {
+  return X86P_WASM_CHAIN_TRANSFERS;
 }
 
 uint32_t x86p_jit_host_state(void) {
@@ -59,10 +68,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
-  /* This backend neither chains nor calls leaves: every exit returns to the
-     dispatcher. */
+  /* This backend chains (jit_wasm_chain.h) but calls no leaves. */
   const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
   void *const boundary_user = env ? env->boundary_user : NULL;
+  const X86pWasmChainUse chain = {env ? env->chain : NULL, -1, 0u};
   X86pWasmModule module;
   X86pWasmPlan plan;
   X86pJitStatus status;
@@ -87,7 +96,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
      what the block cache will want; a caller that has only one block to
      translate is not made to pretend otherwise. */
   x86p_wasm_module_init(&module, code, code_cap, 1u);
-  status = x86p_wasm_lower_block(&module, mem, &plan, eip, boundary, boundary_user, out, reason, reason_len);
+  status = x86p_wasm_lower_block(&module, mem, &plan, eip, boundary, boundary_user, &chain, out, reason, reason_len);
   if (status != kX86pJitOk) {
     return status;
   }

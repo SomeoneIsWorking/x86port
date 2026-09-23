@@ -13,7 +13,6 @@
 
 /* The most exits one translation claims a slot for: a conditional branch's
    two. Sized so a cache full of such blocks never runs out. */
-#define CHAIN_SLOTS_PER_BLOCK 2u
 
 struct X86pJitEngine {
   const X86pMem *mem;
@@ -199,8 +198,8 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
   }
 
   e->chain_entry = x86p_jit_chain_entry_offset();
-  if (e->chain_entry != 0u) {
-    e->links = x86p_jit_chain_create(cache_blocks * CHAIN_SLOTS_PER_BLOCK);
+  if (x86p_jit_chain_slots_per_block() != 0u) {
+    e->links = x86p_jit_chain_create(cache_blocks * x86p_jit_chain_slots_per_block());
     if (!e->links) {
       say(reason, reason_len, "chain slots for %zu blocks could not be created", cache_blocks);
       jc_block_cache_destroy(e->cache);
@@ -546,8 +545,9 @@ static void forget_evicted(void *user, uint32_t lo, uint32_t hi) {
 
 static int evict_for_room(X86pJitEngine *e, char *reason, unsigned reason_len) {
   X86pJitStorageRoom room;
-  /* Slots return only with a flush, and a block claims at most two. */
-  if (e->links && x86p_jit_chain_claimed(e->links) + CHAIN_SLOTS_PER_BLOCK > x86p_jit_chain_capacity(e->links)) {
+  /* Slots return only with a flush, and a block claims at most this many. */
+  if (e->links &&
+      x86p_jit_chain_claimed(e->links) + x86p_jit_chain_slots_per_block() > x86p_jit_chain_capacity(e->links)) {
     if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
       return 0;
     }
@@ -811,7 +811,9 @@ X86pJitRunStatus x86p_jit_engine_run(
     uint64_t allowed = 0u;
     if (chain_run) {
       /* One more than the transfers this call may make; 1 allows none. */
-      allowed = linking ? max_steps - steps : 1u;
+      const uint64_t left = max_steps - steps;
+      const uint64_t limit = x86p_jit_chain_transfer_limit();
+      allowed = linking ? (left < limit ? left : limit) : 1u;
       chain_run->budget = allowed;
       chain_run->stop = stop;
       chain_run->last = before_eip;

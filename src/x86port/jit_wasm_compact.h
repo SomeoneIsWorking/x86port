@@ -31,6 +31,7 @@
 #define X86PORT_JIT_WASM_COMPACT_H
 
 #include "jit_wasm_arena.h"
+#include "jit_wasm_chain.h"
 #include "jit_x64.h"
 
 #include <stddef.h>
@@ -43,13 +44,17 @@ extern "C" {
 /*
  * One block to be moved. `guest` and `guest_len` are what it was translated
  * from and covered; `token` is the module it is published in now; `entry` is
- * the address it is entered at, which must survive.
+ * the address it is entered at, which must survive. `chain_first` and
+ * `chain_exits` are the chain slots it was published with, which its links
+ * name and which the rebuilt body reuses (jit_wasm_chain.h).
  */
 typedef struct X86pWasmCompactBlock {
   uint32_t guest;
   uint32_t guest_len;
   int token;
   void *entry;
+  int64_t chain_first;
+  unsigned chain_exits;
 } X86pWasmCompactBlock;
 
 /*
@@ -81,6 +86,9 @@ typedef struct X86pWasmCompactResult {
  * charging its whole length to each of its blocks would count it `count`
  * times.
  *
+ * `chains` is NULL, or `count` chain uses: block i's exits chain as
+ * chains[i] says (jit_wasm_chain.h).
+ *
  * All or nothing: if any block cannot be lowered the module is abandoned and 0
  * is returned, because the sections have already promised every body.
  */
@@ -91,6 +99,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
                                 size_t code_cap,
                                 X86pJitBoundaryFn boundary,
                                 void *boundary_user,
+                                const X86pWasmChainUse *chains,
                                 X86pJitBlock *out,
                                 char *reason,
                                 unsigned reason_len);
@@ -99,7 +108,8 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
  * Rebuild `count` singly-published blocks as one module.
  *
  * Refuses, changing nothing, when the host cannot move an entry, when a block
- * no longer lowers to the same guest extent it was published with -- which
+ * no longer lowers to the same guest extent and chain slots it was published
+ * with -- which
  * means the guest code changed under it and the block should be invalidated
  * rather than rebuilt -- or when the module cannot be published or an entry
  * cannot be moved. A refusal leaves every block exactly where it was, still
@@ -107,6 +117,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
  *
  * On success the caller owns `out->token`, must account for `out->bytes`, and
  * must stop treating the old tokens as live: they have been released here.
+ * `chain` is the slot table the blocks were published against, or NULL.
  */
 int x86p_wasm_compact(X86pWasmArena *arena,
                       const X86pMem *mem,
@@ -114,6 +125,7 @@ int x86p_wasm_compact(X86pWasmArena *arena,
                       size_t buffer_bytes,
                       X86pJitBoundaryFn boundary,
                       void *boundary_user,
+                      X86pJitChain *chain,
                       const X86pWasmCompactBlock *blocks,
                       unsigned count,
                       X86pWasmCompactResult *out,

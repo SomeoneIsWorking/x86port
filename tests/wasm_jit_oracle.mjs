@@ -40,7 +40,8 @@ function main() {
 
   const module = new WebAssembly.Module(readFileSync(resolve(job.wasm)));
   const lines = [];
-  const env = { memory };
+  // A block chains nothing here, but every block module imports the table.
+  const env = { memory, table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }) };
   for (const entry of WebAssembly.Module.imports(module)) {
     if (entry.kind !== "function") continue;
     const name = entry.name;

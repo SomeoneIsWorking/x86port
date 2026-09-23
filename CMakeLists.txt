@@ -209,6 +209,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_module.c
   src/x86port/jit_wasm_memory.c
   src/x86port/jit_wasm_integer.c
+  src/x86port/jit_wasm_chain.c
   src/x86port/jit_wasm_state.c
   src/x86port/jit_wasm_lower.c
   src/x86port/jit_wasm_alu.c

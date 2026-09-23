@@ -34,6 +34,8 @@ typedef struct X86pWasmStoredBlock {
   int token;   /* the module it is published in */
   void *entry; /* the address it is entered at, which outlives its module */
   int live;
+  int64_t chain_first; /* the chain slots its exits took, which a rebuild reuses */
+  unsigned chain_exits;
 } X86pWasmStoredBlock;
 
 /* What a published module costs and how many blocks still need it. A module is
@@ -277,8 +279,7 @@ static void drop_block(X86pJitStorage *storage, unsigned slot) {
  * with modules it already has. The batch is cleared either way, because
  * retrying the same set that just refused would refuse again every time.
  */
-static void
-share_a_module(X86pJitStorage *storage, const X86pMem *mem, X86pJitBoundaryFn boundary, void *boundary_user) {
+static void share_a_module(X86pJitStorage *storage, const X86pMem *mem, const X86pJitTranslateEnv *env) {
   X86pWasmCompactBlock batch[X86P_WASM_COMPACT_BATCH];
   X86pWasmCompactResult result;
   char why[256];
@@ -305,14 +306,17 @@ share_a_module(X86pJitStorage *storage, const X86pMem *mem, X86pJitBoundaryFn bo
     batch[i].guest_len = block->guest_len;
     batch[i].token = block->token;
     batch[i].entry = block->entry;
+    batch[i].chain_first = block->chain_first;
+    batch[i].chain_exits = block->chain_exits;
   }
   why[0] = '\0';
   if (!x86p_wasm_compact(&storage->arena,
                          mem,
                          storage->batch,
                          storage->batch_bytes,
-                         boundary,
-                         boundary_user,
+                         env ? env->boundary : NULL,
+                         env ? env->boundary_user : NULL,
+                         env ? env->chain : NULL,
                          batch,
                          storage->pending_count,
                          &result,
@@ -456,7 +460,8 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     }
     return kX86pJitOutOfSpace;
   }
-  storage->blocks[slot] = (X86pWasmStoredBlock){block->guest_eip, block->guest_len, token, block->entry, 1};
+  storage->blocks[slot] = (X86pWasmStoredBlock){
+      block->guest_eip, block->guest_len, token, block->entry, 1, block->chain_first_slot, block->chain_exits};
   /* Counted here rather than where the slot was found, because the two paths
      between them return without making the record live, and a count raised for
      a record that never became live never comes back down. */
@@ -466,7 +471,7 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     storage->pending[storage->pending_count++] = (unsigned)slot;
   }
   if (storage->pending_count == X86P_WASM_COMPACT_BATCH) {
-    share_a_module(storage, mem, env ? env->boundary : NULL, env ? env->boundary_user : NULL);
+    share_a_module(storage, mem, env);
   }
   return kX86pJitOk;
 }

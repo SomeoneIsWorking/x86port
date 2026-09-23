@@ -760,13 +760,15 @@ static void run_case(const char *node, const char *oracle, const Case *c, unsign
      is the promised shape and the case's body is genuinely not the first. */
   for (filler = 0; filler < body; ++filler) {
     X86pJitBlock ignored;
-    if (x86p_wasm_lower_block(&module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, &ignored, reason, sizeof reason) !=
+    if (x86p_wasm_lower_block(
+            &module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, NULL, &ignored, reason, sizeof reason) !=
         kX86pJitOk) {
       fail(c->name, "lowering refused a filler body", reason);
       return;
     }
   }
-  status = x86p_wasm_lower_block(&module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, &block, reason, sizeof reason);
+  status =
+      x86p_wasm_lower_block(&module, &mem, &plan, GUEST_LO + CODE_OFF, NULL, NULL, NULL, &block, reason, sizeof reason);
   g_checks++;
   if (status != kX86pJitOk) {
     fail(c->name, "lowering refused the block", reason);

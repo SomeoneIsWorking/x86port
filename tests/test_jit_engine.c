@@ -945,10 +945,10 @@ static void test_a_changed_host_control_word_retires_the_translations(void) {
 #define CHAIN_SPIN 17u
 
 /* Whether this build's backend links blocks at all. The AArch64 backend does
-   not yet (its x86p_jit_chain_entry_offset is 0); there a chained count must
-   be zero rather than merely unchecked. */
+   not yet (it claims no slots per block); there a chained count must be zero
+   rather than merely unchecked. */
 static int backend_chains(void) {
-  return x86p_jit_chain_entry_offset() != 0u;
+  return x86p_jit_chain_slots_per_block() != 0u;
 }
 
 /* `chained` entries out of a run whose chaining backend must reach `least`. */
