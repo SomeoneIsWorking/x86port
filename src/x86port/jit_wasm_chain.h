@@ -8,10 +8,11 @@
  *
  * WHAT DIFFERS IS THE TRANSFER. WebAssembly has no jump into another
  * function, so a slot's `host` is the target's indirect-table index and the
- * transfer is a call whose result the exiting block returns. Each transfer
- * therefore holds engine frames until the chain returns, and the run's budget
- * -- which the engine caps at X86P_WASM_CHAIN_TRANSFERS on this host -- is what
- * bounds that depth.
+ * transfer is a TAIL call (the tail-call proposal, in every browser with
+ * WebGPU): the exiting block's frame is gone before its successor runs, so a
+ * chain of any length runs in constant stack. With ordinary calls each
+ * transfer held two frames, and a guest worker in Chrome overflowed its stack
+ * at 256 transfers per dispatch once RETs chained too.
  *
  * THE CALL GOES THROUGH AN IMPORT, NOT THE TABLE. A block module that imports
  * the host's function table makes V8 keep a dispatch table for that instance
@@ -48,8 +49,6 @@ extern "C" {
 
 /* The most exits of one block that chain. */
 #define X86P_WASM_CHAIN_SLOTS 4u
-/* The most transfers one dispatch may make: each holds an engine frame. */
-#define X86P_WASM_CHAIN_TRANSFERS 256u
 /* One chained exit's instructions beyond a plain exit, its front-array probe
    included, with room to spare. */
 #define X86P_WASM_CHAIN_EXIT_BYTES 320u
@@ -91,7 +90,8 @@ size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);
 void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, int local);
 
 /* The transfer: enter the block whose table index is `host`, and answer what
-   it answers. Imported by every block module (kX86pWasmImportChainCall). */
+   it answers, as a tail call. Imported by every block module
+   (kX86pWasmImportChainCall), which tail-calls it. */
 uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host);
 
 #ifdef __cplusplus

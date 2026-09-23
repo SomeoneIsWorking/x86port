@@ -65,7 +65,7 @@ function main() {
   }
   let exit;
   try {
-    exit = fn(job.cpu) | 0;
+    exit = fn(job.cpu, 0) | 0;
   } catch (error) {
     return [...lines, `!trap ${error.message}`];
   }

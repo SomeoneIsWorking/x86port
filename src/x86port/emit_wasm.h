@@ -411,6 +411,9 @@ void x86p_wasm_select(X86pWasmEmit *e);
 void x86p_wasm_unreachable(X86pWasmEmit *e);
 
 void x86p_wasm_call(X86pWasmEmit *e, uint32_t func_index);
+/* A tail call: the caller's frame is gone before the callee runs, and the
+   callee's results are the caller's (the tail-call proposal, 0x12). */
+void x86p_wasm_return_call(X86pWasmEmit *e, uint32_t func_index);
 /* Indirect through the imported table, by type index. Table 0 is assumed. */
 void x86p_wasm_call_indirect(X86pWasmEmit *e, uint32_t type_index);
 

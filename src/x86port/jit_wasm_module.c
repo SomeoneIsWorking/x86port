@@ -135,8 +135,12 @@ int x86p_wasm_module_body_begin(X86pWasmModule *m) {
    */
   m->body = body;
   x86p_wasm_locals(&m->e, 2);
-  x86p_wasm_local_group(&m->e, (uint32_t)kX86pWasmLocalCount - 1u, kWasmI32);
+  /* Every i32 local but the two parameters. */
+  x86p_wasm_local_group(&m->e, (uint32_t)kX86pWasmLocalCount - 2u, kWasmI32);
   x86p_wasm_local_group(&m->e, X86P_WASM_LOCAL64_GROUP, kWasmI64);
+  /* The ignored parameter starts as the zeroed local it replaces. */
+  x86p_wasm_i32_const(&m->e, 0);
+  x86p_wasm_local_set(&m->e, (uint32_t)kX86pWasmLocalAddr);
   m->open = 1;
   return (int)m->written;
 }
