@@ -323,6 +323,14 @@ static void body_call_indirect(X86pWasmEmit *e) {
   x86p_wasm_call_indirect(e, 0);
 }
 
+/* The same call as a tail call: the callee's answer is this body's. */
+static void body_return_call_indirect(X86pWasmEmit *e) {
+  x86p_wasm_local_get(e, 0);
+  x86p_wasm_local_get(e, 1);
+  x86p_wasm_i32_const(e, 0); /* table index */
+  x86p_wasm_return_call_indirect(e, 0);
+}
+
 /* The high 32 bits of an unsigned 32x32 multiply, which is guest MUL's EDX. */
 static void body_mul_high(X86pWasmEmit *e) {
   x86p_wasm_local_get(e, 0);
@@ -379,6 +387,7 @@ static const Case kCases[] = {
     {"loop_sum", "run", 2, body_loop_sum, 10, 0, 0, "55"},
     {"call_import", "run", 0, body_call_import, 5, 6, 0, "17"},
     {"call_indirect", "run", 0, body_call_indirect, 5, 6, 1, "11"},
+    {"return_call_indirect", "run", 0, body_return_call_indirect, 5, 6, 1, "11"},
     {"mul_high", "run", 0, body_mul_high, -1, -1, 0, "-2"},
     {"select_and_drop", "run", 0, body_select_and_drop, 4, 9, 0, "4"},
     {"unreachable", "run", 0, body_unreachable, 0, 0, 0, "!trap"},

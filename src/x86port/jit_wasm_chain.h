@@ -14,13 +14,19 @@
  * transfer held two frames, and a guest worker in Chrome overflowed its stack
  * at 256 transfers per dispatch once RETs chained too.
  *
- * THE CALL GOES THROUGH AN IMPORT, NOT THE TABLE. A block module that imports
- * the host's function table makes V8 keep a dispatch table for that instance
- * and regrow it every time the table grows -- and publishing a block grows it.
- * Measured in Chrome: thousands of block modules importing it ran the renderer
- * out of memory in WasmDispatchTable::Grow seconds into a run. So the exit
- * calls x86p_wasm_chain_call, an ordinary helper import, and the main module
- * that owns the table makes the indirect call.
+ * THE CALL GOES THROUGH A TRAMPOLINE, NOT THE TABLE. A block module that
+ * imports the host's function table makes V8 keep a dispatch table for that
+ * instance and regrow it every time the table grows -- and publishing a block
+ * grows it. Measured in Chrome: thousands of block modules importing it ran the
+ * renderer out of memory in WasmDispatchTable::Grow seconds into a run. So the
+ * exit tail-calls one import, kX86pWasmImportChainCall, and only the module
+ * behind it imports the table.
+ *
+ * THAT MODULE IS NOT THE MAIN ONE. The trampoline is a module of its own, which
+ * each host instantiates once (x86p_wasm_chain_trampoline), because the main
+ * module cannot hold a tail call: Binaryen's asyncify pass, which the browser
+ * product needs for its blocking calls, refuses any function that has one --
+ * its remove list included ("tail calls not yet supported in asyncify").
  *
  * WHY A BLOCK CHAINS AT MOST X86P_WASM_CHAIN_SLOTS EXITS. A conditional branch
  * does not end a block here (jit_wasm_state.h, X86pWasmExitCensus), so a block
@@ -36,7 +42,6 @@
 #ifndef X86PORT_JIT_WASM_CHAIN_H
 #define X86PORT_JIT_WASM_CHAIN_H
 
-#include "cpu.h"
 #include "emit_wasm.h"
 #include "jit_chain.h"
 
@@ -89,10 +94,17 @@ size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);
  */
 void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, int local);
 
-/* The transfer: enter the block whose table index is `host`, and answer what
-   it answers, as a tail call. Imported by every block module
-   (kX86pWasmImportChainCall), which tail-calls it. */
-uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host);
+/* The trampoline module's table import, in module X86P_WASM_MEMORY_MODULE,
+   and its one export: the host binds kX86pWasmImportChainCall to it. */
+#define X86P_WASM_CHAIN_TABLE_FIELD "table"
+#define X86P_WASM_CHAIN_TRAMPOLINE_EXPORT "chain_call"
+
+/*
+ * Write the trampoline module into `buf`: one function of a block's signature,
+ * (cpu, index) -> exit, that tail-calls table entry `index` with the same two
+ * words. Returns its length, or 0 when `cap` is too small.
+ */
+size_t x86p_wasm_chain_trampoline(void *buf, size_t cap);
 
 #ifdef __cplusplus
 }

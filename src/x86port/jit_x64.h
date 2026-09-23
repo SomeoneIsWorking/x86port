@@ -391,7 +391,7 @@ X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
 /*
  * Call a translation's entry: the one place the dispatcher's side of the entry
  * ABI is written. A WebAssembly block takes a second word, which it ignores,
- * so that a chained transfer can tail-call it from x86p_wasm_chain_call, whose
+ * so that a chained transfer can tail-call it from the chain trampoline, whose
  * signature a tail call must match (jit_wasm_chain.h).
  */
 static inline uint32_t x86p_jit_call_entry(void *entry, X86pCpu *cpu) {

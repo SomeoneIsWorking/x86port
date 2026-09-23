@@ -416,6 +416,8 @@ void x86p_wasm_call(X86pWasmEmit *e, uint32_t func_index);
 void x86p_wasm_return_call(X86pWasmEmit *e, uint32_t func_index);
 /* Indirect through the imported table, by type index. Table 0 is assumed. */
 void x86p_wasm_call_indirect(X86pWasmEmit *e, uint32_t type_index);
+/* The tail-call form of x86p_wasm_call_indirect (0x13). */
+void x86p_wasm_return_call_indirect(X86pWasmEmit *e, uint32_t type_index);
 
 #ifdef __cplusplus
 } /* extern "C" */

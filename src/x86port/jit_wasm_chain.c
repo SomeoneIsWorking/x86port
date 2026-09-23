@@ -13,10 +13,6 @@ static const uint32_t kRunStop = (uint32_t)offsetof(X86pJitChainRun, stop);
 static const uint32_t kRunLast = (uint32_t)offsetof(X86pJitChainRun, last);
 static const uint32_t kRunPending = (uint32_t)offsetof(X86pJitChainRun, pending);
 
-#if defined(__wasm__) && !defined(__wasm_tail_call__)
-#error "a chained transfer is a tail call: build this unit with -mtail-call"
-#endif
-
 _Static_assert(sizeof(JcBlockFront) == 16u, "the probe scales the front index by a shift of 4");
 
 void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use, uint32_t entry) {
@@ -201,19 +197,41 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
   }
 }
 
-uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host) {
-  /* On the wasm host a function pointer IS a table index (jit_wasm.c says why
-     the conversion goes through a pointer-sized integer). */
-  /* The block's second word is this one's, which a tail call needs; the
-     block ignores it (jit_wasm_module.h). */
-  uint32_t (*fn)(X86pCpu *, uint32_t);
-  *(void **)&fn = (void *)(uintptr_t)host;
-#if defined(__wasm__)
-  /* The block tail-called here, and this tail-calls on: a chain of any length
-     holds no frame (jit_wasm_chain.h). */
-  __attribute__((musttail)) return fn(cpu, host);
-#else
-  /* Never called off the wasm host, which has no chain to call through. */
-  return fn(cpu, host);
-#endif
+size_t x86p_wasm_chain_trampoline(void *buf, size_t cap) {
+  static const X86pWasmType kParams[2] = {kWasmI32, kWasmI32};
+  static const X86pWasmType kResult[1] = {kWasmI32};
+  X86pWasmEmit e;
+  X86pWasmSize section;
+  X86pWasmSize body;
+  x86p_wasm_init(&e, buf, cap);
+  x86p_wasm_module_begin(&e);
+  /* The one type is a block's signature (jit_wasm_module.h). */
+  section = x86p_wasm_section_begin(&e, kWasmSectionType);
+  x86p_wasm_u32(&e, 1u);
+  x86p_wasm_functype(&e, kParams, 2u, kResult, 1u);
+  x86p_wasm_size_end(&e, section);
+  section = x86p_wasm_section_begin(&e, kWasmSectionImport);
+  x86p_wasm_u32(&e, 1u);
+  x86p_wasm_import_table(&e, X86P_WASM_MEMORY_MODULE, X86P_WASM_CHAIN_TABLE_FIELD, 0u, 0, 0u);
+  x86p_wasm_size_end(&e, section);
+  section = x86p_wasm_section_begin(&e, kWasmSectionFunction);
+  x86p_wasm_u32(&e, 1u);
+  x86p_wasm_u32(&e, 0u);
+  x86p_wasm_size_end(&e, section);
+  section = x86p_wasm_section_begin(&e, kWasmSectionExport);
+  x86p_wasm_u32(&e, 1u);
+  x86p_wasm_export_func(&e, X86P_WASM_CHAIN_TRAMPOLINE_EXPORT, 0u);
+  x86p_wasm_size_end(&e, section);
+  section = x86p_wasm_section_begin(&e, kWasmSectionCode);
+  x86p_wasm_u32(&e, 1u);
+  x86p_wasm_body_begin(&e, &body);
+  x86p_wasm_locals(&e, 0u);
+  /* The block's two words: the cpu, and the index again, which it ignores. */
+  x86p_wasm_local_get(&e, 0u);
+  x86p_wasm_local_get(&e, 1u);
+  x86p_wasm_local_get(&e, 1u);
+  x86p_wasm_return_call_indirect(&e, 0u);
+  x86p_wasm_body_end(&e, body);
+  x86p_wasm_size_end(&e, section);
+  return x86p_wasm_ok(&e) ? e.len : 0u;
 }

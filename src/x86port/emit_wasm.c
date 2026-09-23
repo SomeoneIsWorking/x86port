@@ -454,8 +454,16 @@ void x86p_wasm_return_call(X86pWasmEmit *e, uint32_t func_index) {
   emit_index_op(e, 0x12, func_index);
 }
 
-void x86p_wasm_call_indirect(X86pWasmEmit *e, uint32_t type_index) {
-  x86p_wasm_byte(e, 0x11);
+static void emit_indirect(X86pWasmEmit *e, uint8_t opcode, uint32_t type_index) {
+  x86p_wasm_byte(e, opcode);
   x86p_wasm_u32(e, type_index);
   x86p_wasm_u32(e, 0u); /* table 0 */
+}
+
+void x86p_wasm_call_indirect(X86pWasmEmit *e, uint32_t type_index) {
+  emit_indirect(e, 0x11, type_index);
+}
+
+void x86p_wasm_return_call_indirect(X86pWasmEmit *e, uint32_t type_index) {
+  emit_indirect(e, 0x13, type_index);
 }
