@@ -38,8 +38,8 @@
  * it there. TOP, the tags and the status word are still written at every
  * instruction; only the ten-byte values wait. A value is stored when:
  *
- *   - it is popped, because a popped register keeps its value (FSAVE writes
- *     all eight), by the block's store_pop routine;
+ *   - (never when it is popped: a popped value is dropped, since an empty
+ *     register's value is unspecified -- see X86pX87 in x87.h);
  *   - a full mirror lets go of it to make room for a push;
  *   - the mirror is flushed (x87_cache_flush) before an instruction that calls
  *     out or ends the block, so a call or an exit always finds the host stack

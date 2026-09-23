@@ -92,9 +92,9 @@ static int same_x87(const Case *k, const X86pCpu *a, const X86pCpu *b) {
       snprintf(what, sizeof what, "physical %d tag interp=%u jit=%u", p, a->x87.tag[p], b->x87.tag[p]);
       fail(k->name, what);
       ok = 0;
-    } else if (memcmp(&a->x87.reg[p], &b->x87.reg[p], 10) != 0) {
-      /* An empty register is compared too: a pop leaves its value behind,
-         and FSAVE writes all eight. */
+    } else if (a->x87.tag[p] != kX86pX87TagEmpty && memcmp(&a->x87.reg[p], &b->x87.reg[p], 10) != 0) {
+      /* An empty register's value is unspecified (X86pX87 in x87.h): the JIT
+         drops a popped value the interpreter leaves behind. */
       snprintf(what, sizeof what, "physical %d value differs", p);
       fail(k->name, what);
       ok = 0;
