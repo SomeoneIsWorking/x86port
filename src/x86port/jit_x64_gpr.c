@@ -14,14 +14,8 @@ static const X86pHostReg kGprCacheReg[GPR_CACHE_SLOTS] = {kX64R12, kX64R13, kX64
 
 #define kCcE 0x4u
 
-/* A live set is good only while the emitter has made no call and bound no
-   jump since it was built. */
-static unsigned flow_epoch(const X86pEmit *e) {
-  return e->calls + e->sites_bound;
-}
-
 static void refresh(BlockCtx *c) {
-  const unsigned now = flow_epoch(c->e);
+  const unsigned now = block_flow_epoch(c->e);
   if (c->gpr_epoch != now) {
     c->gpr_live = 0u;
     c->gpr_epoch = now;
@@ -113,6 +107,7 @@ void gpr_check(BlockCtx *c) {
 #if X86P_JIT_GPR_CHECK
   int r;
   refresh(c);
+  const int flag_word_current = c->flag_word_known && c->flag_word_epoch == block_flow_epoch(c->e);
   for (r = 0; r < 8; r++) {
     X86pHostReg host;
     X86pEmitSite agrees;
@@ -125,8 +120,12 @@ void gpr_check(BlockCtx *c) {
     x86p_emit_byte(c->e, 0x0Bu);
     x86p_emit_bind(c->e, agrees);
   }
-  /* Those binds join no other path: the set is as good as before them. */
-  c->gpr_epoch = flow_epoch(c->e);
+  /* Those binds join no other path: the set, and a proven flag kind, are as
+     good as before them. */
+  c->gpr_epoch = block_flow_epoch(c->e);
+  if (flag_word_current) {
+    c->flag_word_epoch = c->gpr_epoch;
+  }
 #else
   (void)c;
 #endif

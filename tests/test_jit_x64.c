@@ -72,6 +72,7 @@ static unsigned long g_refused;
 static unsigned long g_self_modified;
 static unsigned long g_helper_calls;
 static unsigned long g_cond_inline;
+static unsigned long g_cond_proven;
 static unsigned long g_cond_helper_calls;
 
 /* The guard-paged guest mapping and code region live in jit_x64_harness.c. */
@@ -1310,7 +1311,14 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
              blk.cond_inline,
              blk.cond_helper_calls);
     }
+    g_checks++;
+    if (blk.cond_proven > blk.cond_inline) {
+      g_failed++;
+      printf(
+          "    FAIL round %d: %u unguarded condition(s) but only %u inline\n", round, blk.cond_proven, blk.cond_inline);
+    }
     g_cond_inline += blk.cond_inline;
+    g_cond_proven += blk.cond_proven;
     g_cond_helper_calls += blk.cond_helper_calls;
 
     g_programs++;
@@ -1603,6 +1611,13 @@ static void test_out_of_space_is_refused_not_truncated(void) {
   st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 8u, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOutOfSpace || st == kX86pJitUnsupportedAtEntry);
   CHECK(reason[0] != '\0');
+
+  /* Exactly the advertised minimum holds a block of at least one
+     instruction: the engine flushes below it and translates at it, so a
+     block that came back empty there would be refused as unsupported. */
+  st = jit_x64_harness_translate(&mem, GUEST_BASE, code, X86P_JIT_MIN_BLOCK_BYTES, &blk, reason, sizeof reason);
+  CHECK(st == kX86pJitOk);
+  CHECK(st != kX86pJitOk || blk.insns >= 1u);
   jit_x64_harness_code_free(code, 4096);
 }
 
@@ -1739,6 +1754,13 @@ int main(void) {
     printf("REFUSED: %lu inline and %lu helper condition(s); both paths must be exercised\n",
            g_cond_inline,
            g_cond_helper_calls);
+    return 1;
+  }
+  printf("%lu of the inline condition(s) had their recorded kind proven and no guard\n", g_cond_proven);
+  if (g_cond_proven == 0u || g_cond_proven == g_cond_inline) {
+    /* The proof must have dropped some guards and kept others: a run where
+       every inline condition went one way says nothing about the other. */
+    printf("REFUSED: %lu of %lu inline condition(s) unguarded; both must be exercised\n", g_cond_proven, g_cond_inline);
     return 1;
   }
   if (g_branch_blocks == 0u) {

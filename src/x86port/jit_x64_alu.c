@@ -6,6 +6,16 @@
 #include "jit_x64_x87_inline.h"
 #include <stddef.h>
 
+/* Record the kind word of the tuple just stored. The only inline writer of
+   the kind: every other writer is a helper call, which ends the proof. */
+static void store_flag_kind(BlockCtx *c, X86pFlagKind kind, int w) {
+  const uint16_t word = flag_kind_word((unsigned)kind, (unsigned)w);
+  x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), word);
+  c->flag_word_known = 1;
+  c->flag_word = word;
+  c->flag_word_epoch = block_flow_epoch(c->e);
+}
+
 static int alu_writes_dest(uint8_t op) {
   return op != (uint8_t)kX86pAluCmp && op != (uint8_t)kX86pAluTest;
 }
@@ -229,7 +239,7 @@ void emit_alu_inline(BlockCtx *c,
     x86p_emit_store32(c->e, CPU_REG, FLAG_A, kX64Rsi);
     x86p_emit_store32(c->e, CPU_REG, FLAG_B, kX64Rdx);
     x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
+    store_flag_kind(c, kind, w);
   }
 
   if (writes_dest) {
@@ -330,7 +340,7 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
       x86p_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
     }
     x86p_emit_store32(c->e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store16_imm(c->e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
+    store_flag_kind(c, kind, w);
   }
 
   if (is_mem) {
@@ -476,7 +486,7 @@ int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_
       x86p_emit_store32_imm(e, CPU_REG, FLAG_B, count);
     }
     x86p_emit_store32(e, CPU_REG, FLAG_R, kX64Rax);
-    x86p_emit_store16_imm(e, CPU_REG, flag_kind_off(), flag_kind_word((unsigned)kind, (unsigned)w));
+    store_flag_kind(c, kind, w);
   }
   if (dst->kind == kX86pOperandMem) {
     emit_store_w(e, HOSTPTR_REG, 0, kX64Rax, w);

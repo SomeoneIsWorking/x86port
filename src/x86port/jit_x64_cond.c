@@ -28,6 +28,14 @@
  *    one 16-bit compare, since the two bytes are adjacent -- and anything else
  *    takes the helper. A predecessor the translator got wrong is therefore a
  *    missed inline, never a wrong branch.
+ *
+ * THE PROOF. The guard is dropped only where it cannot fail: the block itself
+ * stored exactly that kind word (store_flag_kind, the one inline writer of the
+ * kind) and the flow epoch has not moved since -- no helper call, which is
+ * every other writer of the flag record, and no bound jump, which is every
+ * other way to arrive. On the Dead Zone route the guard's reload of the word
+ * just stored, compare and branch were the hottest instructions of the
+ * hottest translated function.
  */
 #include "jit_x64_cond.h"
 
@@ -170,8 +178,14 @@ static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int l
     return;
   }
   c->cond_inline++;
+  const uint16_t word = flag_kind_word((unsigned)last_kind, (unsigned)last_w);
+  if (c->flag_word_known && c->flag_word == word && c->flag_word_epoch == block_flow_epoch(e)) {
+    c->cond_proven++;
+    emit_inline_value(e, cond, lowering, last_w);
+    return;
+  }
   x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, flag_kind_off());
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, flag_kind_word((unsigned)last_kind, (unsigned)last_w));
+  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rcx, word);
   slow = x86p_emit_jcc_rel32(e, (unsigned)kX86pCondNZ);
   emit_inline_value(e, cond, lowering, last_w);
   if (out_of_line && !c->has_cond_slow) {

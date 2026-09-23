@@ -126,7 +126,13 @@ const char *x86p_jit_status_name(X86pJitStatus s);
    two values back, and its helper sequence), which the 352 above holds with
    room for an addressing form the corpora do not reach. */
 #define X86P_JIT_EPILOGUE_BYTES 640u
-#define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
+/* The frame the block opens before its first instruction: at most eight
+   pushes, the stack adjustment and the CPU pointer move -- 19 bytes on Win64.
+   Enforced like the two bounds above. Leaving it out of the minimum let a
+   region with less than this to spare above the other two translate nothing
+   and be refused as unsupported instead of flushed. */
+#define X86P_JIT_PROLOGUE_BYTES 24u
+#define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_PROLOGUE_BYTES + X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {
   void *entry;        /* host address to call; see x86p_jit_enter */
@@ -171,6 +177,9 @@ typedef struct X86pJitBlock {
   unsigned conds;
   unsigned cond_helper_calls;
   unsigned cond_inline;
+  /* Of cond_inline, those whose recorded kind was proven at translation (THE
+     PROOF in jit_x64_cond.c) and so emitted no runtime guard. */
+  unsigned cond_proven;
   /*
    * Of the conditions that were NOT lowered inline, those whose predecessor
    * was not recorded at all -- the block's first flag reader, or an
@@ -359,11 +368,6 @@ int x86p_jit_available(void);
  * only ever appears late looks free. This gives the honest denominator.
  */
 int x86p_jit_can_translate(const X86pInsn *insn);
-
-/* Equivalent to x86p_jit_can_translate. Retained as the explicit corpus-query
- * spelling: every translated instruction is host code or a narrow semantic
- * helper, never a guest-instruction dispatcher. */
-int x86p_jit_emits_natively(const X86pInsn *insn);
 
 #ifdef __cplusplus
 } /* extern "C" */
