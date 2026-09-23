@@ -9,6 +9,7 @@
 #include "jit_x64_cond.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
+#include "jit_x64_x87_inline.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -341,163 +342,24 @@ static int can_emit(const X86pInsn *insn) {
 /* CMP and TEST compute a result only to derive flags from it. Emitting the
    store anyway would clobber a register the guest still expects to hold its
    original value -- and every flag assertion would still pass. */
-/* ---- guest memory -------------------------------------------------------- */
-
-/*
- * THE MAPPING IS BAKED IN AS CONSTANTS, and that is a contract, not an
- * oversight.
- *
- * A block embeds the host base, guest low address, and size of the X86pMem it
- * was translated against, so an access is a bounds check and an add rather than
- * a call. The cost is that a block is only valid for the
- * mapping it was translated against: if the guest memory is remapped, moved, or
- * resized, every block must be discarded. The block cache's flush is that
- * mechanism. A caller that remaps without flushing gets a block reading freed
- * host memory, so this is stated here and in the header rather than left to be
- * discovered.
- */
-/* MemPlan lives in jit_x64_internal.h. */
-
-/*
- * Emit: EA_REG = base + index*scale + disp, as the guest computes it.
- *
- * 32-bit throughout, so the wrap at 4 GB is the guest's wrap. Widening any part
- * of this to 64 bits would make an address that the guest wraps address
- * something real instead.
- */
-/*
- * base + index*scale + disp, WITHOUT the segment base.
- *
- * Separate from emit_effective_address because LEA computes exactly this and
- * no more: it produces the OFFSET, not the linear address, so a LEA that added
- * the FS base would hand the guest a pointer it never asked for. Two named
- * functions rather than a flag, because a flag at a call site is a thing to
- * get the wrong way round.
- */
-static void emit_address_parts(X86pEmit *e, const X86pOperand *o) {
-  int have_base = (o->base >= 0);
-  if (have_base) {
-    x86p_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
-  } else {
-    x86p_emit_mov_r32_imm32(e, EA_REG, 0u);
-  }
-  if (o->index >= 0) {
-    unsigned shift = 0u;
-    switch (o->scale) {
-    case 2:
-      shift = 1u;
-      break;
-    case 4:
-      shift = 2u;
-      break;
-    case 8:
-      shift = 3u;
-      break;
-    default:
-      shift = 0u;
-      break;
-    }
-    x86p_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
-    if (shift) {
-      x86p_emit_shl_r32_imm8(e, ADDR_TMP, (uint8_t)shift);
-    }
-    x86p_emit_alu_r32_r32(e, kX64Add, EA_REG, ADDR_TMP);
-  }
-  if (o->disp != 0) {
-    x86p_emit_alu_r32_imm32(e, kX64Add, EA_REG, (uint32_t)o->disp);
-  }
-}
-
-/*
- * The linear address an ACCESS uses: the offset plus the segment base.
- *
- * Only FS and GS have one -- see cpu.h on why the flat model is a contract --
- * and which segment an operand uses is resolved by the decoder, so this costs
- * nothing at all for the other four rather than a load and an add on every
- * memory access in the program.
- */
-static void emit_effective_address(X86pEmit *e, const X86pOperand *o) {
-  emit_address_parts(e, o);
-  if (o->seg == (uint8_t)kX86pSegFs) {
-    x86p_emit_alu_r32_mem(e, kX64Add, EA_REG, CPU_REG, (int32_t)offsetof(X86pCpu, fs_base));
-  } else if (o->seg == (uint8_t)kX86pSegGs) {
-    x86p_emit_alu_r32_mem(e, kX64Add, EA_REG, CPU_REG, (int32_t)offsetof(X86pCpu, gs_base));
-  }
-}
-
-/*
- * Bounds-check EA_REG and leave the host address in HOSTPTR_REG.
- *
- * ONE unsigned compare covers both ends: (addr - lo) as unsigned is huge when
- * addr is below lo, so `ja` catches underflow and overflow together. Writing
- * two signed comparisons instead is the classic way to let a negative offset
- * through.
- *
- * The check is against size - w, so an access that STARTS inside the mapping
- * and runs off the end is refused rather than truncated -- the same rule
- * x86p_mem_read enforces.
- *
- * Returns the site to bind to the fault stub.
- */
-static X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, uint32_t insn_eip, int w) {
-  x86p_emit_mov_r32_imm32(e, FAULTPC_REG, insn_eip);
-  x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
-  if (plan->lo != 0u) {
-    x86p_emit_alu_r32_imm32(e, kX64Sub, ADDR_TMP, plan->lo);
-  }
-  /*
-   * A mapping narrower than the access has NO in-bounds address, so the check
-   * becomes unconditional rather than arithmetic. Subtracting w from a smaller
-   * size underflows to about four billion and would admit every address --
-   * and w reaches 16 for an SSE access, so refusing to translate against a
-   * mapping under one dword did not prevent it, it only moved it.
-   */
-  if (plan->size < (uint32_t)w) {
-    return x86p_emit_jmp_rel32(e);
-  }
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, ADDR_TMP, plan->size - (uint32_t)w);
-  return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
-}
-
-/* HOSTPTR_REG = host + (EA - lo). ADDR_TMP already holds the offset, and
-   writing a 32-bit register zero-extends, so the 64-bit add gets a clean
-   offset. */
-static void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
-  x86p_emit_mov_r64_imm64(e, HOSTPTR_REG, plan->host);
-  x86p_emit_alu_r64_r64(e, kX64Add, HOSTPTR_REG, ADDR_TMP);
-}
-
 /* ---- emitting ------------------------------------------------------------ */
 
-/* BlockCtx (per-block emission state) lives in jit_x64_internal.h. */
-
-static void note_fault(BlockCtx *c, X86pEmitSite site) {
-  if (c->nfaults < sizeof c->faults / sizeof c->faults[0]) {
-    c->faults[c->nfaults++] = site;
-    return;
+/* The block budget reserves WORST_CASE_INSN_BYTES per instruction, so one that
+   emits more could overrun a buffer the budget said had room. Measured, not
+   assumed: the instruction that ended before `pc` is refused as an internal
+   defect, and the next one starts at the current length. */
+static int insn_fit(const X86pEmit *e, size_t *insn_start, uint32_t pc, char *reason, unsigned reason_len) {
+  if (e->len - *insn_start > WORST_CASE_INSN_BYTES) {
+    say(reason,
+        reason_len,
+        "internal: the instruction before %08X emitted %zu bytes, past the %u-byte worst case",
+        pc,
+        e->len - *insn_start,
+        (unsigned)WORST_CASE_INSN_BYTES);
+    return 0;
   }
-  /* More fault sites than the block can hold. The site is real and now cannot
-     be bound, so the buffer is poisoned and the block discarded -- never left
-     with a jump to an arbitrary offset. */
-  c->e->overflow = 1;
-}
-
-static void note_divide_fault(BlockCtx *c, X86pEmitSite site) {
-  if (c->ndivide_faults < sizeof c->divide_faults / sizeof c->divide_faults[0]) {
-    c->divide_faults[c->ndivide_faults++] = site;
-    return;
-  }
-  c->e->overflow = 1;
-}
-
-/* Leave HOSTPTR_REG pointing at the guest operand, or jump to the fault stub. */
-/* The width is the ACCESS width, not a constant: a two-byte access ending one
-   byte past the mapping must be refused, and a check hard-coded to 4 would
-   refuse a legal one-byte access at the last address instead. */
-void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
-  emit_effective_address(c->e, o);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
-  emit_host_pointer(c->e, &c->plan);
+  *insn_start = e->len;
+  return 1;
 }
 
 static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
@@ -1415,6 +1277,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   uint32_t pc = eip;
   uint32_t count = 0;
   X86pJitExit exit = kX86pJitExitBlockEnd;
+  size_t insn_start;
+  size_t tail_start;
   const char *stopper = NULL;
   int terminated = 0; /* a branch already emitted the exit */
   /* The flag kind the last emitted instruction recorded, or -1 when the
@@ -1446,6 +1310,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
   emit_prologue(&e);
+  insn_start = e.len;
 
   for (;;) {
     uint8_t bytes[X86P_MAX_INSN_LEN];
@@ -1460,6 +1325,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
        epilogue. Discovering the overflow afterwards would mean discarding a
        block that was nearly finished, and worse, a caller that ignored the
        flag would run a block with no RET. */
+    if (!insn_fit(&e, &insn_start, pc, reason, reason_len)) {
+      return kX86pJitOutOfSpace;
+    }
     if (e.len + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
       break;
     }
@@ -1509,6 +1377,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       exit = kX86pJitExitUnsupported;
       stopper = insn.mnemonic;
       break;
+    }
+
+    /* Only x87 forms keep the host-stack mirror; anything else may call or
+       exit, which needs the host x87 stack empty. */
+    if (insn.op != (uint8_t)kX86pInsnX87) {
+      x87_cache_flush(&ctx);
     }
 
     if (insn.op == (uint8_t)kX86pInsnCall || insn.op == (uint8_t)kX86pInsnRet || is_indirect_branch(&insn)) {
@@ -1625,31 +1499,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       }
       break;
     case kX86pInsnX87:
-      if (insn.x87 == kX86pX87InsnWait) {
-        /* The synchronous, masked-exception model has no pending work. */
-      } else if (x87_register_is_emittable(&insn)) {
-        emit_x87_register(&ctx, &insn);
-      } else if (x87_fn_is_emittable(&insn)) {
-        emit_x87_fn(&ctx, &insn);
-      } else if (x87_control_is_emittable(&insn)) {
-        emit_x87_control(&ctx, &insn, pc);
-      } else if (x87_arith_is_emittable(&insn)) {
-        emit_x87_arith(&ctx, &insn, pc);
-      } else if (x87_compare_mem_is_emittable(&insn)) {
-        emit_x87_compare_mem(&ctx, &insn, pc);
-      } else if (x87_store_reg_is_emittable(&insn)) {
-        emit_x87_store_reg(&ctx, &insn);
-      } else if (x87_store_mem_is_emittable(&insn)) {
-        emit_x87_store_mem(&ctx, &insn, pc);
-      } else if (x87_constant_is_emittable(&insn)) {
-        emit_x87_constant(&ctx, &insn);
-      } else if (x87_status_ax_is_emittable(&insn)) {
-        emit_x87_status_ax(&ctx);
-      } else if (x87_clear_exceptions_is_emittable(&insn)) {
-        emit_x87_clear_exceptions(&ctx);
-      } else {
-        emit_x87_load(&ctx, &insn, pc);
-      }
+      emit_x87(&ctx, &insn, pc);
       break;
     case kX86pInsnPush:
       emit_push(&ctx, &insn, pc);
@@ -1725,11 +1575,17 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     count++;
   }
 
+  if (!insn_fit(&e, &insn_start, pc, reason, reason_len)) {
+    return kX86pJitOutOfSpace;
+  }
+  tail_start = e.len;
   if (!terminated) {
+    x87_cache_flush(&ctx);
     emit_block_end(&ctx, pc, exit);
   }
 
   x86p_x64_emit_cond_slow_path(&ctx);
+  x87_cache_emit_loader(&ctx);
 
   /*
    * The shared fault stub, AFTER the normal return so it is never fallen into.
@@ -1742,6 +1598,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     for (f = 0; f < ctx.nfaults; f++) {
       x86p_emit_bind(&e, ctx.faults[f]);
     }
+    x87_cache_discard(&e);
     x86p_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitMemoryFault);
     emit_restore_host_frame(&e);
@@ -1757,6 +1614,16 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     x86p_emit_mov_r32_imm32(&e, kX64Rax, (uint32_t)kX86pJitExitDivideError);
     emit_restore_host_frame(&e);
     x86p_emit_ret(&e);
+  }
+
+  if (e.len - tail_start > EPILOGUE_BYTES) {
+    say(reason,
+        reason_len,
+        "internal: the tail of the block at %08X emitted %zu bytes, past the %u-byte budget",
+        eip,
+        e.len - tail_start,
+        (unsigned)EPILOGUE_BYTES);
+    return kX86pJitOutOfSpace;
   }
 
   if (!x86p_emit_sites_bound(&e)) {

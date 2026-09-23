@@ -391,6 +391,11 @@ X86pEmitSite x86p_emit_jmp_rel32(X86pEmit *e) {
   return make_site(e);
 }
 
+X86pEmitSite x86p_emit_call_rel32(X86pEmit *e) {
+  put(e, 0xE8u);
+  return make_site(e);
+}
+
 void x86p_emit_bind(X86pEmit *e, X86pEmitSite site) {
   if (!e) {
     return;

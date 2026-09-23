@@ -104,13 +104,21 @@ const char *x86p_jit_status_name(X86pJitStatus s);
  * cannot fit. Below this, x86p_jit_translate refuses with kX86pJitOutOfSpace;
  * at or above it, a block of at least one instruction always comes back.
  */
-#define X86P_JIT_WORST_CASE_INSN_BYTES 224u
-/* The block tail: the normal exit (a chained exit is about 80 bytes on
-   Win64), the two fault stubs (about 16 each), and the one out-of-line x86p_cond
-   path a Jcc's inline condition can need (a Jcc ends its block, so there is
-   never more than one; about 30 bytes, and then its two exits are the
-   instruction's own). */
-#define X86P_JIT_EPILOGUE_BYTES 128u
+#define X86P_JIT_WORST_CASE_INSN_BYTES 320u
+/* The block tail: the x87 mirror's last pops, the normal exit (a chained exit
+   is about 80 bytes on Win64), the two fault stubs (about 16 each), the one
+   out-of-line x86p_cond path a Jcc's inline condition can need (a Jcc ends its
+   block, so there is never more than one; about 30 bytes, and then its two
+   exits are the instruction's own), and the x87 mirror loader (about 135
+   bytes at its deepest).
+
+   Both numbers are enforced, not trusted: x86p_jit_translate refuses a block
+   in which one instruction, or the tail, emitted more, naming the count. The
+   instruction bound had drifted to 224 while forms emitted up to 303 bytes,
+   which nothing noticed because a budget is only exceeded near the end of a
+   buffer. The largest measured over the test corpora is 306 per instruction
+   and 191 for a tail. */
+#define X86P_JIT_EPILOGUE_BYTES 320u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {

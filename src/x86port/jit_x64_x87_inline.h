@@ -24,6 +24,30 @@
  * differentials in tests/test_jit_x64.c and
  * tests/test_jit_x64_x87.c compare the whole x87 state against the
  * interpreter, including the fallback cases.
+ *
+ * THE MIRROR. Consecutive inline forms keep their values on the host x87
+ * stack: host ST(k) holds a copy of guest ST(k) for every k below
+ * BlockCtx.x87_depth. Each sequence reads its register operands from there and
+ * leaves its result there. Before the mirror, every operation stored its
+ * result as ten bytes and the next one loaded it straight back; both are
+ * microcoded, and that store-to-load chain was about a third of the samples
+ * inside translated code on the Dead Zone route.
+ *
+ * The mirror is a cache of the register file and never its owner. Every
+ * result is still stored to the guest register (write-through), with its tag
+ * and TOP, so the guest state in memory is complete at every instruction
+ * boundary. That is what keeps each way out cheap and exact:
+ *
+ *   - a guard's slow path discards the host stack before its helper call, as
+ *     the ABI requires, and reloads the mirror from memory afterwards;
+ *   - the memory fault stub discards it before returning (x87_cache_discard);
+ *   - any instruction that is not an inline form, and the end of the block,
+ *     first pops it (x87_cache_flush), so a call, a helper or an exit always
+ *     finds the host stack empty.
+ *
+ * A mirrored register may be EMPTY in the guest -- a slow path's reload
+ * copies whatever bits an empty slot holds -- so every tag guard stays: the
+ * mirror supplies values, never the answer to whether a register is occupied.
  */
 #ifndef X86PORT_JIT_X64_X87_INLINE_H
 #define X86PORT_JIT_X64_X87_INLINE_H
@@ -44,16 +68,29 @@ typedef struct X87Inline {
   X86pEmitSite slow[X87_INLINE_MAX_SLOW];
   unsigned nslow;
   X86pEmitSite done;
+  /* The mirror depth the fast path ends with, which the slow path rebuilds. */
+  unsigned depth;
 } X87Inline;
 
 /* The host x87 control word, read now; 0 where this unit emits nothing. The
    x86-64 backend's x86p_jit_host_state(). */
 uint32_t x87_inline_host_control(void);
 
-/* Bind the guards to the caller's helper sequence, which follows. */
-void x87_inline_begin_slow(X86pEmit *e, X87Inline *fast);
-/* Bind the fast path's completion jump after that sequence. */
-void x87_inline_end(X86pEmit *e, X87Inline *fast);
+/* Bind the guards to the caller's helper sequence, which follows, and empty
+   the host stack for its call. */
+void x87_inline_begin_slow(BlockCtx *c, X87Inline *fast);
+/* Rebuild the mirror the fast path left after that sequence, then bind the
+   fast path's completion jump. */
+void x87_inline_end(BlockCtx *c, X87Inline *fast);
+
+/* Pop the mirror: the host stack is empty after this, statically. */
+void x87_cache_flush(BlockCtx *c);
+/* Empty the host stack at a point whose mirror depth is not known statically:
+   the shared memory fault stub. */
+void x87_cache_discard(X86pEmit *e);
+/* The block's mirror loader, which every mirror reload calls: after the
+   exits, and only when a reload was emitted. */
+void x87_cache_emit_loader(BlockCtx *c);
 
 /* FLD m32/m64, FILD m16/m32/m64 and FLD ST(i). A memory operand must already
    be prepared in HOSTPTR_REG. */

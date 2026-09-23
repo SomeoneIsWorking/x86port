@@ -13,6 +13,10 @@
  * file, including the TAG of every register (a wrong Zero/Special/Valid is
  * invisible to a value comparison), TOP, the control and status words, the
  * census counters, the data page, and the exit reason.
+ *
+ * Consecutive inline forms keep their values on the HOST x87 stack, so every
+ * run also checks that the block left that stack empty, whichever way it
+ * exited: a value left behind breaks the next host call that uses x87.
  */
 #include "cpu.h"
 #include "exec.h"
@@ -96,7 +100,25 @@ static int same_x87(const Case *k, const X86pCpu *a, const X86pCpu *b) {
   return ok;
 }
 
-static void run_case(const Case *k, void *code) {
+/* Every host x87 register is empty: the tag word FNSTENV reports, at byte 8
+   of its 32-bit layout, is all ones. FNSTENV masks exceptions, so the
+   environment is loaded back; EMMS then empties the stack for the next case
+   whatever the answer was. */
+static int host_x87_empty(void) {
+#if defined(__x86_64__)
+  uint8_t env[28];
+  uint16_t tags;
+  __asm__ volatile("fnstenv %0\n\tfldenv %0\n\temms" : "+m"(env));
+  memcpy(&tags, env + 8, sizeof tags);
+  return tags == 0xFFFFu;
+#else
+  return 1;
+#endif
+}
+
+/* `ok_exit` is how a block that completes exits: at the refused stopper, or
+   at a branch of its own. */
+static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
   X86pMem mem = jit_x64_harness_mem(g_guest);
   X86pCpu ci;
   X86pCpu cj;
@@ -123,6 +145,7 @@ static void run_case(const Case *k, void *code) {
   g_checks++;
   st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 65536, &blk, reason, sizeof reason);
   if (st != kX86pJitOk) {
+    printf("      %s\n", reason);
     snprintf(reason, sizeof reason, "translate -> %s", x86p_jit_status_name(st));
     fail(k->name, reason);
     return;
@@ -142,10 +165,14 @@ static void run_case(const Case *k, void *code) {
   memcpy(after_interp, g_guest + DATA_OFF, DATA_BYTES);
   load_case(k);
   exit_code = x86p_jit_enter(&blk, &cj);
+  g_checks++;
+  if (!host_x87_empty()) {
+    fail(k->name, "the block left values on the host x87 stack");
+  }
 
   g_checks++;
   if ((interp == kX86pStepMemoryFault) != (exit_code == kX86pJitExitMemoryFault) ||
-      (interp == kX86pStepOk && exit_code != kX86pJitExitUnsupported)) {
+      (interp == kX86pStepOk && exit_code != ok_exit)) {
     snprintf(reason, sizeof reason, "exit %d disagrees with the interpreter's step %d", (int)exit_code, (int)interp);
     fail(k->name, reason);
   }
@@ -185,12 +212,17 @@ static void run_case(const Case *k, void *code) {
 #define FSTP_M32(d) 0xD9, 0x5B, (d)           /* D9 /3 */
 #define FSTP_M64(d) 0xDD, 0x5B, (d)           /* DD /3 */
 #define FSTP_M32_FAULT 0xD9, 0x9E, 0, 0, 0, 0 /* D9 /3 [esi+disp32] */
+#define FLD_M32_FAULT 0xD9, 0x86, 0, 0, 0, 0  /* D9 /0 [esi+disp32] */
+#define MOV_EAX_EBX 0x89, 0xD8
+#define JMP_NEXT 0xEB, 0x00
 #define FLD_ST(i) 0xD9, (0xC0 + (i))
 #define FST_ST(i) 0xDD, (0xD0 + (i))
 #define FSTP_ST(i) 0xDD, (0xD8 + (i))
 #define FADD_ST0_ST(i) 0xD8, (0xC0 + (i))
 #define FMUL_ST0_ST(i) 0xD8, (0xC8 + (i))
 #define FSUB_ST0_ST(i) 0xD8, (0xE0 + (i))
+#define FSUBP_ST_ST0(i) 0xDE, (0xE8 + (i))
+#define FXCH_ST(i) 0xD9, (0xC8 + (i))
 #define FSUBR_ST_ST0(i) 0xDC, (0xE8 + (i))
 #define FDIV_ST0_ST(i) 0xD8, (0xF0 + (i))
 #define FDIVP_ST_ST0(i) 0xDE, (0xF8 + (i))
@@ -321,6 +353,60 @@ static const Case kCases[] = {
     {"store from an empty stack to a bad address", CODE(FSTP_M32_FAULT, FSTP_M32(0)), 2, {F32_ONE}, 0},
     {"store from a full stack to a bad address", CODE(FLD_M32(0), FSTP_M32_FAULT), 2, {F32_ONE}, 0},
 
+    /* The host-stack mirror: its depth limit, its reloads and its exits. */
+    {"a chain deeper than the mirror",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FLD_M32(4),
+          FLD_M32(0),
+          FADD_ST0_ST(6),
+          FLD_M32(4),
+          FMUL_ST0_ST(6),
+          FSUBR_ST_ST0(5),
+          FDIVP_ST_ST0(6),
+          FST_ST(5),
+          FADD_ST0_ST(7),
+          FSUBP_ST_ST0(4),
+          FSTP_M32(8),
+          FSTP_M64(16)),
+     17,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a slow path inside a chain",
+     CODE(
+         FLD_M32(0), FLD_M32(4), FADD_ST0_ST(3), FMUL_ST0_ST(1), FXCH_ST(1), FSUB_ST0_ST(1), FSTP_M32(8), FSTP_M32(12)),
+     8,
+     {F32_ONE, F32_THREE},
+     0},
+    {"an integer instruction inside a chain",
+     CODE(FLD_M32(0), FLD_M32(4), MOV_EAX_EBX, FADDP_ST_ST0(1), FLD_ST(0), FMULP_ST_ST0(1), FSTP_M32(8)),
+     7,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a zero divisor the mirror holds",
+     CODE(FLD_M32(4), FLD_M32(0), FDIV_ST0_ST(1), FDIVRP_ST_ST0(1), FSTP_M32(8)),
+     5,
+     {F32_ONE, F32_ZERO},
+     0},
+    {"a store fault with the mirror full",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FADD_ST0_ST(2), FSTP_M32_FAULT),
+     5,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a load fault with the mirror full",
+     CODE(FLD_M32(0), FLD_M32(4), FMUL_ST0_ST(1), FLD_M32_FAULT),
+     4,
+     {F32_ONE, F32_THREE},
+     0},
+    {"a chain that runs to the end of the block",
+     CODE(FLD_M32(0), FLD_M32(4), FADD_ST0_ST(1)),
+     3,
+     {F32_ONE, F32_THREE},
+     0},
+
     /* The census counts inside the helper, so an armed census takes it. */
     {"armed census",
      CODE(FLD_M32(0), FLD_M32(4), FMULP_ST_ST0(1), FADD_M32(4), FSTP_M32(8)),
@@ -329,9 +415,27 @@ static const Case kCases[] = {
      1},
 };
 
+/* Blocks that end at their own branch, whose exit leaves through the chained
+   exit path rather than the block end. */
+static const Case kBranchCases[] = {
+    {"a chain that ends in a branch",
+     CODE(FLD_M32(0), FLD_M32(4), FADD_ST0_ST(1), JMP_NEXT),
+     4,
+     {F32_ONE, F32_THREE},
+     0},
+};
+
+static void run_table(const Case *cases, size_t count, void *code, X86pJitExit ok_exit) {
+  size_t i;
+  for (i = 0; i < count; i++) {
+    int before = g_failed;
+    run_case(&cases[i], code, ok_exit);
+    printf("%s %s\n", g_failed == before ? "PASS" : "FAIL", cases[i].name);
+  }
+}
+
 int main(void) {
   void *code;
-  size_t i;
   if (!x86p_jit_available()) {
     printf("SKIP: no x86-64 JIT backend on this host\n");
     return 77;
@@ -341,13 +445,12 @@ int main(void) {
   if (!code) {
     return 1;
   }
-  for (i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
-    int before = g_failed;
-    run_case(&kCases[i], code);
-    printf("%s %s\n", g_failed == before ? "PASS" : "FAIL", kCases[i].name);
-  }
+  run_table(kCases, sizeof kCases / sizeof kCases[0], code, kX86pJitExitUnsupported);
+  run_table(kBranchCases, sizeof kBranchCases / sizeof kBranchCases[0], code, kX86pJitExitBlockEnd);
   jit_x64_harness_code_free(code, 65536);
-  printf(
-      "\n%d check(s), %d failure(s) over %zu x87 edge case(s)\n", g_checks, g_failed, sizeof kCases / sizeof kCases[0]);
+  printf("\n%d check(s), %d failure(s) over %zu x87 edge case(s)\n",
+         g_checks,
+         g_failed,
+         sizeof kCases / sizeof kCases[0] + sizeof kBranchCases / sizeof kBranchCases[0]);
   return g_failed ? 1 : 0;
 }
