@@ -192,10 +192,22 @@ typedef struct X86pX87 {
   uint8_t top;
   uint16_t control;
   uint16_t status; /* C0-C3 and the exception flags; TOP is merged in on read */
+  /* Non-zero when the consumer selected binary64 arithmetic
+     (x87_double_arith.h); host policy, so FINIT leaves it alone. */
+  uint8_t double_arith;
   /* NULL unless a consumer armed the census; the branch is one predictable
      test on a path that costs tens of nanoseconds. */
   X86pX87OpCensus *op_census;
 } X86pX87;
+
+/*
+ * Select binary64 arithmetic (x87_double_arith.h) for this unit, or return to
+ * extended. Returns 0, changing nothing, when asked to enable it on a host
+ * whose register file is not the ext80 encoding: an x87 host's own unit is
+ * already exact, and a binary64 host's registers already are this precision.
+ */
+int x86p_x87_double_arith_available(void);
+int x86p_x87_set_double_arith(X86pX87 *f, int enabled);
 
 /* `census` may be NULL, which disarms it. The counters belong to the caller
    and are not cleared here. */
