@@ -52,6 +52,10 @@ struct X86pJitEngine {
   void *watch_user;
   uint32_t watch_addr;
   uint64_t watch_left;
+  /* diagnostic: told of every published translation. See
+     x86p_jit_engine_set_translate_watch. */
+  X86pJitTranslateWatchFn translate_watch;
+  void *translate_watch_user;
 };
 
 const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
@@ -424,6 +428,13 @@ int x86p_jit_engine_set_profile(X86pJitEngine *e, int enabled, uint32_t slot_hin
   return 1;
 }
 
+void x86p_jit_engine_set_translate_watch(X86pJitEngine *e, X86pJitTranslateWatchFn fn, void *user) {
+  if (e) {
+    e->translate_watch = fn;
+    e->translate_watch_user = user;
+  }
+}
+
 void x86p_jit_engine_set_entry_watch(
     X86pJitEngine *e, uint32_t guest_addr, uint64_t reports, X86pJitEntryWatchFn fn, void *user) {
   if (!e) {
@@ -609,6 +620,9 @@ static void *translate_at(
     e->stats.blocks_guarded++;
   }
 
+  if (e->translate_watch) {
+    e->translate_watch(e->translate_watch_user, eip, exec, blk.host_bytes);
+  }
   e->stats.blocks_translated++;
   e->stats.guest_insns_translated += blk.insns;
   e->stats.conds_translated += blk.conds;
