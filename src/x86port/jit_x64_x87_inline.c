@@ -118,21 +118,18 @@ static void guard_tag_is_not(X86pEmit *e, X87Inline *fast, X86pHostReg tag, unsi
  * The helpers execute the guest's operation on the host FPU without touching
  * its control word only when the two already agree; otherwise they load the
  * guest's around the instruction. The inline path takes the first case only.
- * The host word is read, never assumed: host code can change it.
  *
- * FNSTCW needs memory. A 16-byte slot is opened for it and closed before any
- * branch, so every guard leaves with the block's own RSP -- the fault stub and
- * the helper sequence both depend on that.
+ * The host word is the one this block was translated under, as an immediate:
+ * x86p_jit_enter and the engine's run refuse the block under any other, and no
+ * host call can change it within a run (jit_x64.h, x86p_jit_host_state).
+ * Reading it here instead cost an FNSTCW and a reload through the stack at
+ * every x87 operation, about 9% of translated-code samples on the Dead Zone
+ * route.
  */
-static void guard_host_control(X86pEmit *e, X87Inline *fast) {
-  const int32_t slot = X86P_JIT_HOST_CALL_FRAME_BYTES;
-  x86p_emit_alu_r64_imm8(e, kX64Sub, kX64Rsp, 16);
-  x86p_emit_x87_m(e, 0xD9u, 7u, kX64Rsp, slot); /* fnstcw */
-  x86p_emit_load16_zx(e, kX64Rax, kX64Rsp, slot);
-  x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
-  x86p_emit_load16_zx(e, kX64Rcx, CPU_REG, control_off());
-  x86p_emit_alu_r32_r32(e, kX64Cmp, kX64Rax, kX64Rcx);
-  note_slow(e, fast, kCcNe);
+static void guard_host_control(BlockCtx *c, X87Inline *fast) {
+  x86p_emit_load16_zx(c->e, kX64Rcx, CPU_REG, control_off());
+  x86p_emit_alu_r32_imm32(c->e, kX64Cmp, kX64Rcx, c->host_state);
+  note_slow(c->e, fast, kCcNe);
 }
 
 /* The op census counts inside x86p_x87_arith_raw; while one is armed every
@@ -256,6 +253,16 @@ static void finish_fast(X86pEmit *e, X87Inline *fast) {
 
 #endif /* X87_INLINE_HOST */
 
+uint32_t x87_inline_host_control(void) {
+#if X87_INLINE_HOST
+  uint16_t control = 0u;
+  __asm__ volatile("fnstcw %0" : "=m"(control));
+  return control;
+#else
+  return 0u;
+#endif
+}
+
 void x87_inline_begin_slow(X86pEmit *e, X87Inline *fast) {
   unsigned i;
   for (i = 0; fast->emitted && i < fast->nslow; i++) {
@@ -324,7 +331,7 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       if (pops && src != 0u && dst != 0u) {
         return;
       }
-      guard_host_control(e, fast);
+      guard_host_control(c, fast);
       guard_census_disarmed(e, fast);
       emit_phys(e, src);
       emit_tag_slot(e, kX64Rsi);
@@ -346,7 +353,7 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       return;
     }
 
-    guard_host_control(e, fast);
+    guard_host_control(c, fast);
     guard_census_disarmed(e, fast);
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
@@ -414,7 +421,7 @@ void x87_inline_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, 
     if (insn->x87 != kX86pX87InsnStore || (w != 4 && w != 8)) {
       return;
     }
-    guard_host_control(e, fast);
+    guard_host_control(c, fast);
     emit_phys(e, 0u);
     emit_tag_slot(e, kX64Rsi);
     guard_tag_is(e, fast, kX64Rsi, kTagEmpty);

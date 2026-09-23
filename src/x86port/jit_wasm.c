@@ -43,6 +43,10 @@ int x86p_jit_available(void) {
   return 1;
 }
 
+uint32_t x86p_jit_host_state(void) {
+  return 0u;
+}
+
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
                                          void *code,

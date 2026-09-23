@@ -22,6 +22,8 @@ struct X86pJitEngine {
   void *boundary_user;
   /* The intercept contract, when installed: see x86p_jit_engine_set_run_stop. */
   X86pJitRunStopFn run_stop;
+  /* x86p_jit_host_state() that every cached translation was made under. */
+  uint32_t host_state;
   int cache_disabled;        /* diagnostic: retranslate every block, never reuse one */
   X86pJitProfile *profile;   /* diagnostic: block-entry histogram, or NULL */
   X86pJitChainCensus *chain; /* diagnostic: where dispatches actually went, or NULL */
@@ -154,6 +156,7 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
     return NULL;
   }
   e->mem = mem;
+  e->host_state = x86p_jit_host_state();
 
   why[0] = '\0';
   /* ONE number for both: the storage holds exactly as many translations as the
@@ -541,6 +544,15 @@ X86pJitRunStatus x86p_jit_engine_run(
   if (!e || !cpu) {
     say(reason, reason_len, "null argument");
     return kX86pRunTranslateFailed;
+  }
+
+  /* Every cached translation assumes the host state it was made under, which no
+     host call can change during a run but the embedder may between runs. */
+  if (x86p_jit_host_state() != e->host_state) {
+    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
+      return kX86pRunOutOfCode;
+    }
+    e->host_state = x86p_jit_host_state();
   }
 
   /* Under the intercept contract the predicate can fire only at a guarded

@@ -9,6 +9,7 @@
 #include "jit_x64_cond.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
+#include "jit_x64_x87_inline.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -35,6 +36,10 @@ int x86p_jit_available(void) {
 #else
   return 0;
 #endif
+}
+
+uint32_t x86p_jit_host_state(void) {
+  return x87_inline_host_control();
 }
 
 static void say(char *buf, unsigned len, const char *fmt, ...) {
@@ -1438,6 +1443,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   memset(&ctx, 0, sizeof ctx);
   ctx.e = &e;
   ctx.mem = mem;
+  ctx.host_state = x86p_jit_host_state();
+  out->host_state = ctx.host_state;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
@@ -1791,7 +1798,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
   uint32_t (*fn)(X86pCpu *);
-  if (!b || !b->entry || !cpu) {
+  if (!b || !b->entry || !cpu || b->host_state != x86p_jit_host_state()) {
     return kX86pJitExitUnsupported;
   }
   /* The cast goes through a function-pointer-sized integer because ISO C does

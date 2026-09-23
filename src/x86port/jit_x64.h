@@ -232,6 +232,9 @@ typedef struct X86pJitBlock {
   unsigned exits_backward;
   unsigned exits_loop;
   unsigned exits_self;
+  /* x86p_jit_host_state() when this block was translated. Its code assumes
+     that state and x86p_jit_enter refuses the block under any other. */
+  uint32_t host_state;
 } X86pJitBlock;
 
 /*
@@ -292,6 +295,20 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
  * host and silently fine on x86-64, which is what makes it worth saying here.
  */
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
+
+/*
+ * The host execution state a translation may assume, as one value.
+ *
+ * On the x86-64 backend it is the host x87 control word: an inline x87
+ * operation is exact only when the guest's control word equals the host's,
+ * and the translation compares the guest's against this value as a constant
+ * instead of storing and reloading the host word at every operation. That is
+ * sound for a whole run because both x86-64 calling conventions make the x87
+ * control word callee-saved -- no host call a block makes can return with it
+ * changed -- so the state can only differ BETWEEN runs, where
+ * x86p_jit_engine_run asks for it again. Zero on backends that assume nothing.
+ */
+uint32_t x86p_jit_host_state(void);
 
 /* Whether this build has a backend for the host it was compiled for. Asked
    rather than assumed: on a host with no backend, translate() refuses instead
