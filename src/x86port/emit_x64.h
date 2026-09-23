@@ -212,6 +212,8 @@ void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHos
 
 /* <alu> r32, [base + disp] */
 void x86p_emit_alu_r32_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg base, int32_t disp);
+/* The same with REX.W: op r64, qword [base + disp]. */
+void x86p_emit_alu_r64_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg base, int32_t disp);
 
 /*
  * setcc r8 -- materialise a condition as 0 or 1.
@@ -310,6 +312,12 @@ void x86p_emit_ret(X86pEmit *e);
    2 GB of the helper it calls -- a limit that holds on a developer's machine
    and fails once the code arena moves. */
 void x86p_emit_call_r64(X86pEmit *e, X86pHostReg target);
+
+/* dec qword [base + disp]: a counter in memory, stepped without a register. */
+void x86p_emit_dec_m64(X86pEmit *e, X86pHostReg base, int32_t disp);
+
+/* jmp qword [base + disp]: to a host address held in memory. */
+void x86p_emit_jmp_m64(X86pEmit *e, X86pHostReg base, int32_t disp);
 
 /* A single-byte raw opcode, for the handful of forms with no operands. */
 void x86p_emit_byte(X86pEmit *e, uint8_t b);

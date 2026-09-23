@@ -773,6 +773,50 @@ static void test_or_m16_imm16_sets_status_bits(void) {
   }
 }
 
+/* The forms a chained block exit uses on its slot: a budget stepped in memory,
+   a 64-bit compare with the slot's address, and a jump through its host
+   address. */
+static void test_memory_counter_and_jump(void) {
+  uint8_t buf[16];
+  X86pEmit e;
+  Decoded d;
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_dec_m64(&e, kX64Rcx, -0x1230);
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_DEC);
+    CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+    CHECK(d.ops[0].size == 64);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64Rcx);
+    CHECK((int32_t)d.ops[0].mem.disp.value == -0x1230);
+  }
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_alu_r64_mem(&e, kX64Cmp, kX64Rax, kX64Rcx, 0x40);
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_CMP);
+    CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER);
+    CHECK(reg_id(d.ops[0].reg.value) == kX64Rax);
+    CHECK(d.ops[0].size == 64);
+    CHECK(d.ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
+    CHECK(reg_id(d.ops[1].mem.base) == kX64Rcx);
+    CHECK((int32_t)d.ops[1].mem.disp.value == 0x40);
+  }
+
+  x86p_emit_init(&e, buf, sizeof buf);
+  x86p_emit_jmp_m64(&e, kX64R9, 8);
+  d = emit_and_decode(&e);
+  if (d.ok) {
+    CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_JMP);
+    CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+    CHECK(d.ops[0].size == 64);
+    CHECK(reg_id(d.ops[0].mem.base) == kX64R9);
+    CHECK((int32_t)d.ops[0].mem.disp.value == 8);
+  }
+}
+
 /* The x87 forms the FLD backend lays down: fld dword/qword [r11], fstp tbyte
    [rsp], fld st(i). Decoded rather than byte-matched for the same reason the
    rest of this file is -- the REX.B for r11 and the SIB for rsp are exactly the
@@ -875,6 +919,7 @@ int main(void) {
   RUN(test_cmovcc_every_condition);
   RUN(test_push_pop_every_register);
   RUN(test_alu_r64_imm8_stack_adjust);
+  RUN(test_memory_counter_and_jump);
   RUN(test_host_abi_argument_locations);
   RUN(test_host_abi_frames);
   RUN(test_win64_fifth_argument_slot);

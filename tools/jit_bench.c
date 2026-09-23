@@ -426,7 +426,7 @@ int main(int argc, char **argv) {
     for (k = 0; k < 5; k++) {
       double t_short = now_s();
       st = x86p_jit_storage_translate(
-          storage, &mem, GUEST_BASE + SHORT_OFF, NULL, NULL, &short_blk, reason, sizeof reason);
+          storage, &mem, GUEST_BASE + SHORT_OFF, NULL, NULL, NULL, &short_blk, reason, sizeof reason);
       t_short = now_s() - t_short;
       if (st != kX86pJitOk) {
         printf("REFUSED: short kernel -> %s\n", x86p_jit_status_name(st));
@@ -448,7 +448,7 @@ int main(int argc, char **argv) {
     build_branch_kernel();
     x86p_jit_storage_reset(storage);
     st = x86p_jit_storage_translate(
-        storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+        storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, NULL, &branch_blk, reason, sizeof reason);
     if (st != kX86pJitOk) {
       printf("REFUSED: branch kernel -> %s\n", x86p_jit_status_name(st));
       return 1;
@@ -465,14 +465,14 @@ int main(int argc, char **argv) {
       X86pJitBlock tail_blk;
       double t_one = now_s();
       st = x86p_jit_storage_translate(
-          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, NULL, &branch_blk, reason, sizeof reason);
       t_one = now_s() - t_one;
       x86p_jit_storage_reset(storage);
       double t_split = now_s();
       st = x86p_jit_storage_translate(
-          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, &branch_blk, reason, sizeof reason);
+          storage, &mem, GUEST_BASE + BRANCH_OFF, NULL, NULL, NULL, &branch_blk, reason, sizeof reason);
       st = x86p_jit_storage_translate(
-          storage, &mem, GUEST_BASE + BRANCH_OFF + 2u, NULL, NULL, &tail_blk, reason, sizeof reason);
+          storage, &mem, GUEST_BASE + BRANCH_OFF + 2u, NULL, NULL, NULL, &tail_blk, reason, sizeof reason);
       t_split = now_s() - t_split;
       if (st != kX86pJitOk) {
         printf("REFUSED: branch tail -> %s\n", x86p_jit_status_name(st));
@@ -489,7 +489,7 @@ int main(int argc, char **argv) {
   }
 
   t0 = now_s();
-  st = x86p_jit_storage_translate(storage, &mem, GUEST_BASE, NULL, NULL, &blk, reason, sizeof reason);
+  st = x86p_jit_storage_translate(storage, &mem, GUEST_BASE, NULL, NULL, NULL, &blk, reason, sizeof reason);
   if (st != kX86pJitOk) {
     printf("REFUSED: translate -> %s (%s)\n", x86p_jit_status_name(st), reason);
     return 1;

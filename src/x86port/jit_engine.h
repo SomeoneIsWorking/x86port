@@ -216,6 +216,15 @@ typedef struct X86pJitEngineStats {
      address the block cache remembers as needing the question -- and each
      followed by the intercept call. Neither a hit nor a miss. */
   uint64_t cache_refused;
+  /* Chaining (jit_chain.h). blocks_chained of blocks_entered were entered by
+     a translated exit jumping straight in, not by the dispatcher; chain_links
+     is how many times the dispatcher filled an exit's slot. chain_exits is
+     summed at translation, with the exits left unchained because every slot
+     was claimed. */
+  uint64_t blocks_chained;
+  uint64_t chain_links;
+  uint64_t chain_exits;
+  uint64_t chain_exits_unslotted;
 } X86pJitEngineStats;
 
 /*

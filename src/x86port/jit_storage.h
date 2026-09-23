@@ -104,6 +104,7 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
                                          uint32_t eip,
                                          X86pJitBoundaryFn boundary,
                                          void *boundary_user,
+                                         X86pJitChain *chain,
                                          X86pJitBlock *block,
                                          char *reason,
                                          unsigned reason_len);

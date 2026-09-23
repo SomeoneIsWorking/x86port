@@ -927,6 +927,123 @@ static void test_a_changed_host_control_word_retires_the_translations(void) {
 #endif
 }
 
+/*
+ * CHAINED TRANSFERS (jit_chain.h): a block exit jumping straight into the next
+ * translation instead of returning to the dispatcher. Everything a dispatched
+ * entry guarantees must still hold -- the same machine state, the step budget
+ * to the block, the run's stop address, and no transfer into code the embedder
+ * has invalidated.
+ *
+ *   0:  B9 0A 00 00 00    MOV ECX, 10
+ *   5:  01 C8             ADD EAX, ECX
+ *   7:  EB 00             JMP 9            <- a second block in the loop, so
+ *   9:  81 E9 01 00 00 00 SUB ECX, 1          the loop is a two-block cycle
+ *   15: 75 F4             JNZ 5
+ *   17: EB FE             JMP 17
+ */
+#define CHAIN_SPIN 17u
+
+static X86pJitEngine *chain_engine(X86pMem *mem, ContractIntercept *policy, char *reason) {
+  X86pJitEngine *eng = contract_engine(mem, policy, 1, reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    printf("    (%s)\n", reason);
+  }
+  return eng;
+}
+
+static void test_chained_blocks_agree_with_the_interpreter(void) {
+  static const uint8_t prog[] = {
+      0xB9, 0x0A, 0x00, 0x00, 0x00, 0x01, 0xC8, 0xEB, 0x00, 0x81, 0xE9, 0x01, 0x00, 0x00, 0x00, 0x75, 0xF4, 0xEB, 0xFE};
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu ci;
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  unsigned i;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  seed(&ci);
+  for (i = 0; i < 4096u && ci.eip != GUEST_BASE + CHAIN_SPIN; i++) {
+    CHECK(x86p_step(&ci, &mem, NULL) == kX86pStepOk);
+  }
+  CHECK(ci.eip == GUEST_BASE + CHAIN_SPIN);
+
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, 4096u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(ce.eip == GUEST_BASE + CHAIN_SPIN);
+  CHECK(same_cpu(&ci, &ce));
+  x86p_jit_engine_stats(eng, &st);
+  /* The spin re-enters itself, which is never linked, so every step of the
+     budget is a block entered by one route or the other. */
+  CHECK(st.blocks_entered == 4096u);
+  CHECK(st.blocks_reentered >= 4000u);
+  CHECK(st.chain_links > 0u);
+  CHECK(st.blocks_chained > 0u);
+  printf("    %llu of %llu block entries chained, %llu link(s), %llu chain exit(s)\n",
+         (unsigned long long)st.blocks_chained,
+         (unsigned long long)st.blocks_entered,
+         (unsigned long long)st.chain_links,
+         (unsigned long long)st.chain_exits);
+  x86p_jit_engine_destroy(eng);
+}
+
+/*
+ *   0: EB 00   JMP 2
+ *   2: EB FC   JMP 0      <- a cycle no dispatch interrupts once linked
+ *   4: EB FE   JMP 4
+ */
+static void test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation(void) {
+  static const uint8_t prog[] = {0xEB, 0x00, 0xEB, 0xFC, 0xEB, 0xFE};
+  X86pMem mem = guest_mem();
+  ContractIntercept policy = {GUEST_BASE + 0x1000u, 0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  uint32_t stop_at_second = GUEST_BASE + 2u;
+  X86pCpu cpu;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  char reason[256];
+
+  memset(g_guest, 0x90, sizeof g_guest);
+  memcpy(g_guest, prog, sizeof prog);
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+
+  /* The budget, to the block, although almost every entry is a transfer. */
+  seed(&cpu);
+  CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 1001u, reason, sizeof reason) == kX86pRunBudget);
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(st.blocks_entered == 1001u);
+  CHECK(st.blocks_chained >= 990u);
+  CHECK(cpu.eip == GUEST_BASE + 2u); /* 1001 entries: +0 first, so +2 is next */
+
+  /* The stop address is the dispatcher's to enter, even through a link. */
+  policy.take = stop_at_second;
+  cpu.eip = GUEST_BASE;
+  CHECK(x86p_jit_engine_run(eng, &cpu, &stop_at_second, 1000u, reason, sizeof reason) == kX86pRunIntercept);
+  CHECK(cpu.eip == stop_at_second);
+  policy.take = 0u;
+
+  /* The second block now leaves for the spin. A link still naming its old
+     code would keep the run cycling between the first two. */
+  g_guest[3] = 0x00; /* JMP 4 */
+  x86p_jit_engine_invalidate(eng, GUEST_BASE + 2u, GUEST_BASE + 4u);
+  cpu.eip = GUEST_BASE;
+  CHECK(x86p_jit_engine_run(eng, &cpu, &no_stop, 100u, reason, sizeof reason) == kX86pRunBudget);
+  CHECK(cpu.eip == GUEST_BASE + 4u);
+  x86p_jit_engine_destroy(eng);
+}
+
 /* ---- inline dispatch: handle an interception point without unwinding ---- */
 
 static uint32_t g_disp_thunk, g_disp_unwind;
@@ -1425,6 +1542,8 @@ int main(void) {
   RUN(test_intercept_contract_asks_only_where_it_can_fire);
   RUN(test_unsupported_instruction_is_a_product_refusal);
   RUN(test_a_changed_host_control_word_retires_the_translations);
+  RUN(test_chained_blocks_agree_with_the_interpreter);
+  RUN(test_a_chained_cycle_keeps_the_budget_the_stop_and_invalidation);
   RUN(test_inline_dispatch_continues_the_run_without_unwinding);
   RUN(test_inline_dispatch_that_never_advances_still_ends_the_slice);
   RUN(test_profile_weights_a_block_by_how_often_it_is_entered);

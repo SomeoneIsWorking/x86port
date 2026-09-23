@@ -420,6 +420,7 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
                                          uint32_t eip,
                                          X86pJitBoundaryFn boundary,
                                          void *boundary_user,
+                                         X86pJitChain *chain,
                                          X86pJitBlock *block,
                                          char *reason,
                                          unsigned reason_len) {
@@ -438,8 +439,8 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     }
     return kX86pJitOutOfSpace;
   }
-  status =
-      x86p_jit_translate_bounded(mem, eip, storage->buffer, room, boundary, boundary_user, block, reason, reason_len);
+  status = x86p_jit_translate_bounded(
+      mem, eip, storage->buffer, room, boundary, boundary_user, chain, block, reason, reason_len);
   if (status != kX86pJitOk) {
     return status;
   }

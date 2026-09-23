@@ -2,12 +2,17 @@
 
 #include "block_cache.h"
 #include "decode.h"
+#include "jit_chain.h"
 #include "jit_storage.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The most exits one translation claims a slot for: a conditional branch's
+   two. Sized so a cache full of such blocks never runs out. */
+#define CHAIN_SLOTS_PER_BLOCK 2u
 
 struct X86pJitEngine {
   const X86pMem *mem;
@@ -24,6 +29,10 @@ struct X86pJitEngine {
   X86pJitRunStopFn run_stop;
   /* x86p_jit_host_state() that every cached translation was made under. */
   uint32_t host_state;
+  /* Exit slots for chained transfers, or NULL where the backend does not
+     chain; `chain_entry` is where a transfer enters a translation. */
+  X86pJitChain *links;
+  size_t chain_entry;
   int cache_disabled;        /* diagnostic: retranslate every block, never reuse one */
   X86pJitProfile *profile;   /* diagnostic: block-entry histogram, or NULL */
   X86pJitChainCensus *chain; /* diagnostic: where dispatches actually went, or NULL */
@@ -176,6 +185,18 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
     free(e);
     return NULL;
   }
+
+  e->chain_entry = x86p_jit_chain_entry_offset();
+  if (e->chain_entry != 0u) {
+    e->links = x86p_jit_chain_create(cache_blocks * CHAIN_SLOTS_PER_BLOCK);
+    if (!e->links) {
+      say(reason, reason_len, "chain slots for %zu blocks could not be created", cache_blocks);
+      jc_block_cache_destroy(e->cache);
+      x86p_jit_storage_destroy(e->storage);
+      free(e);
+      return NULL;
+    }
+  }
   return e;
 }
 
@@ -185,14 +206,26 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   }
   jc_block_cache_destroy(e->cache);
   x86p_jit_storage_destroy(e->storage);
+  x86p_jit_chain_destroy(e->links);
   x86p_jit_profile_destroy(e->profile);
   x86p_jit_chain_census_destroy(e->chain);
   free(e);
 }
 
+/* Every link, when any translation is dropped: a slot names its target by
+   guest address and host code, and either may be what was dropped. */
+static void unlink_all(X86pJitEngine *e) {
+  if (e->links) {
+    x86p_jit_chain_unlink_all(e->links);
+  }
+}
+
 static size_t drop_range(X86pJitEngine *e, uint32_t lo, uint32_t hi) {
   const size_t dropped = jc_block_invalidate_range(e->cache, lo, hi);
   x86p_jit_storage_invalidate(e->storage, lo, hi);
+  if (dropped != 0u) {
+    unlink_all(e);
+  }
   return dropped;
 }
 
@@ -405,6 +438,9 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
     return 0;
   }
   jc_block_flush(e->cache);
+  if (e->links) {
+    x86p_jit_chain_reset(e->links);
+  }
   /*
    * CHECKED, not assumed. An entry surviving the flush points into arena bytes
    * the next translation is about to overwrite, and entering it executes
@@ -445,10 +481,17 @@ int x86p_jit_engine_invalidate_all(X86pJitEngine *e, char *reason, unsigned reas
 static void forget_evicted(void *user, uint32_t lo, uint32_t hi) {
   X86pJitEngine *e = (X86pJitEngine *)user;
   e->stats.eviction_blocks_dropped += (uint64_t)jc_block_invalidate_range(e->cache, lo, hi);
+  unlink_all(e);
 }
 
 static int evict_for_room(X86pJitEngine *e, char *reason, unsigned reason_len) {
   X86pJitStorageRoom room;
+  /* Slots return only with a flush, and a block claims at most two. */
+  if (e->links && x86p_jit_chain_claimed(e->links) + CHAIN_SLOTS_PER_BLOCK > x86p_jit_chain_capacity(e->links)) {
+    if (!x86p_jit_engine_invalidate_all(e, reason, reason_len)) {
+      return 0;
+    }
+  }
   while ((room = x86p_jit_storage_room(e->storage)) != kX86pJitStorageRoom) {
     const size_t before = x86p_jit_storage_used(e->storage);
     if (x86p_jit_storage_evict(e->storage, forget_evicted, e) > 0u) {
@@ -478,13 +521,19 @@ static void *translate_at(
     X86pJitEngine *e, uint32_t eip, X86pJitStatus *st, X86pJitBlock *out_blk, char *reason, unsigned reason_len) {
   X86pJitBlock blk;
   void *exec;
+  size_t claimed;
 
   if (!evict_for_room(e, reason, reason_len)) {
     *st = kX86pJitOutOfSpace;
     return NULL;
   }
-  *st = x86p_jit_storage_translate(e->storage, e->mem, eip, e->boundary, e->boundary_user, &blk, reason, reason_len);
+  claimed = e->links ? x86p_jit_chain_claimed(e->links) : 0u;
+  *st = x86p_jit_storage_translate(
+      e->storage, e->mem, eip, e->boundary, e->boundary_user, e->links, &blk, reason, reason_len);
   if (*st != kX86pJitOk) {
+    if (e->links) {
+      x86p_jit_chain_rewind(e->links, claimed);
+    }
     return NULL;
   }
   exec = blk.entry;
@@ -524,6 +573,8 @@ static void *translate_at(
   e->stats.exits_static += blk.exits_static;
   e->stats.exits_backward += blk.exits_backward;
   e->stats.exits_self += blk.exits_self;
+  e->stats.chain_exits += blk.chain_exits;
+  e->stats.chain_exits_unslotted += blk.chain_exits_unslotted;
   if (e->chain) {
     x86p_jit_chain_census_note_block(
         e->chain, eip, blk.static_targets, blk.static_target_count, blk.static_targets_overflowed);
@@ -532,6 +583,33 @@ static void *translate_at(
     *out_blk = blk;
   }
   return exec;
+}
+
+/* The exit that last returned unlinked, until the dispatcher has found the
+   translation it was leaving for. */
+typedef struct ChainPending {
+  uint32_t slot;    /* one more than its slot index, or 0 */
+  uint32_t from;    /* the block it left */
+  uint64_t flushes; /* cache_flushes then: a flush returns every slot */
+} ChainPending;
+
+/* Transfers the call just made, from what it left of `allowed`: each one
+   stepped the budget, and one that found it at 1 stepped it to 0 and returned
+   instead of transferring. */
+static uint64_t chained_transfers(const X86pJitChainRun *run, uint64_t allowed) {
+  return allowed - run->budget - (run->budget == 0u ? 1u : 0u);
+}
+
+/* Fill the pending exit's slot with the unguarded translation found for
+   `guest`. Never to the block that exited: its re-entry is what
+   blocks_reentered counts, one dispatch at a time. */
+static void link_pending(X86pJitEngine *e, const ChainPending *pending, uint32_t guest, void *host) {
+  if (pending->slot == 0u || pending->flushes != e->stats.cache_flushes || guest == pending->from ||
+      pending->slot > x86p_jit_chain_claimed(e->links)) {
+    return;
+  }
+  x86p_jit_chain_link(e->links, (int64_t)pending->slot - 1, guest, (uint8_t *)host + e->chain_entry);
+  e->stats.chain_links++;
 }
 
 X86pJitRunStatus x86p_jit_engine_run(
@@ -559,12 +637,23 @@ X86pJitRunStatus x86p_jit_engine_run(
      block, on a miss, or at this run's stop address; everything else skips it. */
   const int contract = e->run_stop != NULL && !e->cache_disabled;
   const uint32_t stop = contract ? e->run_stop(run_user) : 0u;
+  /* A transfer skips what a dispatched entry does, so it is allowed only where
+     that is nothing: under the contract, with no per-entry diagnostic armed. */
+  const int linking = contract && e->links && !e->profile && !e->chain && e->watch_left == 0u;
+  X86pJitChainRun *const chain_run = e->links ? x86p_jit_chain_run(e->links) : NULL;
+  ChainPending pending = {0u, 0u, 0u};
 
   while (steps < max_steps) {
     void *host = NULL;
+    int unguarded = 0;
     if (contract && cpu->eip != stop) {
       host = jc_block_lookup_refusing(e->cache, cpu->eip, JC_BLOCK_GUARDED);
+      unguarded = host != NULL;
     }
+    if (linking && unguarded) {
+      link_pending(e, &pending, cpu->eip, host);
+    }
+    pending.slot = 0u;
     if (!host) {
       if (e->intercept) {
         e->stats.intercept_calls++;
@@ -652,7 +741,17 @@ X86pJitRunStatus x86p_jit_engine_run(
     }
     uint32_t (*fn)(X86pCpu *);
     *(void **)&fn = host;
+    uint64_t allowed = 0u;
+    if (chain_run) {
+      /* One more than the transfers this call may make; 1 allows none. */
+      allowed = linking ? max_steps - steps : 1u;
+      chain_run->budget = allowed;
+      chain_run->stop = stop;
+      chain_run->last = before_eip;
+      chain_run->pending = 0u;
+    }
     exit = (X86pJitExit)fn(cpu);
+    const uint64_t transfers = chain_run ? chained_transfers(chain_run, allowed) : 0u;
     /*
      * The block just entered was the one just left: a guest loop going round
      * again, having paid a full dispatch -- the intercept callback, the cache
@@ -668,8 +767,14 @@ X86pJitRunStatus x86p_jit_engine_run(
     if (e->stats.blocks_entered != 0u && before_eip == e->last_entry) {
       e->stats.blocks_reentered++;
     }
-    e->last_entry = before_eip;
-    e->stats.blocks_entered++;
+    e->last_entry = transfers ? chain_run->last : before_eip;
+    e->stats.blocks_entered += 1u + transfers;
+    e->stats.blocks_chained += transfers;
+    if (chain_run && chain_run->pending != 0u) {
+      pending.slot = chain_run->pending;
+      pending.from = chain_run->last;
+      pending.flushes = e->stats.cache_flushes;
+    }
     if (e->profile) {
       x86p_jit_profile_hit(e->profile, before_eip);
     }
@@ -681,7 +786,7 @@ X86pJitRunStatus x86p_jit_engine_run(
       previous_entry = before_eip;
       have_previous = 1;
     }
-    steps++;
+    steps += 1u + transfers;
 
     if (e->cache_disabled) {
       /* Drop the translation just run so the next entry to this address is
