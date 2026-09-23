@@ -3,6 +3,7 @@
 #include "cond.h"
 #include "flags.h"
 #include "jit_wasm_bitops.h"
+#include "jit_wasm_chain.h"
 #include "jit_wasm_control.h"
 #include "jit_wasm_integer.h"
 #include "jit_wasm_memory.h"
@@ -70,6 +71,7 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportX87Free] = {"x87_free", (X86pWasmImportFn)x86p_x87_free, 2, 0},
     [kX86pWasmImportX87Emms] = {"x87_emms", (X86pWasmImportFn)x86p_x87_emms, 1, 0},
     [kX86pWasmImportSimdArithmetic] = {"wasm_simd_arithmetic", (X86pWasmImportFn)x86p_wasm_simd_arithmetic, 8, 1},
+    [kX86pWasmImportChainCall] = {"wasm_chain_call", (X86pWasmImportFn)x86p_wasm_chain_call, 2, 1},
 };
 
 const char *x86p_wasm_import_field(X86pWasmImport which) {
