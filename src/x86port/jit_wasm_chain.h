@@ -8,10 +8,18 @@
  *
  * WHAT DIFFERS IS THE TRANSFER. WebAssembly has no jump into another
  * function, so a slot's `host` is the target's indirect-table index and the
- * transfer is a call_indirect whose result the exiting block returns. Each
- * transfer therefore holds one engine frame until the chain returns, and the
- * run's budget -- which the engine caps at X86P_WASM_CHAIN_TRANSFERS on this
- * host -- is what bounds that depth.
+ * transfer is a call whose result the exiting block returns. Each transfer
+ * therefore holds engine frames until the chain returns, and the run's budget
+ * -- which the engine caps at X86P_WASM_CHAIN_TRANSFERS on this host -- is what
+ * bounds that depth.
+ *
+ * THE CALL GOES THROUGH AN IMPORT, NOT THE TABLE. A block module that imports
+ * the host's function table makes V8 keep a dispatch table for that instance
+ * and regrow it every time the table grows -- and publishing a block grows it.
+ * Measured in Chrome: thousands of block modules importing it ran the renderer
+ * out of memory in WasmDispatchTable::Grow seconds into a run. So the exit
+ * calls x86p_wasm_chain_call, an ordinary helper import, and the main module
+ * that owns the table makes the indirect call.
  *
  * WHY A BLOCK CHAINS AT MOST X86P_WASM_CHAIN_SLOTS EXITS. A conditional branch
  * does not end a block here (jit_wasm_state.h, X86pWasmExitCensus), so a block
@@ -27,6 +35,7 @@
 #ifndef X86PORT_JIT_WASM_CHAIN_H
 #define X86PORT_JIT_WASM_CHAIN_H
 
+#include "cpu.h"
 #include "emit_wasm.h"
 #include "jit_chain.h"
 
@@ -73,6 +82,10 @@ size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);
  * block does not chain or has no slot left.
  */
 void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, int local);
+
+/* The transfer: enter the block whose table index is `host`, and answer what
+   it answers. Imported by every block module (kX86pWasmImportChainCall). */
+uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host);
 
 #ifdef __cplusplus
 }

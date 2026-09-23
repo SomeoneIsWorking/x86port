@@ -111,11 +111,19 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
   x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalCpu);
   push_base(e, base);
   x86p_wasm_i32_load(e, ALIGN_NONE, disp + (uint32_t)offsetof(X86pJitChainSlot, host));
-  x86p_wasm_call_indirect(e, X86P_WASM_BLOCK_TYPE);
+  x86p_wasm_call(e, (uint32_t)kX86pWasmImportChainCall);
   x86p_wasm_return(e);
   x86p_wasm_end(e);
   /* Missed: name the slot for the dispatcher to link. */
   push_base(e, base);
   x86p_wasm_i32_const(e, (int32_t)(slot + 1));
   x86p_wasm_i32_store(e, ALIGN_NONE, kRunPending);
+}
+
+uint32_t x86p_wasm_chain_call(X86pCpu *cpu, uint32_t host) {
+  /* On the wasm host a function pointer IS a table index (jit_wasm.c says why
+     the conversion goes through a pointer-sized integer). */
+  uint32_t (*fn)(X86pCpu *);
+  *(void **)&fn = (void *)(uintptr_t)host;
+  return fn(cpu);
 }

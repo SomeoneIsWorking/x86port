@@ -43,8 +43,8 @@ static void write_types(X86pWasmEmit *e) {
 static void write_imports(X86pWasmEmit *e) {
   X86pWasmSize section = x86p_wasm_section_begin(e, kWasmSectionImport);
   unsigned i;
-  /* The memory and the table are the two entries beyond the functions. */
-  x86p_wasm_u32(e, (uint32_t)kX86pWasmImportCount + 2u);
+  /* The memory is the one extra entry beyond the functions. */
+  x86p_wasm_u32(e, (uint32_t)kX86pWasmImportCount + 1u);
   for (i = 0; i < (unsigned)kX86pWasmImportCount; i++) {
     x86p_wasm_import_func(
         e, "env", x86p_wasm_import_field((X86pWasmImport)i), x86p_wasm_import_type((X86pWasmImport)i));
@@ -62,8 +62,6 @@ static void write_imports(X86pWasmEmit *e) {
 #else
   x86p_wasm_import_memory(e, X86P_WASM_MEMORY_MODULE, X86P_WASM_MEMORY_FIELD, 1u, 0, 0u);
 #endif
-  /* One entry minimum: entry 0 is the null entry every host table has. */
-  x86p_wasm_import_table(e, X86P_WASM_MEMORY_MODULE, X86P_WASM_TABLE_FIELD, 1u, 0, 0u);
   x86p_wasm_size_end(e, section);
 }
 
