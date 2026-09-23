@@ -59,6 +59,14 @@ size_t x86p_jit_chain_entry_offset(void) {
   return 0u;
 }
 
+unsigned x86p_jit_chain_slots_per_block(void) {
+  return 0u;
+}
+
+uint64_t x86p_jit_chain_transfer_limit(void) {
+  return 0u;
+}
+
 uint32_t x86p_jit_host_state(void) {
   return 0u;
 }

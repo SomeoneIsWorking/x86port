@@ -246,6 +246,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
                                     uint32_t eip,
                                     X86pJitBoundaryFn boundary,
                                     void *boundary_user,
+                                    const X86pWasmChainUse *chain,
                                     X86pJitBlock *out,
                                     char *reason,
                                     unsigned reason_len) {
@@ -271,7 +272,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   l.e = x86p_wasm_module_emitter(m);
   l.fetch = fetch;
   x86p_wasm_lower_flags_written(&l, -1, -1);
-  x86p_wasm_state_init(&l.state, l.e, plan, eip);
+  x86p_wasm_state_init(&l.state, l.e, plan, eip, chain);
 
   body = x86p_wasm_module_body_begin(m);
   if (body < 0) {
@@ -294,7 +295,9 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
        the module around it. Discovering the overflow afterwards would mean
        discarding a nearly finished block, and worse, would leave a body whose
        last instruction is half written. */
-    if (x86p_wasm_here(l.e) + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_EXIT_BYTES > l.e->cap) {
+    if (x86p_wasm_here(l.e) + X86P_WASM_WORST_CASE_INSN_BYTES + X86P_WASM_EXIT_BYTES +
+            x86p_wasm_chain_reserve(&l.state.chain) >
+        l.e->cap) {
       break;
     }
 
@@ -433,6 +436,9 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->exits_backward = l.state.exits.backward;
   out->exits_loop = l.state.exits.within_block;
   out->exits_self = l.state.exits.to_entry;
+  out->chain_exits = l.state.chain.slotted;
+  out->chain_exits_unslotted = l.state.chain.unslotted;
+  out->chain_first_slot = l.state.chain.first;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

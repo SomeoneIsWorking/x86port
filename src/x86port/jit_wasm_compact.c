@@ -24,6 +24,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
                                 size_t code_cap,
                                 X86pJitBoundaryFn boundary,
                                 void *boundary_user,
+                                const X86pWasmChainUse *chains,
                                 X86pJitBlock *out,
                                 char *reason,
                                 unsigned reason_len) {
@@ -42,8 +43,8 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
   x86p_wasm_plan_from_mem(mem, &plan);
   x86p_wasm_module_init(&module, code, code_cap, count);
   for (i = 0; i < count; ++i) {
-    X86pJitStatus status =
-        x86p_wasm_lower_block(&module, mem, &plan, eips[i], boundary, boundary_user, &out[i], reason, reason_len);
+    X86pJitStatus status = x86p_wasm_lower_block(
+        &module, mem, &plan, eips[i], boundary, boundary_user, chains ? &chains[i] : NULL, &out[i], reason, reason_len);
     if (status != kX86pJitOk) {
       /*
        * All or nothing. The module's sections already promised `count` bodies,
@@ -80,7 +81,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
  * does is refuse.
  */
 static int lowered_the_same(const X86pWasmCompactBlock *was, const X86pJitBlock *now) {
-  return now->guest_eip == was->guest && now->guest_len == was->guest_len;
+  return now->guest_eip == was->guest && now->guest_len == was->guest_len && now->chain_exits == was->chain_exits;
 }
 
 int x86p_wasm_compact(X86pWasmArena *arena,
@@ -89,12 +90,14 @@ int x86p_wasm_compact(X86pWasmArena *arena,
                       size_t buffer_bytes,
                       X86pJitBoundaryFn boundary,
                       void *boundary_user,
+                      X86pJitChain *chain,
                       const X86pWasmCompactBlock *blocks,
                       unsigned count,
                       X86pWasmCompactResult *out,
                       char *reason,
                       unsigned reason_len) {
   uint32_t eips[X86P_WASM_MAX_BODIES];
+  X86pWasmChainUse chains[X86P_WASM_MAX_BODIES];
   X86pJitBlock lowered[X86P_WASM_MAX_BODIES];
   size_t bytes;
   int token;
@@ -118,9 +121,11 @@ int x86p_wasm_compact(X86pWasmArena *arena,
   }
   for (i = 0; i < count; ++i) {
     eips[i] = blocks[i].guest;
+    /* A block published with no slot keeps none: reuse of zero slots. */
+    chains[i] = (X86pWasmChainUse){chain, blocks[i].chain_exits ? blocks[i].chain_first : 0, blocks[i].chain_exits};
   }
   bytes = x86p_jit_translate_batch(
-      mem, eips, count, buffer, buffer_bytes, boundary, boundary_user, lowered, reason, reason_len);
+      mem, eips, count, buffer, buffer_bytes, boundary, boundary_user, chains, lowered, reason, reason_len);
   if (bytes == 0u) {
     return 0;
   }
@@ -128,11 +133,13 @@ int x86p_wasm_compact(X86pWasmArena *arena,
     if (!lowered_the_same(&blocks[i], &lowered[i])) {
       say(reason,
           reason_len,
-          "the block at %08X now covers %u guest byte(s) where it covered %u when it was published; "
-          "the guest changed it and it needs invalidating, not rebuilding",
+          "the block at %08X now covers %u guest byte(s) with %u chained exit(s) where it covered %u with %u "
+          "when it was published; the guest changed it and it needs invalidating, not rebuilding",
           blocks[i].guest,
           lowered[i].guest_len,
-          blocks[i].guest_len);
+          lowered[i].chain_exits,
+          blocks[i].guest_len,
+          blocks[i].chain_exits);
       return 0;
     }
   }

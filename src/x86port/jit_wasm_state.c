@@ -43,7 +43,8 @@ static uint32_t flag_offset(size_t field) {
   return (uint32_t)(offsetof(X86pCpu, flags) + field);
 }
 
-void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry) {
+void x86p_wasm_state_init(
+    X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry, const X86pWasmChainUse *chain) {
   if (!s) {
     return;
   }
@@ -54,6 +55,7 @@ void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan 
   if (plan) {
     s->plan = *plan;
   }
+  x86p_wasm_chain_exits_init(&s->chain, chain);
 }
 
 void x86p_wasm_state_cpu(X86pWasmState *s) {
@@ -461,6 +463,9 @@ void x86p_wasm_state_exit_imm(X86pWasmState *s, uint32_t eip, X86pJitExit exit) 
   x86p_wasm_state_cpu(s);
   x86p_wasm_i32_const(s->e, (int32_t)eip);
   x86p_wasm_i32_store(s->e, ALIGN_NONE, (uint32_t)offsetof(X86pCpu, eip));
+  if (exit == kX86pJitExitBlockEnd) {
+    x86p_wasm_chain_emit(&s->chain, s->e, eip, -1);
+  }
   x86p_wasm_i32_const(s->e, (int32_t)exit);
   x86p_wasm_return(s->e);
 }
@@ -473,6 +478,9 @@ void x86p_wasm_state_exit_local(X86pWasmState *s, X86pWasmLocal eip, X86pJitExit
   x86p_wasm_state_cpu(s);
   x86p_wasm_local_get(s->e, (uint32_t)eip);
   x86p_wasm_i32_store(s->e, ALIGN_NONE, (uint32_t)offsetof(X86pCpu, eip));
+  if (exit == kX86pJitExitBlockEnd) {
+    x86p_wasm_chain_emit(&s->chain, s->e, 0u, (int)eip);
+  }
   x86p_wasm_i32_const(s->e, (int32_t)exit);
   x86p_wasm_return(s->e);
 }

@@ -41,7 +41,7 @@ EM_JS(int,
       {
         const host = Module.x86pWasmHosts.get(key);
         if (!host.env) {
-          const env = {memory : wasmMemory};
+          const env = {memory : wasmMemory, table : wasmTable};
           for (let i = 0; i < count; ++i) {
             env[UTF8ToString(HEAPU32[(names >>> 2) + i])] = getWasmTableEntry(HEAPU32[(addresses >>> 2) + i]);
           }

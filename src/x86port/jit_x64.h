@@ -269,6 +269,10 @@ typedef struct X86pJitBlock {
      was claimed (jit_chain.h). */
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
+  /* The first of those slots; the rest follow it. Meaningful only when
+     chain_exits is not zero, and set only by a backend that relowers a
+     published block (jit_wasm_chain.h). */
+  int64_t chain_first_slot;
   /* Direct CALLs that call a leaf in place (X86pJitLeafFn). */
   unsigned leaf_calls;
   /* CALLs through a register or memory given a leaf site. */
@@ -385,11 +389,19 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
 
 /*
- * Where a chained exit enters a translation: the offset of the code after its
- * prologue, whose frame the jumping block already has. Zero when this backend
- * does not chain.
+ * Where a chained exit enters a translation, as an offset from its entry: past
+ * its prologue, whose frame the jumping block already has, or zero where a
+ * transfer enters the translation itself.
  */
 size_t x86p_jit_chain_entry_offset(void);
+
+/* The most chain slots one block claims; zero when this backend does not
+   chain (jit_chain.h). */
+unsigned x86p_jit_chain_slots_per_block(void);
+
+/* The most transfers one dispatch may make, or UINT64_MAX when a transfer
+   costs no host frame. */
+uint64_t x86p_jit_chain_transfer_limit(void);
 
 /*
  * The host execution state a translation may assume, as one value.

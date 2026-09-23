@@ -122,6 +122,11 @@ X86pWasmImportFn x86p_wasm_import_address(X86pWasmImport which);
 #define X86P_WASM_MEMORY_MODULE "env"
 #define X86P_WASM_MEMORY_FIELD "memory"
 
+/* The host's indirect function table, which a chained exit calls a published
+   block through (jit_wasm_chain.h): a block's address on this host is its
+   index there. */
+#define X86P_WASM_TABLE_FIELD "table"
+
 /*
  * The locals a block body has. Index 0 is the parameter: the guest X86pCpu
  * address, which on a wasm host is an ordinary 32-bit linear-memory offset.

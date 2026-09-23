@@ -911,7 +911,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.e = &e;
   ctx.mem = mem;
   ctx.host_state = x86p_jit_host_state();
-  ctx.chain = env && x86p_jit_chain_entry_offset() != 0u ? env->chain : NULL;
+  ctx.chain = env && x86p_jit_chain_slots_per_block() != 0u ? env->chain : NULL;
   /* A leaf returns into the block through a chained exit, so only a chaining
      translation calls one. */
   if (ctx.chain && env->leaf) {

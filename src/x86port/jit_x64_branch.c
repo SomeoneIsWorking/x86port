@@ -164,6 +164,16 @@ void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit) {
   }
 }
 
+/* A block ends at its first conditional branch: two exits. */
+unsigned x86p_jit_chain_slots_per_block(void) {
+  return 2u;
+}
+
+/* A transfer is a jump, in the frame the dispatcher's call made. */
+uint64_t x86p_jit_chain_transfer_limit(void) {
+  return UINT64_MAX;
+}
+
 size_t x86p_jit_chain_entry_offset(void) {
   uint8_t prologue[32];
   X86pEmit e;

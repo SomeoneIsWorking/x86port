@@ -146,8 +146,8 @@ static int publish_singly(X86pWasmArena *arena, const X86pMem *mem, X86pWasmComp
     size_t bytes;
     int token;
     memset(&block, 0, sizeof block);
-    bytes =
-        x86p_jit_translate_batch(mem, &eip, 1u, g_buffer, sizeof g_buffer, NULL, NULL, &block, reason, sizeof reason);
+    bytes = x86p_jit_translate_batch(
+        mem, &eip, 1u, g_buffer, sizeof g_buffer, NULL, NULL, NULL, &block, reason, sizeof reason);
     if (bytes == 0) {
       printf("FAIL could not lower the block at %08X: %s\n", eip, reason);
       g_failed++;
@@ -162,6 +162,8 @@ static int publish_singly(X86pWasmArena *arena, const X86pMem *mem, X86pWasmComp
     out[i].guest = block.guest_eip;
     out[i].guest_len = block.guest_len;
     out[i].token = token;
+    out[i].chain_first = block.chain_first_slot;
+    out[i].chain_exits = block.chain_exits;
     out[i].entry = x86p_wasm_arena_entry(arena, token, x86p_wasm_body_name(0));
     if (!out[i].entry) {
       printf("FAIL the block at %08X has no entry\n", eip);
@@ -212,10 +214,11 @@ static void test_four_modules_become_one(void) {
       entries[i] = blocks[i].entry;
     }
     reason[0] = '\0';
-    check("the batch is compacted",
-          x86p_wasm_compact(
-              &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
-          1);
+    check(
+        "the batch is compacted",
+        x86p_wasm_compact(
+            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
+        1);
   }
   check("every block moved", result.moved, BLOCKS);
   check("and they are all in ONE module now", x86p_wasm_arena_live(&arena), 1);
@@ -262,7 +265,7 @@ static void test_a_failed_move_puts_every_block_back(void) {
   reason[0] = '\0';
   check("the compaction refuses",
         x86p_wasm_compact(
-            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
+            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
         0);
   check("it says which block stopped it", strstr(reason, "could not be moved") != NULL, 1);
   check("nothing is reported as moved", result.moved, 0);
@@ -302,7 +305,7 @@ static void test_a_block_whose_guest_changed_is_refused(void) {
   reason[0] = '\0';
   check("the compaction refuses",
         x86p_wasm_compact(
-            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
+            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
         0);
   check("and says the guest changed it", strstr(reason, "needs invalidating") != NULL, 1);
   check("every block is still published as it was", x86p_wasm_arena_live(&arena), BLOCKS);
@@ -329,7 +332,7 @@ static void test_a_refused_publication_changes_nothing(void) {
   reason[0] = '\0';
   check("the compaction refuses",
         x86p_wasm_compact(
-            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
+            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
         0);
   check("with the engine's own words", strstr(reason, "out of memory") != NULL, 1);
   check("and nothing was released", x86p_wasm_arena_live(&arena), BLOCKS);
@@ -358,7 +361,7 @@ static void test_an_engine_that_cannot_adopt_is_refused_first(void) {
   reason[0] = '\0';
   check("the compaction refuses",
         x86p_wasm_compact(
-            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
+            &arena, &mem, g_buffer, sizeof g_buffer, NULL, NULL, NULL, blocks, BLOCKS, &result, reason, sizeof reason),
         0);
   check("saying the engine cannot move an entry", strstr(reason, "cannot move") != NULL, 1);
   check("and it published nothing to find that out", x86p_wasm_arena_live(&arena), BLOCKS);

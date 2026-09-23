@@ -33,6 +33,7 @@
 #include "emit_wasm.h"
 #include "flags.h"
 #include "jit_chain_census.h"
+#include "jit_wasm_chain.h"
 #include "jit_wasm_module.h"
 #include "jit_x64.h"
 
@@ -139,13 +140,16 @@ typedef struct X86pWasmState {
   uint32_t entry; /* the block's own guest address, to recognise a loop */
   uint32_t pc;    /* the instruction being lowered: everything up to here exists */
   X86pWasmExitCensus exits;
+  X86pWasmChainExits chain; /* the slots its exits to a next EIP take */
 } X86pWasmState;
 
 /* `entry` is the guest address the block being lowered starts at. It is a
    parameter rather than a later setter because a state that never received it
    reports every self-loop as an exit to somewhere else, and reports it as a
-   zero that reads like an answer. */
-void x86p_wasm_state_init(X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry);
+   zero that reads like an answer. `chain` is NULL for a block whose exits
+   all return to the dispatcher. */
+void x86p_wasm_state_init(
+    X86pWasmState *s, X86pWasmEmit *e, const X86pWasmPlan *plan, uint32_t entry, const X86pWasmChainUse *chain);
 
 /* Push the X86pCpu address. */
 void x86p_wasm_state_cpu(X86pWasmState *s);
@@ -307,7 +311,8 @@ void x86p_wasm_state_store_carry(X86pWasmState *s);
  */
 void x86p_wasm_state_store_df(X86pWasmState *s, int value);
 
-/* Store a guest EIP and leave the block with `exit`. */
+/* Store a guest EIP and leave the block with `exit`. A block end first tries
+   its chain slot (jit_wasm_chain.h). */
 void x86p_wasm_state_exit_imm(X86pWasmState *s, uint32_t eip, X86pJitExit exit);
 
 /* The same, with the EIP already computed into a local. */
