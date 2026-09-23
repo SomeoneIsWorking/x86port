@@ -66,11 +66,31 @@ typedef struct X86pJitChainRun {
 
 typedef struct X86pJitChain X86pJitChain;
 
+/* The block cache's front array (jitcommon block_cache.h). */
+struct JcBlockFront;
+
 /* NULL when the slot table cannot be allocated. */
 X86pJitChain *x86p_jit_chain_create(size_t slots);
 void x86p_jit_chain_destroy(X86pJitChain *chain);
 
 X86pJitChainRun *x86p_jit_chain_run(X86pJitChain *chain);
+
+/*
+ * THE PROBE. A slot remembers one address, and an exit whose target varies --
+ * a RET, an indirect JMP or CALL -- keeps missing it, returning to the
+ * dispatcher, and having its slot relinked to the address it just left for.
+ * On the Dead Zone route those round trips were the dispatcher's 4.5% of
+ * samples. So an exit that misses its slot first asks the block cache's front
+ * array, the dispatcher's own first question, and transfers when it holds the
+ * address: under the same stop and budget rules as a linked slot, and never to
+ * the block that exited, whose re-entry the dispatcher counts. The front holds
+ * only blocks the cache does not guard (jc_block_take_hit), exactly the ones a
+ * link may reach, and every path that retires a translation clears its front
+ * slot. The engine owns both structures, with the same lifetime.
+ */
+void x86p_jit_chain_set_front(X86pJitChain *chain, const struct JcBlockFront *front);
+/* The front array to probe, or NULL when exits only use their slots. */
+const struct JcBlockFront *x86p_jit_chain_front(const X86pJitChain *chain);
 
 /* A fresh, unlinked slot for one exit site, or -1 when every slot is claimed.
    Claimed slots stay claimed until x86p_jit_chain_reset. */

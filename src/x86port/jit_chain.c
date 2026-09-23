@@ -10,6 +10,7 @@
  */
 struct X86pJitChain {
   X86pJitChainRun run;
+  const struct JcBlockFront *front;
   size_t capacity;
   size_t claimed;
   X86pJitChainSlot slots[];
@@ -56,6 +57,14 @@ int64_t x86p_jit_chain_claim(X86pJitChain *chain) {
   chain->slots[chain->claimed].guest = X86P_JIT_CHAIN_UNLINKED;
   chain->slots[chain->claimed].host = NULL;
   return (int64_t)chain->claimed++;
+}
+
+void x86p_jit_chain_set_front(X86pJitChain *chain, const struct JcBlockFront *front) {
+  chain->front = front;
+}
+
+const struct JcBlockFront *x86p_jit_chain_front(const X86pJitChain *chain) {
+  return chain->front;
 }
 
 size_t x86p_jit_chain_claimed(const X86pJitChain *chain) {

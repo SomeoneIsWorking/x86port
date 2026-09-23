@@ -977,6 +977,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.mem = mem;
   ctx.host_state = x86p_jit_host_state();
   ctx.chain = x86p_jit_chain_entry_offset() != 0u ? chain : NULL;
+  ctx.entry_eip = eip;
   out->host_state = ctx.host_state;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
@@ -1292,7 +1293,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     emit_restore_host_frame(&e);
     x86p_emit_ret(&e);
   }
-  x87_cache_emit_routines(&ctx);
+  emit_tail_routines(&ctx);
 
   if (e.len - tail_start > EPILOGUE_BYTES) {
     say(reason,

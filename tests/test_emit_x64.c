@@ -992,6 +992,22 @@ static void test_memory_counter_and_jump(void) {
     CHECK(reg_id(d.ops[0].mem.base) == kX64R9);
     CHECK((int32_t)d.ops[0].mem.disp.value == 8);
   }
+
+  {
+    const X86pHostReg targets[] = {kX64Rdx, kX64R11};
+    unsigned i;
+    for (i = 0; i < 2u; i++) {
+      x86p_emit_init(&e, buf, sizeof buf);
+      x86p_emit_jmp_r64(&e, targets[i]);
+      d = emit_and_decode(&e);
+      if (d.ok) {
+        CHECK(d.insn.mnemonic == ZYDIS_MNEMONIC_JMP);
+        CHECK(d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER);
+        CHECK(d.ops[0].size == 64);
+        CHECK(reg_id(d.ops[0].reg.value) == (int)targets[i]);
+      }
+    }
+  }
 }
 
 /* The x87 forms the FLD backend lays down: fld dword/qword [r11], fstp tbyte
