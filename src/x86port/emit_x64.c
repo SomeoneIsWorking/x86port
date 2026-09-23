@@ -124,6 +124,19 @@ void x86p_emit_load32(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t di
   modrm_mem(e, dst, base, disp);
 }
 
+void x86p_emit_load64(X86pEmit *e, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  rex(e, 1, dst, base);
+  put(e, 0x8Bu);
+  modrm_mem(e, dst, base, disp);
+}
+
+void x86p_emit_imul_r64_r64(X86pEmit *e, X86pHostReg dst, X86pHostReg src) {
+  rex(e, 1, dst, src);
+  put(e, 0x0Fu);
+  put(e, 0xAFu);
+  modrm_reg(e, dst, src);
+}
+
 void x86p_emit_store32(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src) {
   rex(e, 0, src, base);
   put(e, 0x89u);
@@ -241,6 +254,14 @@ void x86p_emit_shift_r32_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, ui
 }
 
 /* D3 /digit. */
+/* REX.W C1 /digit ib. */
+void x86p_emit_shift_r64_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count) {
+  rex(e, 1, kX64Rax, dst);
+  put(e, 0xC1u);
+  put(e, (uint8_t)(0xC0u | ((unsigned)op << 3) | ((unsigned)dst & 7u)));
+  put(e, count);
+}
+
 void x86p_emit_shift_r32_cl(X86pEmit *e, X86pHostShift op, X86pHostReg dst) {
   rex(e, 0, kX64Rax, dst);
   put(e, 0xD3u);
@@ -275,6 +296,14 @@ void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
   rex(e, 0, b, a);
   put(e, 0x85u);
   modrm_reg(e, b, a);
+}
+
+/* F7 /0 id. */
+void x86p_emit_test_r32_imm32(X86pEmit *e, X86pHostReg a, uint32_t imm) {
+  rex(e, 0, kX64Rax, a);
+  put(e, 0xF7u);
+  put(e, (uint8_t)(0xC0u | ((unsigned)a & 7u)));
+  put32(e, imm);
 }
 
 void x86p_emit_cmovcc_r32_r32(X86pEmit *e, unsigned cc, X86pHostReg dst, X86pHostReg src) {

@@ -225,6 +225,7 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define ADD_EAX_EBX 0x01, 0xD8
 #define INC_EAX 0x40
 #define JMP_NEXT 0xEB, 0x00
+#define FSQRT 0xD9, 0xFA
 #define FCHS 0xD9, 0xE0
 #define FABS 0xD9, 0xE1
 #define FLDZ 0xD9, 0xEE
@@ -437,6 +438,21 @@ static const Case kCases[] = {
     {"a slow path with four dirty values",
      CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FADD_ST0_ST(5), FSTP_M32(8), FSTP_M32(12)),
      7,
+     {F32_ONE, F32_THREE},
+     0},
+    /* The occupancy cache (THE CACHE) rotates on every push and pop. A wrong
+       direction reports an empty ST(5) as occupied here, and the multiply
+       would read it instead of faulting. */
+    {"an empty register after pushes and a pop",
+     CODE(FLD_M32(0), FLD_M32(4), FSTP_M32(8), FLD_M32(4), FMUL_ST0_ST(5), FSTP_M32(12)),
+     6,
+     {F32_ONE, F32_THREE},
+     0},
+    /* FSQRT runs its helper, so the cache is read back from memory with TOP at
+       3 and ST(0..4) occupied: a rotate the wrong way reports ST(6) occupied. */
+    {"an empty register after the cache is read back",
+     CODE(FLD_M32(0), FLD_M32(4), FLD_M32(0), FLD_M32(4), FLD_M32(0), FSQRT, FMUL_ST0_ST(6), FSTP_M32(8)),
+     8,
      {F32_ONE, F32_THREE},
      0},
     /* INC's carry-in empties the mirror, so FDIV's early guards leave with an

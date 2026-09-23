@@ -63,6 +63,16 @@
  * A mirrored register may be EMPTY in the guest -- a slow path's reload
  * copies whatever bits an empty slot holds -- so every tag guard stays: the
  * mirror supplies values, never the answer to whether a register is occupied.
+ *
+ * THE CACHE answers it instead of memory. R14 holds TOP and R15 which
+ * registers are occupied, relative to it, across the block's x87 forms, so a
+ * tag guard is one TEST of a register. Each guard had loaded TOP -- which the
+ * previous form had just stored -- computed an index and loaded the tag
+ * behind it, and that chain was about a fifth of the samples inside
+ * translated code on the Dead Zone route. Memory stays authoritative: every
+ * form still writes TOP and the tags, so an exit, a fault or a helper finds
+ * them current, and the cache is only read back from them: at the first form
+ * after anything that calls out, and after every slow path's helper.
  */
 #ifndef X86PORT_JIT_X64_X87_INLINE_H
 #define X86PORT_JIT_X64_X87_INLINE_H
@@ -106,6 +116,12 @@ void x87_inline_begin_slow(BlockCtx *c, X87Inline *fast);
 /* Rebuild the mirror the fast path left after that sequence, then bind the
    fast path's completion jump. */
 void x87_inline_end(BlockCtx *c, X87Inline *fast);
+
+/* Before each instruction: the TOP and occupancy cache is stale after an x87
+   instruction whose inline form did not run, and the mirror is flushed and the
+   cache dropped before one that does not keep the mirror (it calls out or ends
+   the block). */
+void x87_cache_before(BlockCtx *c, const X86pInsn *insn, int keeps_mirror);
 
 /* Store the mirror's dirty values and pop it: the host stack is empty after
    this, statically. */
