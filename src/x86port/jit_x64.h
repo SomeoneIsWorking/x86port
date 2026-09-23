@@ -37,6 +37,7 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "jit_chain.h"
 #include "jit_chain_census.h"
 
 #include <stddef.h>
@@ -104,10 +105,12 @@ const char *x86p_jit_status_name(X86pJitStatus s);
  * at or above it, a block of at least one instruction always comes back.
  */
 #define X86P_JIT_WORST_CASE_INSN_BYTES 224u
-/* The block tail: the normal exit, the fault stubs, and the one out-of-line
-   x86p_cond path a Jcc's inline condition can need (a Jcc ends its block, so
-   there is never more than one; about 30 bytes). */
-#define X86P_JIT_EPILOGUE_BYTES 96u
+/* The block tail: the normal exit (a chained exit is about 80 bytes on
+   Win64), the two fault stubs (about 16 each), and the one out-of-line x86p_cond
+   path a Jcc's inline condition can need (a Jcc ends its block, so there is
+   never more than one; about 30 bytes, and then its two exits are the
+   instruction's own). */
+#define X86P_JIT_EPILOGUE_BYTES 128u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {
@@ -235,6 +238,10 @@ typedef struct X86pJitBlock {
   /* x86p_jit_host_state() when this block was translated. Its code assumes
      that state and x86p_jit_enter refuses the block under any other. */
   uint32_t host_state;
+  /* Exits given a chain slot, and exits that asked for one when every slot
+     was claimed (jit_chain.h). */
+  unsigned chain_exits;
+  unsigned chain_exits_unslotted;
 } X86pJitBlock;
 
 /*
@@ -275,6 +282,11 @@ typedef int (*X86pJitBoundaryFn)(uint32_t eip, void *user);
  * As x86p_jit_translate, but ends the block before any address (other than
  * `eip` itself) for which `boundary` returns non-zero. `boundary` may be NULL,
  * which is exactly x86p_jit_translate.
+ *
+ * With `chain`, the block's exits to a next guest EIP claim slots in it and
+ * may transfer straight to another translation (jit_chain.h); such a block
+ * reads the chain's run header and is entered only by x86p_jit_engine_run.
+ * NULL, and every exit returns. A backend that does not chain ignores it.
  */
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          uint32_t eip,
@@ -282,6 +294,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          size_t code_cap,
                                          X86pJitBoundaryFn boundary,
                                          void *boundary_user,
+                                         X86pJitChain *chain,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len);
@@ -295,6 +308,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
  * host and silently fine on x86-64, which is what makes it worth saying here.
  */
 X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu);
+
+/*
+ * Where a chained exit enters a translation: the offset of the code after its
+ * prologue, whose frame the jumping block already has. Zero when this backend
+ * does not chain.
+ */
+size_t x86p_jit_chain_entry_offset(void);
 
 /*
  * The host execution state a translation may assume, as one value.

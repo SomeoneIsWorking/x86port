@@ -43,6 +43,10 @@ int x86p_jit_available(void) {
   return 1;
 }
 
+size_t x86p_jit_chain_entry_offset(void) {
+  return 0u;
+}
+
 uint32_t x86p_jit_host_state(void) {
   return 0u;
 }
@@ -53,9 +57,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          size_t code_cap,
                                          X86pJitBoundaryFn boundary,
                                          void *boundary_user,
+                                         X86pJitChain *chain,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
+  /* This backend does not chain: every exit returns to the dispatcher. */
+  (void)chain;
   X86pWasmModule module;
   X86pWasmPlan plan;
   X86pJitStatus status;
@@ -106,7 +113,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  X86pJitBlock *out,
                                  char *reason,
                                  unsigned reason_len) {
-  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, out, reason, reason_len);
+  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, NULL, out, reason, reason_len);
 }
 
 int x86p_jit_wasm_publish(

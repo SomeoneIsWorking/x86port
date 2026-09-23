@@ -9,7 +9,6 @@
 #include "jit_x64_cond.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
-#include "jit_x64_x87_inline.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -36,10 +35,6 @@ int x86p_jit_available(void) {
 #else
   return 0;
 #endif
-}
-
-uint32_t x86p_jit_host_state(void) {
-  return x87_inline_host_control();
 }
 
 static void say(char *buf, unsigned len, const char *fmt, ...) {
@@ -1347,7 +1342,7 @@ static void emit_restore_host_frame(X86pEmit *e) {
 static void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uint32_t insn_eip) {
   x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
   emit_push_rsi(c, insn_eip);
-  emit_epilogue(c->e, target, kX86pJitExitBlockEnd);
+  emit_exit(c, target);
 }
 
 /*
@@ -1368,14 +1363,14 @@ static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t 
 
 static void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   emit_read_branch_target(c, &insn->operand[0], insn_eip);
-  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+  emit_exit_from(c, TARGET_REG);
 }
 
 static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
   emit_read_branch_target(c, &insn->operand[0], insn_eip);
   x86p_emit_mov_r32_imm32(c->e, kX64Rsi, return_eip);
   emit_push_rsi(c, insn_eip);
-  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+  emit_exit_from(c, TARGET_REG);
 }
 
 /* `release` is RET imm16's argument count, applied AFTER the pop because the
@@ -1390,7 +1385,7 @@ static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
   x86p_emit_alu_r32_imm32(c->e, kX64Add, kX64Rdx, 4u + release);
   x86p_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kX64Rdx);
 
-  emit_epilogue_from(c->e, kX64Rsi, kX86pJitExitBlockEnd);
+  emit_exit_from(c, kX64Rsi);
 }
 
 /* ---- translation --------------------------------------------------------- */
@@ -1402,7 +1397,7 @@ X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  X86pJitBlock *out,
                                  char *reason,
                                  unsigned reason_len) {
-  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, out, reason, reason_len);
+  return x86p_jit_translate_bounded(mem, eip, code, code_cap, NULL, NULL, NULL, out, reason, reason_len);
 }
 
 X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
@@ -1411,6 +1406,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          size_t code_cap,
                                          X86pJitBoundaryFn boundary,
                                          void *boundary_user,
+                                         X86pJitChain *chain,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
@@ -1444,6 +1440,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.e = &e;
   ctx.mem = mem;
   ctx.host_state = x86p_jit_host_state();
+  ctx.chain = x86p_jit_chain_entry_offset() != 0u ? chain : NULL;
   out->host_state = ctx.host_state;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
@@ -1538,7 +1535,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       uint32_t next = pc + insn.length;
       uint32_t target = next + insn.operand[0].imm;
       if (insn.op == (uint8_t)kX86pInsnJmp) {
-        emit_epilogue(&e, target, kX86pJitExitBlockEnd);
+        emit_exit(&ctx, target);
       } else if (insn.op != kX86pInsnJcc) {
         emit_loop(&ctx, &insn, target, next);
       } else {
@@ -1729,7 +1726,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   }
 
   if (!terminated) {
-    emit_epilogue(&e, pc, exit);
+    emit_block_end(&ctx, pc, exit);
   }
 
   x86p_x64_emit_cond_slow_path(&ctx);
@@ -1793,19 +1790,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->cond_inline = ctx.cond_inline;
   out->cond_unknown_kind = ctx.cond_unknown_kind;
   out->ends_in_branch = terminated;
+  out->chain_exits = ctx.chain_exits;
+  out->chain_exits_unslotted = ctx.chain_exits_unslotted;
   return kX86pJitOk;
-}
-
-X86pJitExit x86p_jit_enter(const X86pJitBlock *b, X86pCpu *cpu) {
-  uint32_t (*fn)(X86pCpu *);
-  if (!b || !b->entry || !cpu || b->host_state != x86p_jit_host_state()) {
-    return kX86pJitExitUnsupported;
-  }
-  /* The cast goes through a function-pointer-sized integer because ISO C does
-     not define object-to-function pointer conversion; every host this targets
-     does, and saying so here keeps the compiler from warning at each call. */
-  *(void **)&fn = b->entry;
-  return (X86pJitExit)fn(cpu);
 }
 
 int x86p_jit_emits_natively(const X86pInsn *insn) {

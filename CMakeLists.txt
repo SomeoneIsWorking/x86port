@@ -210,6 +210,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_compact.c
   ${X86P_JIT_BACKEND_SOURCES}
   ${X86P_JIT_STORAGE_SOURCES}
+  src/x86port/jit_chain.c
   src/x86port/jit_chain_census.c
   src/x86port/jit_profile.c
   src/x86port/jit_engine.c)

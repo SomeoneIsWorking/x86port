@@ -265,6 +265,12 @@ void x86p_emit_alu_r32_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
   modrm_mem(e, dst, base, disp);
 }
 
+void x86p_emit_alu_r64_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHostReg base, int32_t disp) {
+  rex(e, 1, dst, base);
+  put(e, (uint8_t)(((unsigned)op << 3) | 3u));
+  modrm_mem(e, dst, base, disp);
+}
+
 void x86p_emit_setcc_r8(X86pEmit *e, unsigned cc, X86pHostReg dst) {
   if ((unsigned)dst > (unsigned)kX64Rbx) {
     /* Refused rather than emitted wrongly: see the header. Marking the buffer
@@ -444,6 +450,20 @@ void x86p_emit_call_r64(X86pEmit *e, X86pHostReg target) {
   }
   put(e, 0xFFu);
   put(e, (uint8_t)(0xD0u | ((unsigned)target & 7u))); /* /2 */
+}
+
+void x86p_emit_dec_m64(X86pEmit *e, X86pHostReg base, int32_t disp) {
+  /* REX.W FF /1 */
+  rex(e, 1, kX64Rax, base);
+  put(e, 0xFFu);
+  modrm_mem(e, (X86pHostReg)1, base, disp);
+}
+
+void x86p_emit_jmp_m64(X86pEmit *e, X86pHostReg base, int32_t disp) {
+  /* FF /4, already 64-bit in long mode; REX only for a high base. */
+  rex(e, 0, kX64Rax, base);
+  put(e, 0xFFu);
+  modrm_mem(e, (X86pHostReg)4, base, disp);
 }
 
 void x86p_emit_byte(X86pEmit *e, uint8_t b) {

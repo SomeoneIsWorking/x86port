@@ -14,6 +14,7 @@
 #include "cpu.h"
 #include "decode.h"
 #include "emit_x64.h"
+#include "jit_chain.h"
 #include "jit_x64.h"
 #include "jit_x64_abi.h"
 
@@ -71,6 +72,10 @@ typedef struct BlockCtx {
   const X86pMem *mem;
   /* x86p_jit_host_state() for this translation; see jit_x64.h. */
   uint32_t host_state;
+  /* The engine's chain slots, or NULL: exits then only return. */
+  X86pJitChain *chain;
+  unsigned chain_exits;
+  unsigned chain_exits_unslotted;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
@@ -154,6 +159,14 @@ static inline int32_t reg_off_w(int index, int w) {
 
 void emit_epilogue(X86pEmit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pEmit *e, X86pHostReg eip_reg, X86pJitExit exit);
+/* The block's exits to a next guest EIP: chained through a slot of
+   `c->chain` when the translation has one (jit_chain.h), otherwise the plain
+   return. emit_block_end chains only kX86pJitExitBlockEnd. */
+void emit_exit(BlockCtx *c, uint32_t next_eip);
+void emit_exit_from(BlockCtx *c, X86pHostReg eip_reg);
+void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit);
+/* EAX nonzero: to `taken`; zero: to `not_taken`. */
+void emit_two_way_exit(BlockCtx *c, uint32_t taken, uint32_t not_taken);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
 
 void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);

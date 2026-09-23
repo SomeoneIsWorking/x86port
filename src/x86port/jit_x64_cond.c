@@ -198,14 +198,9 @@ void x86p_x64_emit_cond_slow_path(BlockCtx *c) {
 }
 
 void x86p_x64_emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
-  X86pEmit *e = c->e;
   c->conds++;
   emit_condition_value(c, cond, last_kind, last_w, 1);
-  x86p_emit_test_r32_r32(e, kX64Rax, kX64Rax);
-  x86p_emit_mov_r32_imm32(e, kX64Rax, fallthrough);
-  x86p_emit_mov_r32_imm32(e, kX64Rcx, target);
-  x86p_emit_cmovcc_r32_r32(e, (unsigned)kX86pCondNZ, kX64Rax, kX64Rcx);
-  emit_epilogue_from(e, kX64Rax, kX86pJitExitBlockEnd);
+  emit_two_way_exit(c, target, fallthrough);
 }
 
 /* SETcc materialises the canonical condition evaluator's 0/1 result without
