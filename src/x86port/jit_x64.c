@@ -552,7 +552,7 @@ static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
 static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEbp, 4);
   gpr_store(c, kX86pEsp, EA_REG, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
+  emit_bounds_check(c, 4, insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
   x86p_emit_alu_r32_imm32(c->e, kX64Add, EA_REG, 4u);
@@ -673,7 +673,7 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 void emit_push_rsi(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
   x86p_emit_alu_r32_imm32(c->e, kX64Sub, EA_REG, 4u);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
+  emit_bounds_check(c, 4, insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_store32(c->e, HOSTPTR_REG, 0, kX64Rsi);
   /* The bounds check preserves EA_REG, so the new ESP is still here and needs
@@ -702,7 +702,7 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
    popped value in RSI ends up. */
 static void emit_pop_rsi(BlockCtx *c, uint32_t insn_eip) {
   gpr_load(c, EA_REG, kX86pEsp, 4);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, 4), insn_eip);
+  emit_bounds_check(c, 4, insn_eip);
   emit_host_pointer(c->e, &c->plan);
   x86p_emit_load32(c->e, kX64Rsi, HOSTPTR_REG, 0);
 
@@ -924,6 +924,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
+  ctx.plan.guard_above = mem->guard_above;
   emit_prologue(&e);
   if (e.len > X86P_JIT_PROLOGUE_BYTES) {
     say(reason, reason_len, "internal: the prologue emitted %zu bytes, past %u", e.len, X86P_JIT_PROLOGUE_BYTES);

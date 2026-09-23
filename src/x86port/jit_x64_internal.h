@@ -66,6 +66,7 @@ typedef struct MemPlan {
   uint64_t host;
   uint32_t lo;
   uint32_t size;
+  uint32_t guard_above; /* X86pMem.guard_above */
 } MemPlan;
 
 /*
@@ -188,7 +189,7 @@ void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, in
    host pointer for an address that passed it. */
 void emit_address_parts(BlockCtx *c, const X86pOperand *o);
 void emit_effective_address(BlockCtx *c, const X86pOperand *o);
-X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, int w);
+void emit_bounds_check(BlockCtx *c, int w, uint32_t insn_eip);
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan);
 /* The tail bytes of one memory-fault trampoline: MOV r10d, imm32 and a JMP
    rel32 to the shared stub. */

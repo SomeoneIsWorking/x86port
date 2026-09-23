@@ -168,6 +168,17 @@ typedef struct X86pMem {
    */
   const uint8_t *perms;
   uint32_t page_shift;
+  /*
+   * Bytes from host + 2^32 that the consumer guarantees fault on any access:
+   * a no-access guard it maps and keeps for the memory's lifetime. It matters
+   * only to a span from guest 0 covering every address (lo 0, size
+   * UINT32_MAX), whose one out-of-range access is the last few bytes of the
+   * space overrunning its end by less than the access's width. The x64 JIT
+   * then drops the per-access bounds check for every access no wider than the
+   * guard and lets the host VM fault, as it already does for any unmapped page
+   * inside the span. 0 keeps the check.
+   */
+  uint32_t guard_above;
 } X86pMem;
 
 /* Resolve an entire nonempty guest span to contiguous host bytes, or return 0

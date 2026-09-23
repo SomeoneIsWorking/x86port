@@ -122,9 +122,18 @@ static X86pHostReg plan_offset_reg(const MemPlan *plan) {
  * An identity mapping (lo 0, host 0) compares EA_REG itself: the offset is
  * the address, and emit_host_pointer reads it from there.
  *
- * Returns the site to bind to the fault stub.
+ * A span covering the whole space with a guard above it (X86pMem.guard_above)
+ * needs no check for an access the guard is wide enough to catch: no address
+ * lies outside the span, and the only overrun lands on the guard. The host VM
+ * faults it, as it faults every unmapped page inside the span.
+ *
+ * The failing branch is bound to the fault stub with `insn_eip`.
  */
-X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, int w) {
+static int plan_is_guarded(const MemPlan *plan, int w) {
+  return plan->lo == 0u && plan->size == UINT32_MAX && (uint32_t)w <= plan->guard_above;
+}
+
+static X86pEmitSite emit_bounds_compare(X86pEmit *e, const MemPlan *plan, int w) {
   const X86pHostReg offset = plan_offset_reg(plan);
   if (offset == ADDR_TMP) {
     x86p_emit_mov_r32_r32(e, ADDR_TMP, EA_REG);
@@ -144,13 +153,27 @@ X86pEmitSite emit_bounds_check(X86pEmit *e, const MemPlan *plan, int w) {
   return x86p_emit_jcc_rel32(e, (unsigned)kX86pCondA);
 }
 
+void emit_bounds_check(BlockCtx *c, int w, uint32_t insn_eip) {
+  if (plan_is_guarded(&c->plan, w)) {
+    return;
+  }
+  note_fault(c, emit_bounds_compare(c->e, &c->plan, w), insn_eip);
+}
+
 /* HOSTPTR_REG = host + (EA - lo). plan_offset_reg already holds the offset,
    and writing a 32-bit register zero-extends, so the 64-bit add gets a clean
    offset. An identity mapping's offset IS the guest address, and the 32-bit
-   move zero-extends it into the pointer without a base to add. */
+   move zero-extends it into the pointer without a base to add. A base below
+   2 GB is a sign-extended disp32, so one lea (7 bytes) replaces the 10-byte
+   immediate load and its add: an access is emitted in every translated block,
+   and the hot path is bound by instruction fetch. */
 void emit_host_pointer(X86pEmit *e, const MemPlan *plan) {
   if (plan_is_identity(plan)) {
     x86p_emit_mov_r32_r32(e, HOSTPTR_REG, EA_REG);
+    return;
+  }
+  if (plan->host <= (uint64_t)INT32_MAX) {
+    x86p_emit_lea64(e, HOSTPTR_REG, plan_offset_reg(plan), (int32_t)plan->host);
     return;
   }
   x86p_emit_mov_r64_imm64(e, HOSTPTR_REG, plan->host);
@@ -186,6 +209,6 @@ void note_divide_fault(BlockCtx *c, X86pEmitSite site) {
    refuse a legal one-byte access at the last address instead. */
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_effective_address(c, o);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, w), insn_eip);
+  emit_bounds_check(c, w, insn_eip);
   emit_host_pointer(c->e, &c->plan);
 }
