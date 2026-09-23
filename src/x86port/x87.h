@@ -180,7 +180,12 @@ typedef struct X86pX87OpCensus {
 } X86pX87OpCensus;
 
 typedef struct X86pX87 {
-  X86pX87Reg reg[X86P_X87_REGS]; /* PHYSICAL registers; ST(i) is reg[(top+i)&7] */
+  /* PHYSICAL registers; ST(i) is reg[(top+i)&7]. An EMPTY register's value is
+     unspecified: the interpreter leaves what a pop left, the x64 JIT drops a
+     popped value it had not stored. Reading an empty register is a stack
+     fault, so only an FSAVE/FXSAVE image or an MMX read of a register nothing
+     wrote could tell them apart. */
+  X86pX87Reg reg[X86P_X87_REGS];
   /* kX86pX87TagEmpty or kX86pX87TagValid (occupied). The zero and special
      classes exist only in the architectural tag word, derived from `reg`. */
   uint8_t tag[X86P_X87_REGS];

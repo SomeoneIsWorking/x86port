@@ -319,15 +319,12 @@ static void mirror_pushed(BlockCtx *c) {
   c->x87_used = 1;
 }
 
-/* Host ST(0) popped, as guest ST(`guest_index`) relative to TOP in memory:
-   stored on the way when the register file does not have it, because a popped
-   register keeps its value (FSAVE writes all eight). */
-static void mirror_pop(BlockCtx *c, unsigned guest_index) {
-  if (c->x87_dirty & 1u) {
-    call_store_pop(c, guest_index);
-  } else {
-    host_pop(c->e);
-  }
+/* Host ST(0) popped. A value only the host had is dropped with it: a popped
+   register is tagged empty, reading it is a stack fault, and only an FSAVE
+   image could show what it held -- which the port does not keep (see
+   X86pX87 in x87.h). */
+static void mirror_pop(BlockCtx *c) {
+  host_pop(c->e);
   c->x87_dirty >>= 1;
   c->x87_depth--;
 }
@@ -481,7 +478,7 @@ static void zero_compare_scratch(X86pEmit *e) {
    pop stores from TOP in memory, so it goes first. */
 static void pop_mirrored(BlockCtx *c, unsigned pops) {
   while (pops--) {
-    mirror_pop(c, 0u);
+    mirror_pop(c);
     emit_pop(c->e);
   }
 }
@@ -852,12 +849,7 @@ void x87_inline_arith(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
       } else if (pops) {
         /* fop st(dst), st(0) and pop: the result is host ST(dst - 1) now, and
            guest ST(dst - 1) once the guest pop below renumbers the stack. The
-           popped ST(0) keeps its value, so a copy only the host has is
-           stored first. */
-        if (c->x87_dirty & 1u) {
-          host_fld_st(e, 0u);
-          call_store_pop(c, 0u);
-        }
+           popped ST(0) is dropped, as mirror_pop drops one. */
         x86p_emit_x87_reg(e, 0xDEu, (uint8_t)(0xC0u | (sti_field(op, reverse) << 3) | dst));
         c->x87_depth--;
         c->x87_dirty >>= 1;
