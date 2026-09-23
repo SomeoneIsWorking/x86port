@@ -841,7 +841,6 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
  * helper may decode or dispatch a guest instruction: an instruction without
  * an emitter is a named refusal.
  */
-
 static void emit_prologue(X86pEmit *e) {
   x86p_jit_abi_emit_enter(e, X86P_JIT_HOST_ABI, CPU_REG);
 }
@@ -974,6 +973,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
   emit_prologue(&e);
+  if (e.len > X86P_JIT_PROLOGUE_BYTES) {
+    say(reason, reason_len, "internal: the prologue emitted %zu bytes, past %u", e.len, X86P_JIT_PROLOGUE_BYTES);
+    return kX86pJitOutOfSpace;
+  }
   insn_start = e.len;
 
   for (;;) {
@@ -1327,15 +1330,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->conds = ctx.conds;
   out->cond_helper_calls = ctx.cond_helper_calls;
   out->cond_inline = ctx.cond_inline;
+  out->cond_proven = ctx.cond_proven;
   out->cond_unknown_kind = ctx.cond_unknown_kind;
   out->ends_in_branch = terminated;
   out->chain_exits = ctx.chain_exits;
   out->chain_exits_unslotted = ctx.chain_exits_unslotted;
   return kX86pJitOk;
-}
-
-int x86p_jit_emits_natively(const X86pInsn *insn) {
-  return can_emit(insn);
 }
 
 int x86p_jit_can_translate(const X86pInsn *insn) {

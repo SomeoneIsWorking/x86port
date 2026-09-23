@@ -123,11 +123,17 @@ typedef struct BlockCtx {
   unsigned gpr_slots;
   unsigned gpr_live;
   unsigned gpr_epoch;
+  /* The kind word the block last stored to the flag record, and the flow
+     epoch when it did; see THE PROOF in jit_x64_cond.c. */
+  int flag_word_known;
+  uint16_t flag_word;
+  unsigned flag_word_epoch;
   unsigned flag_helper_calls;
   unsigned conds;
   unsigned cond_unknown_kind;
   unsigned cond_helper_calls;
   unsigned cond_inline;
+  unsigned cond_proven;
   MemPlan plan;
   X86pEmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
@@ -141,6 +147,13 @@ typedef struct BlockCtx {
   size_t cond_slow_resume;
   uint8_t cond_slow_cond;
 } BlockCtx;
+
+/* The emitter's calls plus bound jump sites. Between two points with the same
+   epoch the code ran straight through: no helper could write guest state and
+   no other path arrived. */
+static inline unsigned block_flow_epoch(const X86pEmit *e) {
+  return e->calls + e->sites_bound;
+}
 
 /* Emit the out-of-line x86p_cond path recorded in `c`, if any; after the
    exits. */
