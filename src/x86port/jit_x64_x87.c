@@ -423,6 +423,15 @@ void emit_x87_fn(BlockCtx *c, const X86pInsn *insn) {
   x87_call(c->e, (const void *)&x86p_x87_apply_fn);
 }
 
+/* FSQRT inline, with the helper as the slow path. */
+static void emit_x87_fn_inline(BlockCtx *c, const X86pInsn *insn) {
+  X87Inline fast;
+  x87_inline_fn(c, insn, &fast);
+  x87_inline_begin_slow(c, &fast);
+  emit_x87_fn(c, insn);
+  x87_inline_end(c, &fast);
+}
+
 /* FXCH, FCHS, FABS and the register compares: inline, with the helper as the
    slow path. FTST has no inline form and takes the helper alone. */
 static void emit_x87_register_inline(BlockCtx *c, const X86pInsn *insn) {
@@ -460,6 +469,8 @@ void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     emit_x87_constant(c, insn);
   } else if (x87_status_ax_is_emittable(insn)) {
     emit_x87_status_ax(c);
+  } else if (x87_fn_is_emittable(insn) && insn->x87_fn == kX86pX87FnSqrt) {
+    emit_x87_fn_inline(c, insn);
   } else if (x87_control_is_emittable(insn)) {
     /* FLDCW/FNSTCW move a word and call nothing. A new guest control word
        sends the inline forms after it to their slow paths by itself. */

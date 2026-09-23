@@ -1012,6 +1012,36 @@ void x87_inline_register(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
 #endif
 }
 
+/* FSQRT on the host stack under the guest's control word: the helper's own
+   host instruction, without its mirror spill and call. It leaves the status
+   word x86p_x87_apply_fn does -- C1 clear, as the helper's FSTPT leaves it,
+   and C0/C2/C3, which FSQRT leaves undefined, as they were. */
+void x87_inline_fn(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
+  begin(fast);
+#if X87_INLINE_HOST
+  {
+    X86pEmit *e = c->e;
+    if (insn->x87_fn != kX86pX87FnSqrt) {
+      x87_cache_flush(c);
+      return;
+    }
+    regs_ensure(c);
+    guard_host_control(c, fast);
+    guard_occupied(c, fast, 0u);
+    mirror_ensure(c, 1u);
+    x86p_emit_x87_reg(e, 0xD9u, 0xFAu); /* fsqrt */
+    mirror_dirty(c, 0u);
+    x86p_emit_load16_zx(e, kX64Rdx, CPU_REG, status_off());
+    x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, ~(uint32_t)X86P_X87_C1);
+    x86p_emit_store16_reg(e, CPU_REG, status_off(), kX64Rdx);
+    finish_fast(c, fast);
+  }
+#else
+  (void)c;
+  (void)insn;
+#endif
+}
+
 void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
   begin(fast);
 #if X87_INLINE_HOST
