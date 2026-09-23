@@ -156,7 +156,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
 
   case kX86pSimdSqrtps:
     for (i = 0; i < n; i++) {
-      vec_set_f32(&r, i, sqrtf(vec_f32(b, i)));
+      vec_set_f32(&r, i, x86p_sse_nan_result(vec_f32(b, i), vec_f32(b, i), sqrtf(vec_f32(b, i))));
     }
     break;
 
@@ -173,16 +173,16 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
     float v;
     switch (op) {
     case kX86pSimdAddss:
-      v = x + y;
+      v = x86p_sse_nan_result(x, y, x + y);
       break;
     case kX86pSimdSubss:
-      v = x - y;
+      v = x86p_sse_nan_result(x, y, x - y);
       break;
     case kX86pSimdMulss:
-      v = x * y;
+      v = x86p_sse_nan_result(x, y, x * y);
       break;
     case kX86pSimdDivss:
-      v = x / y;
+      v = x86p_sse_nan_result(x, y, x / y);
       break;
     case kX86pSimdMinss:
       v = min_ss(x, y);
@@ -191,7 +191,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
       v = max_ss(x, y);
       break;
     default:
-      v = sqrtf(y);
+      v = x86p_sse_nan_result(y, y, sqrtf(y));
       break;
     }
     vec_set_f32(&r, 0, v);

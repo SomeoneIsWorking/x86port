@@ -919,7 +919,20 @@ static int same_state(const X86pCpu *a, const X86pCpu *b, const char *what) {
     int k;
     for (k = 0; k < 8; k++) {
       if (memcmp(a->xmm[k], b->xmm[k], 16) != 0) {
-        printf("    FAIL %s: XMM%d differs\n", what, k);
+        uint32_t ia[4], jb[4];
+        memcpy(ia, a->xmm[k], 16);
+        memcpy(jb, b->xmm[k], 16);
+        printf("    FAIL %s: XMM%d interp=%08X_%08X_%08X_%08X jit=%08X_%08X_%08X_%08X\n",
+               what,
+               k,
+               ia[3],
+               ia[2],
+               ia[1],
+               ia[0],
+               jb[3],
+               jb[2],
+               jb[1],
+               jb[0]);
         ok = 0;
       }
     }

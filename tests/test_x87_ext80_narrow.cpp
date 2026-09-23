@@ -32,8 +32,6 @@ namespace {
 
 int g_failures;
 long long g_checks;
-long long g_taken;
-long long g_refused;
 
 X86pExt80 ext80(uint16_t sign_exp, uint64_t signif) {
   X86pExt80 out;
@@ -105,6 +103,9 @@ const char *oracle_name = "host x87";
 #endif
 
 #if HAVE_ORACLE
+long long g_taken;
+long long g_refused;
+
 /* One value through both arms. Counts which arm answered, so "they agree"
    cannot be reported by a sweep that took the fast path for nothing. */
 void differ(X86pExt80 v, unsigned width, const char *what) {

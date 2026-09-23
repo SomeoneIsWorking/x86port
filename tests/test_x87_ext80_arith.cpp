@@ -36,8 +36,6 @@ namespace {
 
 int g_failures;
 long long g_checks;
-long long g_taken;
-long long g_refused;
 
 X86pExt80 ext80(uint16_t sign_exp, uint64_t signif) {
   X86pExt80 out;
@@ -147,6 +145,9 @@ const int oracle_reports_flags = 0;
 #endif
 
 #if HAVE_ORACLE
+long long g_taken;
+long long g_refused;
+
 int rule(X86pX87Op op, X86pExt80 x, X86pExt80 y, X86pExt80 *got, uint16_t *flags) {
   if (op == kX86pX87Mul) {
     return x86p_ext80_mul_ordinary(X86P_X87_CW_INIT, x, y, got, flags);
