@@ -213,8 +213,24 @@ void x86p_emit_shift_r32_cl(X86pEmit *e, X86pHostShift op, X86pHostReg dst);
    them. Every one is caller-saved under both host ABIs. */
 typedef enum X86pHostXmm { kX64Xmm0 = 0, kX64Xmm1 = 1 } X86pHostXmm;
 
-/* The packed single-precision arithmetic, as its 0F-map opcode. */
-typedef enum X86pHostPacked { kX64Addps = 0x58, kX64Mulps = 0x59, kX64Subps = 0x5C, kX64Divps = 0x5E } X86pHostPacked;
+/* The packed single-precision register forms, as their 0F-map opcode: the
+   arithmetic, the bitwise operations, and the two half moves. */
+typedef enum X86pHostPacked {
+  kX64Movhlps = 0x12,
+  kX64Movlhps = 0x16,
+  kX64Andps = 0x54,
+  kX64Andnps = 0x55,
+  kX64Orps = 0x56,
+  kX64Xorps = 0x57,
+  kX64Addps = 0x58,
+  kX64Mulps = 0x59,
+  kX64Subps = 0x5C,
+  kX64Divps = 0x5E
+} X86pHostPacked;
+
+/* The half loads, which replace one half of the register from memory and keep
+   the other: the memory forms of MOVHLPS and MOVLHPS's opcodes. */
+typedef enum X86pHostHalfLoad { kX64Movlps = 0x12, kX64Movhps = 0x16 } X86pHostHalfLoad;
 
 /* movups xmm, [base+disp] and movups [base+disp], xmm -- unaligned, so a
    guest vector at any address can be moved. */
@@ -223,6 +239,17 @@ void x86p_emit_movups_store(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHos
 
 /* <op>ps xmm, xmm -- dst = dst op src, lane by lane. */
 void x86p_emit_packed_ps(X86pEmit *e, X86pHostPacked op, X86pHostXmm dst, X86pHostXmm src);
+
+/* movlps / movhps xmm, [base+disp]: eight bytes into one half. */
+void x86p_emit_half_load(X86pEmit *e, X86pHostHalfLoad op, X86pHostXmm dst, X86pHostReg base, int32_t disp);
+
+/* movss xmm, [base+disp] (lane 0 loaded, the rest zeroed) and movss xmm, xmm
+   (lane 0 copied, the rest kept). */
+void x86p_emit_movss_load(X86pEmit *e, X86pHostXmm dst, X86pHostReg base, int32_t disp);
+void x86p_emit_movss_rr(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src);
+
+/* shufps xmm, xmm, imm8. */
+void x86p_emit_shufps(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src, uint8_t imm);
 
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */
