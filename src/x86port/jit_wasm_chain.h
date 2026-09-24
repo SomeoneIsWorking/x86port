@@ -69,7 +69,6 @@ typedef struct X86pWasmChainUse {
 
 typedef struct X86pWasmChainExits {
   X86pWasmChainUse use;
-  uint32_t entry;     /* the block's own guest address, which a probe never enters */
   int64_t first;      /* the block's first slot, or -1 */
   unsigned slotted;   /* exits given a slot */
   unsigned unslotted; /* exits that asked for one and had none */
@@ -80,9 +79,8 @@ typedef struct X86pWasmChainExits {
   size_t oversized;
 } X86pWasmChainExits;
 
-/* `use` may be NULL, for a block that does not chain. `entry` is the guest
-   address of the block being lowered. */
-void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use, uint32_t entry);
+/* `use` may be NULL, for a block that does not chain. */
+void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use);
 
 /* Bytes to keep free for the chained exits this block may still emit. */
 size_t x86p_wasm_chain_reserve(const X86pWasmChainExits *c);

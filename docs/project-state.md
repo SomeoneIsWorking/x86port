@@ -192,7 +192,10 @@ Binaryen's asyncify refuses); a block chains its first
 `X86P_WASM_CHAIN_SLOTS` (4) exits;
 a block relowered into a shared module reuses the slots it was published with,
 and an exit to a computed EIP that misses its slot probes the block cache's
-front array (`jit_wasm_chain.h`). `test_jit_engine` checks that a non-chaining backend
+front array (`jit_wasm_chain.h`). An exit to its own block's entry links and
+probes like any other, so a guest loop goes round without the dispatcher
+(`test_jit_engine`'s spin and alternating indirect jump, `test_wasm_runtime`'s
+spin). `test_jit_engine` checks that a non-chaining backend
 chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the WebAssembly backend calls
 one in place as x64 does, through one import that makes the main module's
 indirect call, reading a CALL-through-register's leaf site as linear memory

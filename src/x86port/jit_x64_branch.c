@@ -86,7 +86,7 @@ static void emit_chained_exit(BlockCtx *c, int64_t slot, int probe) {
 static void emit_chain_probe(BlockCtx *c) {
   X86pEmit *e = c->e;
   const size_t chain_entry = x86p_jit_chain_entry_offset();
-  X86pEmitSite leave[5];
+  X86pEmitSite leave[4];
   size_t entry;
   unsigned i;
   if (!c->nchain_probes) {
@@ -97,8 +97,6 @@ static void emit_chain_probe(BlockCtx *c) {
     return;
   }
   entry = x86p_emit_here(e);
-  x86p_emit_alu_r32_imm32(e, kX64Cmp, kX64Rax, c->entry_eip);
-  leave[0] = x86p_emit_jcc_rel32(e, kX86pCondZ);
   x86p_emit_mov_r32_r32(e, kX64Rdx, kX64Rax);
   x86p_emit_shift_r32_imm8(e, kX64Shr, kX64Rdx, JC_BLOCK_FRONT_SHIFT);
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rdx, JC_BLOCK_FRONT_SLOTS - 1u);
@@ -107,15 +105,15 @@ static void emit_chain_probe(BlockCtx *c) {
   x86p_emit_mov_r64_imm64(e, kX64Rsi, (uint64_t)(uintptr_t)x86p_jit_chain_front(c->chain));
   x86p_emit_alu_r64_r64(e, kX64Add, kX64Rdx, kX64Rsi);
   x86p_emit_alu_r64_mem(e, kX64Cmp, kX64Rax, kX64Rdx, (int32_t)offsetof(JcBlockFront, guest));
-  leave[1] = x86p_emit_jcc_rel32(e, kX86pCondNZ);
+  leave[0] = x86p_emit_jcc_rel32(e, kX86pCondNZ);
   x86p_emit_load64(e, kX64Rdx, kX64Rdx, (int32_t)offsetof(JcBlockFront, host));
   x86p_emit_alu_r64_imm8(e, kX64Cmp, kX64Rdx, 0); /* a mark: the address is refused */
-  leave[2] = x86p_emit_jcc_rel32(e, kX86pCondZ);
-  emit_transfer_checks(e, leave + 3);
+  leave[1] = x86p_emit_jcc_rel32(e, kX86pCondZ);
+  emit_transfer_checks(e, leave + 2);
   x86p_emit_store32_imm(e, kX64Rcx, (int32_t)offsetof(X86pJitChainRun, pending), 0u);
   x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rdx, (int8_t)chain_entry);
   x86p_emit_jmp_r64(e, kX64Rdx);
-  for (i = 0; i < 5u; i++) {
+  for (i = 0; i < 4u; i++) {
     x86p_emit_bind(e, leave[i]);
   }
   emit_epilogue_from(e, kX64Rax, kX86pJitExitBlockEnd);

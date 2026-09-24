@@ -92,9 +92,8 @@ typedef struct BlockCtx {
   unsigned leaf_site_count;
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
-  /* The guest address this block translates, and the exits that jump to its
-     front-array probe (jit_chain.h, THE PROBE) when they miss their slot. */
-  uint32_t entry_eip;
+  /* The exits that jump to the block's front-array probe (jit_chain.h, THE
+     PROBE) when they miss their slot. */
   X86pEmitSite chain_probes[4];
   unsigned nchain_probes;
   /* How many guest x87 registers the host x87 stack mirrors here; see

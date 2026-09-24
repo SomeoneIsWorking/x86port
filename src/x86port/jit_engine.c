@@ -658,7 +658,6 @@ static void *translate_at(
    translation it was leaving for. */
 typedef struct ChainPending {
   uint32_t slot;    /* one more than its slot index, or 0 */
-  uint32_t from;    /* the block it left */
   uint64_t flushes; /* cache_flushes then: a flush returns every slot */
 } ChainPending;
 
@@ -670,10 +669,10 @@ static uint64_t chained_transfers(const X86pJitChainRun *run, uint64_t allowed) 
 }
 
 /* Fill the pending exit's slot with the unguarded translation found for
-   `guest`. Never to the block that exited: its re-entry is what
-   blocks_reentered counts, one dispatch at a time. */
+   `guest` -- the block that exited included: a loop back to its own entry is
+   bounded by the same stop and budget as any other chained transfer. */
 static void link_pending(X86pJitEngine *e, const ChainPending *pending, uint32_t guest, void *host) {
-  if (pending->slot == 0u || pending->flushes != e->stats.cache_flushes || guest == pending->from ||
+  if (pending->slot == 0u || pending->flushes != e->stats.cache_flushes ||
       pending->slot > x86p_jit_chain_claimed(e->links)) {
     return;
   }
@@ -710,7 +709,7 @@ X86pJitRunStatus x86p_jit_engine_run(
      that is nothing: under the contract, with no per-entry diagnostic armed. */
   const int linking = contract && e->links && !e->profile && !e->chain && e->watch_left == 0u;
   X86pJitChainRun *const chain_run = e->links ? x86p_jit_chain_run(e->links) : NULL;
-  ChainPending pending = {0u, 0u, 0u};
+  ChainPending pending = {0u, 0u};
 
   while (steps < max_steps) {
     void *host = NULL;
@@ -824,10 +823,9 @@ X86pJitRunStatus x86p_jit_engine_run(
     /*
      * The block just entered was the one just left: a guest loop going round
      * again, having paid a full dispatch -- the intercept callback, the cache
-     * lookup and an indirect call out of the module -- to do it. This is the
-     * exact population a backend that lowered a self-exit as a WebAssembly
-     * `loop` would remove, counted against blocks_entered rather than against
-     * translations, because a loop's cost is in its iterations.
+     * lookup and an indirect call out of the module -- to do it. Counted
+     * against blocks_entered rather than against translations, because a
+     * loop's cost is in its iterations.
      *
      * It is a two-entry history and not a successor graph on purpose: a
      * successor graph answers a bigger question and cannot be added to the hot
@@ -841,7 +839,6 @@ X86pJitRunStatus x86p_jit_engine_run(
     e->stats.blocks_chained += transfers;
     if (chain_run && chain_run->pending != 0u) {
       pending.slot = chain_run->pending;
-      pending.from = chain_run->last;
       pending.flushes = e->stats.cache_flushes;
     }
     if (e->profile) {
