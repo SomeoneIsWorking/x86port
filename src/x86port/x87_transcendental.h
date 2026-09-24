@@ -52,7 +52,7 @@ typedef enum X86pX87Fn {
  * `status` receives the condition-code bits the instruction wrote, which is
  * how FPREM reports that its reduction is incomplete and how the comparisons
  * report unordered. Returns 0 for unsupported functions; the caller must
- * refuse the instruction by name. Software FXTRACT remains unsupported.
+ * refuse the instruction by name.
  *
  * `control` is the GUEST's control word, and the operation is performed under
  * it: x87 rounds once, at the precision that word selects, and a result a

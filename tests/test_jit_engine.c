@@ -921,7 +921,10 @@ static void test_a_changed_host_control_word_retires_the_translations(void) {
   __asm__ volatile("fldcw %0" : : "m"(host_saved));
 
   x86p_jit_engine_stats(eng, &st);
-  CHECK(st.cache_flushes == 1u);
+  /* Only an exact host emits the inline path the host word is keyed for; a
+     binary128 host (Android x86_64) has no host constant to go stale, and both
+     runs above already proved its result. */
+  CHECK(st.cache_flushes == (x86p_x87_precision_is_exact() ? 1u : 0u));
   x86p_jit_engine_destroy(eng);
 #else
   printf("    (no GNU x86-64 inline assembly to change the host control word: claims nothing)\n");

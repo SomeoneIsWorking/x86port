@@ -30,8 +30,8 @@
  * Binary128 hosts store ext80 values losslessly and delegate arithmetic and
  * narrowing to software ext80 operations, preserving one guest rounding step.
  * x86p_x87_values_are_supported() describes that numeric capability separately
- * from x86p_x87_precision_is_exact(), which describes the native object layout
- * required for raw register/MMX aliasing. Binary64 hosts still have a precision
+ * from x86p_x87_precision_is_exact(), which says the host `long double` itself
+ * is the ext80 object (what inline host-FPU emission needs). Binary64 hosts still have a precision
  * limitation; only the explicitly approved Darwin path admits their values.
  */
 #ifndef X86PORT_X87_H
@@ -228,9 +228,10 @@ void x86p_x87_set_op_census(X86pX87 *f, X86pX87OpCensus *census);
  * hardware does and what makes the register read back as a NaN to x87. It also
  * marks every tag VALID and does NOT change TOP -- MMX is not a stack.
  *
- * Both return 0 on a host whose `long double` is not x87's format, where there
- * is no mantissa field to alias onto and the caller must refuse by name rather
- * than invent one.
+ * Both return 0 on a host whose register holds no ten x87 bytes to alias (a
+ * binary64 `long double`), and the caller must refuse by name rather than
+ * invent one. An x87-format `long double` and the binary128 host's
+ * signif/sign_exp register both hold them.
  */
 int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out);
 int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v);

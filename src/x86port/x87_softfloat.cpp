@@ -271,6 +271,13 @@ extern "C" int x86p_x87_fn_software_control(X86pX87Fn fn,
   case kX86pX87FnRndint:
     x = extF80_roundToInt(x, &status);
     break;
+  case kX86pX87FnXtract:
+    /* ST(0) becomes the exponent and the significand is pushed above it;
+       extract returns the one and leaves the other in its operand. */
+    second = x;
+    x = extF80_extract(&second, &status);
+    more = 1;
+    break;
   case kX86pX87FnAbs:
     x.signExp &= 0x7FFF;
     break;

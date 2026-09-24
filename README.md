@@ -66,7 +66,9 @@ checkout. Its CMake/Ninja dependencies and Python interpreter are shared by
 the local and hosted build/test paths. macOS verification passes
 `--cc /usr/bin/clang --cxx /usr/bin/clang++` to exercise AppleClang. Windows
 uses `--cc clang-cl --cxx clang-cl` from an x64 Visual Studio developer
-environment with LLVM's `llvm-nm` installed. Windows support remains partial:
+environment with LLVM's `llvm-nm` installed. On Linux x86-64 with Clang,
+`--binary128-model` builds and tests everything with Android x86-64's binary128
+`long double` (`cmake/binary128_model.cmake`). Windows support remains partial:
 the MSVC x87 value representation still needs the f80 work recorded in the
 project-state inventory; CI retains the corresponding runtime tests.
 

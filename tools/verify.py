@@ -17,8 +17,21 @@ def main() -> None:
     parser.add_argument("--cc", required=True)
     parser.add_argument("--cxx", required=True)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument(
+        "--binary128-model",
+        action="store_true",
+        help="build with Android x86-64's binary128 long double (Linux x86-64, Clang)",
+    )
     args = parser.parse_args()
-    verify(root, args.build_dir, args.jit_common, args.cc, args.cxx, args.jobs)
+    verify(
+        root,
+        args.build_dir,
+        args.jit_common,
+        args.cc,
+        args.cxx,
+        args.jobs,
+        args.binary128_model,
+    )
 
 
 if __name__ == "__main__":

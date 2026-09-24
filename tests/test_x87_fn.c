@@ -26,11 +26,15 @@
 #include "oracle_code.h"
 #include "x87.h"
 
+#include <float.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__x86_64__) && !defined(X86P_TEST_ORACLE_UNAVAILABLE)
+/* The silicon is the oracle only where x86p_x87_fn itself runs on it: an
+   x86-64 whose `long double` is the ext80 object. A binary128 x86-64 (Android)
+   evaluates in software, which is test_x87_software's to check. */
+#if defined(__x86_64__) && LDBL_MANT_DIG == 64 && !defined(X86P_TEST_ORACLE_UNAVAILABLE)
 #define HAVE_ORACLE 1
 #else
 #define HAVE_ORACLE 0
@@ -380,7 +384,7 @@ int main(void) {
   jc_code_region_destroy(&g_code_region);
   return g_failed ? 1 : 0;
 #else
-  printf("SKIP: x86-64 hardware oracle unavailable; 0 host instructions executed, x87 functions unchecked.\n");
+  printf("SKIP: x86-64 ext80 hardware oracle unavailable; 0 host instructions executed, x87 functions unchecked.\n");
   return 77;
 #endif
 }

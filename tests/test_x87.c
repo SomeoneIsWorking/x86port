@@ -26,6 +26,8 @@
 #include "x87.h"
 
 #include "x87_ext80_arith.h"
+#include "x87_stack.h"
+#include "x87_state.h"
 
 _Static_assert(sizeof(X86pX87Tag) == sizeof(unsigned int), "C ABI enum width");
 _Static_assert(sizeof(X86pX87Op) == sizeof(unsigned int), "C ABI enum width");
@@ -307,6 +309,62 @@ static void test_the_fused_arith_path_matches_the_long_one(void) {
      refuse, and the other four must be taken. */
   CHECK_EQ_U(taken, 4);
   CHECK_EQ_U(refused, 2);
+}
+
+/*
+ * A register's padding is zero after every store, whatever was there before.
+ * Only a binary128 host has any: its register is a signif/sign_exp pair in
+ * sixteen bytes, and the register file is compared as memory. Each write path
+ * -- a push, the fused arithmetic, a restored image -- starts from slots
+ * poisoned with 0xAA, so a store that kept the old bytes or copied a value's
+ * unspecified ones shows here rather than as a flaky memcmp elsewhere.
+ */
+#if X86P_X87_BINARY128
+static int padding_is_zero(const X86pX87Reg *slot) {
+  const unsigned char *bytes = (const unsigned char *)slot;
+  size_t k;
+  for (k = 10; k < sizeof *slot; k++) {
+    if (bytes[k] != 0u) {
+      return 0;
+    }
+  }
+  return 1;
+}
+#endif
+
+static void test_every_store_zeroes_the_register_padding(void) {
+#if X86P_X87_BINARY128
+  X86pX87 f;
+  X86pExt80 src;
+  uint8_t image[108]; /* an FSAVE image: the environment, then eight ext80 */
+  X86pMem mem = {0};
+  int i;
+  x86p_x87_reset(&f);
+  memset(f.reg, 0xAA, sizeof f.reg);
+  CHECK(x86p_x87_push(&f, 5.0L));
+  CHECK(x86p_x87_push(&f, 3.0L));
+  CHECK(padding_is_zero(&f.reg[x86p_x87_phys(&f, 0)]));
+  CHECK(padding_is_zero(&f.reg[x86p_x87_phys(&f, 1)]));
+
+  memset(&f.reg[x86p_x87_phys(&f, 0)], 0xAA, sizeof f.reg[0]);
+  f.reg[x86p_x87_phys(&f, 0)] = x86p_x87_reg_from_long_double(3.0L);
+  memset((unsigned char *)&f.reg[x86p_x87_phys(&f, 0)] + 10, 0xAA, sizeof f.reg[0] - 10u);
+  CHECK(x86p_x87_ext80_of_st(&f, 1, &src));
+  CHECK(x86p_x87_arith_ext80_fast(&f, kX86pX87Mul, 0, src, 0));
+  CHECK(padding_is_zero(&f.reg[x86p_x87_phys(&f, 0)]));
+
+  mem.host = image;
+  mem.lo = 0x1000u;
+  mem.size = (uint32_t)sizeof image;
+  CHECK(x86p_x87_save_state(&f, &mem, mem.lo));
+  memset(f.reg, 0xAA, sizeof f.reg);
+  CHECK(x86p_x87_restore_state(&f, &mem, mem.lo));
+  for (i = 0; i < X86P_X87_REGS; i++) {
+    CHECK(padding_is_zero(&f.reg[i]));
+  }
+#else
+  printf("  NOTE: this host's register has no padding to keep.\n");
+#endif
 }
 
 static void test_stack_overflow_and_underflow_are_reported(void) {
@@ -938,6 +996,7 @@ int main(void) {
   RUN(test_stack_overflow_and_underflow_are_reported);
   RUN(test_the_op_census_counts_what_a_run_performs);
   RUN(test_the_fused_arith_path_matches_the_long_one);
+  RUN(test_every_store_zeroes_the_register_padding);
   RUN(test_empty_register_is_not_zero);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);

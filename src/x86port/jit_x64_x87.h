@@ -11,8 +11,11 @@
  * register/implicit compares, FLDCW and memory-form FNSTSW are refused until
  * they have native emitters. FNSTSW AX and FNCLEX are emitted through their
  * canonical status owners. Value-dependent forms are also refused when the
- * host compiler does not provide x87-format long double; status-only forms and
- * pointer/integer helper boundaries remain available on Win64.
+ * host cannot hold every ext80 value (x86p_x87_values_are_supported: a
+ * binary64 `long double`, as on Win64); status-only forms and pointer/integer
+ * helper boundaries remain available there. A binary128 host (Android
+ * x86_64) emits them, decoding each widened memory operand through
+ * x86p_x87_from_f80.
  */
 #ifndef X86PORT_JIT_X64_X87_H
 #define X86PORT_JIT_X64_X87_H

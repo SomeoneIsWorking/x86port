@@ -67,6 +67,7 @@ qualify complete x87 semantics, ARM64 hosts, or representative consumer gameplay
 | Windows x86-64 | partial; hosted synthetic gate passed | The completed native Windows run above passes the x87 control fixture, which checks 15 exact-host successes or 15 named precision refusals through product dispatch with unchanged CPU/memory and zero executed blocks; status-only x87 operations still execute. Local Clang normal and `-mlong-double-64` builds separately exercise both branches. Host-independent f80 storage and arithmetic/conversion/rounding remain required for full Windows x87; this host is not release-qualified. |
 | macOS x86-64 | hosted synthetic gate passed | Run [33959170423](https://github.com/SomeoneIsWorking/x86port/actions/runs/33959170423) at `52f93d3` passed the Intel Apple Clang product and portable-oracle graph. The Linux compatibility-mode-only integer-tail hardware oracle reports a CTest skip on macOS; the archive boundary recognizes Mach-O's leading C-symbol underscore. This does not qualify Apple Silicon. |
 | macOS arm64 | partial; not release-qualified | [Native job 101311854341](https://github.com/SomeoneIsWorking/x86port/actions/runs/33968164307/job/101311854341) at `96f7665` compiled successfully and passed 26/30 tests, including product/JIT, ARM64 emission, startup/control, and software-x87 checks. Its four failures were unavailable x86-64 hardware oracles returning an error, not ARM64 JIT failures. Those suites now report explicit skips; the complete hosted gate after that classification fix remains pending. The approved JIT value path retains binary64 x87 state without claiming extended precision or gameplay/release conformance. |
+| Android x86-64 | partial; binary128 model gated | Bionic's x86-64 `long double` is binary128, which no other x86-64 host has. The x64 backend's x87 memory-operand slow paths passed their host-widened ext80 scratch to adapters that read it as `long double`, and wedged X-Men 2 on the API 35 emulator (xmen2 #172); they now decode it with `x86p_x87_from_f80`. `tools/verify.py --binary128-model` (Clang `-mlong-double-128` on Linux, glibc's `_Float128` libm bound by `tests/binary128_libm_shim.c`) builds the whole graph with that layout and is a Linux CI step; reverting the fix fails seven suites there. Emulator gameplay and packaging remain the consumer's evidence. |
 | Android arm64-v8a | partial backend; unverified host | ARM64 emission exists, but Android executable-memory, ABI, packaging, and gameplay verification have not been performed. |
 
 `test_integer_tail`, `test_x87_fn`, `test_simd`, and `test_string_ops`
@@ -240,8 +241,10 @@ assumed to be.
 
 Binary128 hosts (including Android ARM64 and
 Emscripten) now convert numerical state through ext80 software arithmetic rather
-than refusing ordinary value forms. Raw MMX aliasing still requires native
-extended storage; this numerical bridge does not establish complete raw-state
+than refusing ordinary value forms. MMX aliases the register's ten x87 bytes,
+which the binary128 register's signif/sign_exp pair holds at the same offsets,
+so MMX runs there too; every register store zeroes the pair's six padding
+bytes. This numerical bridge does not establish complete raw-state
 Windows/ARM64 floating-point conformance.
 
 On binary128 hosts, x87 value admission now classifies zero, NaN, infinity, and

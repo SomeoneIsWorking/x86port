@@ -10,7 +10,13 @@ JIT_COMMON_REVISION = "cf04f93c618293cb1e2b72afc19569675eb7efb4"
 
 
 def verify(
-    root: Path, build_dir: Path, dependency: Path, cc: str, cxx: str, jobs: int
+    root: Path,
+    build_dir: Path,
+    dependency: Path,
+    cc: str,
+    cxx: str,
+    jobs: int,
+    binary128_model: bool = False,
 ) -> None:
     root = root.resolve()
     build_dir = build_dir.resolve()
@@ -46,6 +52,8 @@ def verify(
             f"-DCMAKE_CXX_COMPILER={cxx}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DX86PORT_JITCOMMON_DIR={dependency}",
+            "-DX86P_BINARY128_LONG_DOUBLE_MODEL="
+            + ("ON" if binary128_model else "OFF"),
         ],
         ["cmake", "--build", str(build_dir), "--parallel", str(jobs)],
         ["ctest", "--test-dir", str(build_dir), "--output-on-failure"],

@@ -67,8 +67,11 @@ int x86p_x87_values_are_supported(void) {
 #define X87_MANTISSA_BYTES 8u
 #define X87_SIGN_EXP_OFFSET 8u
 
+/* MMX aliases the register's ten x87 bytes: the exact host's `long double` and
+   the binary128 host's signif/sign_exp register both keep them at offsets 0
+   and 8, so the one byte-level implementation serves both. */
 int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out) {
-#if X86P_EXACT_LONG_DOUBLE
+#if X86P_EXACT_LONG_DOUBLE || X86P_X87_BINARY128
   uint64_t v = 0u;
   if (!f || !out || n < 0 || n >= X86P_X87_REGS) {
     return 0;
@@ -85,7 +88,7 @@ int x86p_x87_mmx_read(const X86pX87 *f, int n, uint64_t *out) {
 }
 
 int x86p_x87_mmx_write(X86pX87 *f, int n, uint64_t v) {
-#if X86P_EXACT_LONG_DOUBLE
+#if X86P_EXACT_LONG_DOUBLE || X86P_X87_BINARY128
   uint16_t sign_exp = 0xFFFFu;
   int i;
   if (!f || n < 0 || n >= X86P_X87_REGS) {
@@ -537,15 +540,10 @@ int x86p_x87_arith_ext80_fast(X86pX87 *f, X86pX87Op op, int dst, X86pExt80 src, 
   if (!answered) {
     return 0;
   }
-  /*
-   * The whole 16-byte object is written, not just the two fields. The register
-   * file is compared as memory -- the WASM differential does one memcmp of the
-   * X86pX87 -- so a write that left the six padding bytes alone would differ
-   * from the long path on bytes no value depends on. This is the same store
-   * reg_of_ext80 makes, and jit_wasm_x87_load.c's emitted one.
-   */
+  /* Through the register file's one store, which keeps the padding zero as
+     the long path and jit_wasm_x87_load.c's emitted store do. */
   p = x86p_x87_phys(f, dst);
-  f->reg[p] = reg_of_ext80(r);
+  x86p_x87_store_slot(&f->reg[p], reg_of_ext80(r));
   f->tag[p] = (uint8_t)kX86pX87TagValid;
   f->status |= raised;
   return 1;
