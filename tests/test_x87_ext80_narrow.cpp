@@ -207,8 +207,11 @@ void table() {
   expect_taken(ext80((uint16_t)(X86P_EXT80_BIAS + 127), 0xFFFFFF0000000000ull), 4u, 0x7F7FFFFFull, "f32 max normal");
 
   /* THE REFUSALS. Each is a different answer, not a rare one. */
-  expect_refused(ext80(0u, 0u), 4u, "refuse +0");
-  expect_refused(ext80(0x8000u, 0u), 8u, "refuse -0");
+  /* A zero of either sign is the target's zero of that sign, at both widths. */
+  expect_taken(ext80(0u, 0u), 4u, 0x00000000u, "+0 to f32");
+  expect_taken(ext80(0x8000u, 0u), 4u, 0x80000000u, "-0 to f32");
+  expect_taken(ext80(0u, 0u), 8u, 0x0000000000000000ull, "+0 to f64");
+  expect_taken(ext80(0x8000u, 0u), 8u, 0x8000000000000000ull, "-0 to f64");
   expect_refused(ext80(1u, one), 8u, "refuse ext80 subnormal exponent");
   expect_refused(ext80(0x7FFFu, one), 8u, "refuse infinity");
   expect_refused(ext80(0x7FFFu, one | 0x4000000000000000ull), 8u, "refuse NaN");

@@ -19,9 +19,15 @@ int x86p_ext80_narrow_nearest(X86pExt80 value, unsigned width, uint64_t *out) {
   if (!out || target.field == 0u) {
     return 0;
   }
-  /* A zero or subnormal exponent, an all-ones one, and an unnormal -- a
-     stored exponent with no explicit integer bit, which is an invalid
-     encoding rather than a value -- are each somebody else's case. */
+  /* A zero narrows to the zero of the same sign, exactly, in every rounding
+     mode. It is the commonest value a game stores. */
+  if (exp == 0u && value.signif == 0u) {
+    *out = sign << (width * 8u - 1u);
+    return 1;
+  }
+  /* A subnormal exponent, an all-ones one, and an unnormal -- a stored
+     exponent with no explicit integer bit, which is an invalid encoding rather
+     than a value -- are each somebody else's case. */
   if (exp == 0u || exp == EXT80_EXP_MAX || (value.signif & EXT80_INTEGER_BIT) == 0u) {
     return 0;
   }

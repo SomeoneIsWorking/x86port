@@ -23,9 +23,13 @@
  *     real and they are not this.
  *   - a normal ext80 source: a stored exponent that is neither zero nor all
  *     ones, AND the explicit integer bit set. An unnormal is invalid and an
- *     infinity, a NaN, a zero and a subnormal each have their own encoding.
+ *     infinity, a NaN and a subnormal each have their own encoding.
  *   - a result that is a normal in the target: no overflow to infinity and no
  *     subnormal, including after a rounding carry.
+ *   - OR a zero of either sign, which is the target's zero of that sign in
+ *     every rounding mode. It is not rare: FST of 0.0 was the larger part of
+ *     the stores that still reached the helper, 24.6 million in 90 seconds of
+ *     the Dead Zone.
  * Everything else returns 0 and reaches the same conversion it always did.
  *
  * THERE ARE TWO IMPLEMENTATIONS OF THIS and that is deliberate: the C one

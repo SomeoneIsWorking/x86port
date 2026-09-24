@@ -14,12 +14,13 @@
  * WebAssembly module, so reaching x86p_wasm_x87_load_bits is a cross-module
  * call, and the guest performs one per FLD.
  *
- * ONLY THE ORDINARY CASE IS EMITTED. A subnormal, a zero, an infinity, a NaN
+ * ONLY THE ORDINARY CASE IS EMITTED: a normal, or a zero, which was the
+ * commonest value the helper was still handed. A subnormal, an infinity, a NaN
  * and a stack overflow all still go to the helper, because each of them needs
- * a different answer and putting five answers inline would trade the crossing
- * for a block twice the size. The emitted test for "ordinary" is two integer
- * comparisons on the exponent and one on the destination's tag; everything it
- * rejects reaches exactly the code that ran before.
+ * a different answer and putting them inline would trade the crossing for a
+ * block twice the size. The emitted test for "ordinary" is a few integer
+ * comparisons on the exponent and fraction and one on the destination's tag;
+ * everything it rejects reaches exactly the code that ran before.
  *
  * So there are still two implementations of the normal case and that is the
  * cost of this file. They are held together by two things rather than by
