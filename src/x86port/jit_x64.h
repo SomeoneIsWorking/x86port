@@ -116,8 +116,9 @@ const char *x86p_jit_status_name(X86pJitStatus s);
    and the chain probe that exits missing their slot jump to (about 125, with
    12 more per exit to reach it; jit_chain.h). That is about 575.
 
-   Both numbers are enforced, not trusted: x86p_jit_translate refuses a block
-   in which one instruction, or the tail, emitted more, naming the count. The
+   Both numbers are enforced, not trusted, by both native backends:
+   x86p_jit_translate refuses a block in which one instruction, or the tail,
+   emitted more, naming the count. The
    instruction bound had drifted to 224 while forms emitted up to 303 bytes,
    which nothing noticed because a budget is only exceeded near the end of a
    buffer; the tail bound was once passed by the game at 337 bytes while no

@@ -55,18 +55,6 @@ int x86p_jit_available(void) {
 #endif
 }
 
-size_t x86p_jit_chain_entry_offset(void) {
-  return 0u;
-}
-
-unsigned x86p_jit_chain_slots_per_block(void) {
-  return 0u;
-}
-
-uint64_t x86p_jit_chain_transfer_limit(void) {
-  return 0u;
-}
-
 uint32_t x86p_jit_host_state(void) {
   return 0u;
 }
@@ -681,94 +669,12 @@ static void emit_movx(BlockCtx *c, const X86pInsn *insn, int is_signed, uint32_t
  * frame. STP/LDP through SP also satisfies AArch64's requirement that SP be
  * 16-byte aligned at every load/store through it.
  */
-static void emit_prologue(X86pA64Emit *e) {
-  x86p_a64_emit_push_pair(e, CPU_REG, kA64Lr);
-  x86p_a64_emit_mov_x_x(e, CPU_REG, kA64X0);
-}
-
-static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w) {
-  X86pA64Cond cc;
-  int constant;
-  if (x86p_a64_emit_condition_flags(c->e, cond, last_kind, last_w, &cc, &constant)) {
-    c->cond_inline++;
-    if (constant >= 0) {
-      x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)constant);
-    } else {
-      x86p_a64_emit_cset_w(c->e, cc, kA64X0);
-    }
-    return;
-  }
-  c->cond_helper_calls++;
-  if (last_kind < 0) {
-    c->cond_unknown_kind++;
-  }
-  x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)cond);
-  x86p_a64_emit_lea64(c->e, kA64X1, CPU_REG, flags_off());
-  emit_call(c->e, (void *)&x86p_cond);
-}
-
-static void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
-  X86pA64Emit *e = c->e;
-  X86pA64Cond cc;
-  int constant;
-  c->conds++;
-  /*
-   * A branch selects between two addresses, so the inline form reads the host
-   * condition DIRECTLY with the csel -- materialising 0/1 with a cset and then
-   * testing it again would be three instructions to say what one already says.
-   * A condition that is constant for the kind (CF and OF after a logic
-   * operation) picks its successor here, at translation time.
-   */
-  if (x86p_a64_emit_condition_flags(e, cond, last_kind, last_w, &cc, &constant)) {
-    c->cond_inline++;
-    if (constant >= 0) {
-      x86p_a64_emit_mov_w_imm32(e, kA64X0, constant ? target : fallthrough);
-    } else {
-      x86p_a64_emit_mov_w_imm32(e, kA64X0, fallthrough);
-      x86p_a64_emit_mov_w_imm32(e, kA64X1, target);
-      x86p_a64_emit_csel_w(e, cc, kA64X0, kA64X1, kA64X0);
-    }
-    emit_epilogue_from(e, kA64X0, kX86pJitExitBlockEnd);
-    return;
-  }
-  c->cond_helper_calls++;
-  if (last_kind < 0) {
-    c->cond_unknown_kind++;
-  }
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
-  x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
-  emit_call(e, (void *)&x86p_cond);
-  x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
-  x86p_a64_emit_mov_w_imm32(e, kA64X0, fallthrough);
-  x86p_a64_emit_mov_w_imm32(e, kA64X1, target);
-  x86p_a64_emit_csel_w(e, kA64CondNe, kA64X0, kA64X1, kA64X0);
-  emit_epilogue_from(e, kA64X0, kX86pJitExitBlockEnd);
-}
-
-/* SETcc materialises the canonical condition evaluator's 0/1 result without
-   touching guest flags. A memory destination computes the condition first,
-   then preserves it in CARRY_REG while the shared address/bounds path uses
-   X0. */
-static void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w) {
-  const X86pOperand *dst = &insn->operand[0];
-
-  c->conds++;
-  emit_condition_value(c, insn->cond, last_kind, last_w);
-  if (dst->kind == kX86pOperandMem) {
-    x86p_a64_emit_mov_w_w(c->e, CARRY_REG, kA64X0);
-    emit_mem_prepare_w(c, dst, insn_eip, 1);
-    x86p_a64_emit_store8_reg(c->e, HOSTPTR_REG, 0, CARRY_REG);
-    return;
-  }
-  x86p_a64_emit_store8_reg(c->e, CPU_REG, reg_off_w(dst->reg, 1), kA64X0);
-}
-
 /* CALL and RET -- see jit_x64.c's emit_call_rel for why these END the block
    with a plain successor EIP rather than refusing it. */
 static void emit_call_rel(BlockCtx *c, uint32_t return_eip, uint32_t target, uint32_t insn_eip) {
   x86p_a64_emit_mov_w_imm32(c->e, kA64X0, return_eip);
   emit_push_x0(c, insn_eip);
-  emit_epilogue(c->e, target, kX86pJitExitBlockEnd);
+  emit_call_exit(c, return_eip, target);
 }
 
 /* The indirect forms. TARGET_REG is read before anything else touches
@@ -785,14 +691,14 @@ static void emit_read_branch_target(BlockCtx *c, const X86pOperand *o, uint32_t 
 
 static void emit_jmp_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   emit_read_branch_target(c, &insn->operand[0], insn_eip);
-  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+  emit_exit_from(c, TARGET_REG);
 }
 
 static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t return_eip, uint32_t insn_eip) {
   emit_read_branch_target(c, &insn->operand[0], insn_eip);
   x86p_a64_emit_mov_w_imm32(c->e, kA64X0, return_eip);
   emit_push_x0(c, insn_eip);
-  emit_epilogue_from(c->e, TARGET_REG, kX86pJitExitBlockEnd);
+  emit_call_indirect_exit(c, return_eip);
 }
 
 /* `release` is RET imm16's argument count, applied AFTER the pop because the
@@ -807,13 +713,25 @@ static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
   x86p_a64_emit_alu_w_imm(c->e, kA64Add, kA64X1, 4u + release);
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), kA64X1);
 
-  emit_epilogue_from(c->e, kA64X0, kX86pJitExitBlockEnd);
+  emit_exit_from(c, kA64X0);
 }
 
 /* ---- translation ----------------------------------------------------------
  * Identical control flow to jit_x64.c's translator -- see there for the full
  * rationale behind each decision. This is the same function with every emit
  * call retargeted to the AArch64 encoder. */
+
+/* The block budget reserves WORST_CASE_INSN_BYTES per instruction and
+   EPILOGUE_BYTES for the tail, so emitting more could overrun a buffer the
+   budget said had room. Measured, not assumed: an excess is refused as an
+   internal defect, naming what overran. */
+static int within_bound(size_t used, size_t bound, const char *what, uint32_t pc, char *reason, unsigned reason_len) {
+  if (used <= bound) {
+    return 1;
+  }
+  say(reason, reason_len, "internal: %s at %08X emitted %zu bytes, past the %zu-byte bound", what, pc, used, bound);
+  return 0;
+}
 
 X86pJitStatus x86p_jit_translate(const X86pMem *mem,
                                  uint32_t eip,
@@ -833,8 +751,6 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
-  /* This backend neither chains nor calls leaves: every exit returns to the
-     dispatcher. */
   const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
   void *const boundary_user = env ? env->boundary_user : NULL;
   X86pA64Emit e;
@@ -849,6 +765,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
      Tracked with the kind because a derivation is only reusable when BOTH are
      known: the flags of a byte operation are not the flags of a 32-bit one. */
   int last_w = -1;
+  size_t insn_start;
+  size_t tail_start;
 
   if (!mem || !out || !code || mem->sparse) {
     say(reason, reason_len, mem && mem->sparse ? "sparse memory requires the WASM backend" : "null argument");
@@ -868,13 +786,26 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
+  ctx.chain = env ? env->chain : NULL;
+  /* A leaf returns into the block through a chained exit. */
+  if (ctx.chain && env->leaf) {
+    ctx.leaf = env->leaf;
+    ctx.leaf_user = env->leaf_user;
+    ctx.leaf_sites = env->leaf_sites;
+  }
   emit_prologue(&e);
+  insn_start = e.len;
 
   for (;;) {
     uint8_t bytes[X86P_MAX_INSN_LEN];
     X86pInsn insn;
     uint32_t avail;
     uint32_t i;
+
+    if (!within_bound(e.len - insn_start, WORST_CASE_INSN_BYTES, "the instruction before", pc, reason, reason_len)) {
+      return kX86pJitOutOfSpace;
+    }
+    insn_start = e.len;
 
     if (count >= MAX_INSNS) {
       break;
@@ -944,7 +875,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       uint32_t next = pc + insn.length;
       uint32_t target = next + insn.operand[0].imm;
       if (insn.op == (uint8_t)kX86pInsnJmp) {
-        emit_epilogue(&e, target, kX86pJitExitBlockEnd);
+        emit_exit(&ctx, target);
       } else if (insn.op != kX86pInsnJcc) {
         emit_loop(&ctx, &insn, target, next);
       } else {
@@ -1118,8 +1049,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     count++;
   }
 
+  if (!within_bound(e.len - insn_start, WORST_CASE_INSN_BYTES, "the instruction ending", pc, reason, reason_len)) {
+    return kX86pJitOutOfSpace;
+  }
+  tail_start = e.len;
   if (!terminated) {
-    emit_epilogue(&e, pc, exit);
+    emit_block_end(&ctx, pc, exit);
   }
 
   /*
@@ -1149,6 +1084,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     x86p_a64_emit_ret(&e);
   }
 
+  emit_tail_routines(&ctx);
+  if (!within_bound(e.len - tail_start, EPILOGUE_BYTES, "the tail of the block", eip, reason, reason_len)) {
+    return kX86pJitOutOfSpace;
+  }
+
   if (!x86p_a64_emit_sites_bound(&e)) {
     say(reason, reason_len, "internal: %u jump site(s) left unbound at %08X", e.sites_made - e.sites_bound, eip);
     return kX86pJitOutOfSpace;
@@ -1175,6 +1115,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   out->cond_inline = ctx.cond_inline;
   out->cond_unknown_kind = ctx.cond_unknown_kind;
   out->ends_in_branch = terminated;
+  out->chain_exits = ctx.chain_exits;
+  out->chain_exits_unslotted = ctx.chain_exits_unslotted;
+  out->leaf_calls = ctx.leaf_calls;
+  out->leaf_sites = ctx.leaf_site_count;
   return kX86pJitOk;
 }
 

@@ -357,6 +357,18 @@ static void test_shl_sar_w_imm(void) {
   CHECK(fbits(w, 30, 29) == 0u); /* SBFM opc */
   CHECK(fbits(w, 21, 16) == 5u);
   CHECK(fbits(w, 15, 10) == 31u);
+
+  /* lsr wd, wd, #12 == UBFM wd, wd, #12, #31 */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_lsr_w_imm(&e, kA64X2, 12);
+  w = last_word(&e);
+  CHECK(fbits(w, 28, 23) == 0x26u);
+  CHECK(fbits(w, 31, 31) == 0u);
+  CHECK(fbits(w, 30, 29) == 2u); /* UBFM opc */
+  CHECK(fbits(w, 21, 16) == 12u);
+  CHECK(fbits(w, 15, 10) == 31u);
+  CHECK(fbits(w, 9, 5) == (uint32_t)kA64X2);
+  CHECK(fbits(w, 4, 0) == (uint32_t)kA64X2);
 }
 
 static void test_cmp_and_tst(void) {
@@ -392,6 +404,32 @@ static void test_cmp_and_tst(void) {
   CHECK(fbits(w, 30, 29) == 3u);
   CHECK(fbits(w, 21, 10) == 50u);
   CHECK(fbits(w, 4, 0) == 31u);
+
+  /* cmp xa,xb == SUBS xzr,xa,xb -- the cmp above with sf=1 */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_cmp_x_x(&e, kA64X2, kA64X0);
+  w = last_word(&e);
+  CHECK(fbits(w, 31, 31) == 1u);
+  CHECK(fbits(w, 28, 24) == 0x0Bu);
+  CHECK(fbits(w, 30, 29) == 3u);
+  CHECK(fbits(w, 9, 5) == (uint32_t)kA64X2);
+  CHECK(fbits(w, 20, 16) == (uint32_t)kA64X0);
+  CHECK(fbits(w, 4, 0) == 31u);
+
+  /* subs xd,xd,#1 -- ADD/SUB immediate, sf=1, op=1, S=1, Rd kept */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_subs_x_imm(&e, kA64X2, 1u);
+  w = last_word(&e);
+  CHECK(fbits(w, 31, 31) == 1u);
+  CHECK(fbits(w, 28, 24) == 0x11u);
+  CHECK(fbits(w, 30, 29) == 3u);
+  CHECK(fbits(w, 22, 22) == 0u);
+  CHECK(fbits(w, 21, 10) == 1u);
+  CHECK(fbits(w, 9, 5) == (uint32_t)kA64X2);
+  CHECK(fbits(w, 4, 0) == (uint32_t)kA64X2);
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_subs_x_imm(&e, kA64X2, 4096u);
+  CHECK(!x86p_a64_emit_ok(&e));
 
   /* tst wa,wb == ANDS wzr,wa,wb -- logical shifted-register, opc=11 */
   x86p_a64_emit_init(&e, buf, sizeof buf);
@@ -474,6 +512,27 @@ static void test_bcc_forward_over_one_instruction(void) {
   CHECK(sext(fbits(w, 23, 5), 19) == 2); /* skips the mov and lands past it */
 }
 
+/* A backward b.cc: bound to an offset before the site, so imm19 is negative. */
+static void test_bcc_bound_backward(void) {
+  uint8_t buf[32];
+  X86pA64Emit e;
+  X86pA64EmitSite site;
+  uint32_t w;
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_ret(&e);
+  x86p_a64_emit_ret(&e);
+  site = x86p_a64_emit_bcc(&e, kA64CondNe);
+  x86p_a64_emit_bind_to(&e, site, 0u);
+  memcpy(&w, buf + site.at, 4);
+  CHECK(x86p_a64_emit_sites_bound(&e));
+  CHECK(fbits(w, 31, 24) == 0x54u);
+  CHECK(fbits(w, 3, 0) == (uint32_t)kA64CondNe);
+  CHECK(sext(fbits(w, 23, 5), 19) == -2);
+  x86p_a64_emit_bind_to(&e, x86p_a64_emit_b(&e), e.len + 4u);
+  CHECK(!x86p_a64_emit_ok(&e)); /* past the code: refused, not encoded */
+}
+
 static void test_b_unconditional_forward(void) {
   uint8_t buf[16];
   X86pA64Emit e;
@@ -547,6 +606,15 @@ static void test_ret_and_blr(void) {
   CHECK(fbits(w, 31, 25) == 0x6Bu); /* 1101011 */
   CHECK(fbits(w, 24, 21) == 1u);    /* BLR opc */
   CHECK(fbits(w, 9, 5) == (uint32_t)kA64X9);
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_br(&e, kA64X2);
+  w = last_word(&e);
+  CHECK(fbits(w, 31, 25) == 0x6Bu);
+  CHECK(fbits(w, 24, 21) == 0u); /* BR opc */
+  CHECK(fbits(w, 20, 16) == 31u);
+  CHECK(fbits(w, 9, 5) == (uint32_t)kA64X2);
+  CHECK(fbits(w, 4, 0) == 0u);
 }
 
 /* ---- 128-bit V-register load/store (x87 long-double marshaling) -------- */
@@ -627,6 +695,7 @@ int main(void) {
   RUN(test_bcc_self_bind_has_zero_offset);
   RUN(test_bcc_forward_over_one_instruction);
   RUN(test_b_unconditional_forward);
+  RUN(test_bcc_bound_backward);
   RUN(test_push_pop_pair_and_sp_adjust);
   RUN(test_ret_and_blr);
   RUN(test_load_store_mov_q);

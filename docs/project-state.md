@@ -184,9 +184,17 @@ inexact x87 representation. Both host backends use `jit_x87_predicates.c` for
 value admission: exact extended state, or the explicitly approved Apple ARM64
 binary64 path described below.
 
-Gap: the ARM64 backend does not link blocks to their successors
-(`x86p_jit_chain_slots_per_block` returns 0), so every block exit returns to the
-dispatcher; x64 and WebAssembly chain. A WebAssembly transfer is a
+All three backends chain. ARM64 (`jit_arm64_branch.c`) gives a block two
+slots, each exit comparing its slot's guest address against the 64-bit EIP in
+X0 and branching (`br`) to the linked host past the prologue after the run's
+stop and budget checks; a computed exit that misses probes the block cache's
+front array, and every failed transfer in a block shares one return that names
+the pending slot. Under `qemu-aarch64` `test_jit_engine` chains 4,089 of 4,096
+block entries; removing the budget check hangs its bounded cycle and dropping
+the pending store fails 8 tests. The same file enforces x64's instruction and
+tail byte bounds (`X86P_JIT_WORST_CASE_INSN_BYTES`, `X86P_JIT_EPILOGUE_BYTES`),
+which a leaf-site CALL passed at 488 bytes until the shared return and the
+site's out-of-line refill brought it within 384. A WebAssembly transfer is a
 tail call through a one-function trampoline module rather than a jump, so a
 chain runs in constant stack (the main module cannot hold the tail call, which
 Binaryen's asyncify refuses); a block chains its first
@@ -210,9 +218,13 @@ against the interpreter, and a 100-caller ring that stays chained, 19,999 of
 mapping, a page-permission table, and engine data above 128 MiB where every
 address constant takes five bytes. An instruction's size bound excludes its
 chained exits, which the chain reserve pays for, each held to
-`X86P_WASM_CHAIN_EXIT_BYTES`: a leaf CALL has two. The ARM64
-backend never calls one (`x86p_jit_engine_set_leaves`), so every CALL to a
-consumer's leaf reaches it through the dispatcher there.
+`X86P_WASM_CHAIN_EXIT_BYTES`: a leaf CALL has two. ARM64 calls
+leaves in place too, direct CALLs and CALL-through-register sites alike, with
+a site's refill in the block tail since it runs only on a miss;
+`test_jit_engine`'s leaf and site tests pass there, and redirecting the
+refill's branch back to its leaf call fails four of them. Gap: ARM64 chaining
+and leaves are unmeasured on an ARM64 device; the qemu differential is their
+only evidence.
 
 `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
 intercept and dispatch callbacks. The run loop consults the intercept once per
