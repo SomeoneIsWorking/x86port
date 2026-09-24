@@ -58,18 +58,16 @@ static void register_field(X86pWasmLower *l) {
 }
 
 /*
- * ST(0)'s physical index into kX86pWasmLocalTarget, and everything about the
- * value and the machine that can refuse the fast path ADDED to the refusal
- * already in kX86pWasmLocalB -- which the caller has initialised from the
- * address verdict, and which must not be overwritten here.
+ * ST(0)'s physical index into kX86pWasmLocalTarget, an empty ST(0) ADDED to the
+ * refusal already in kX86pWasmLocalB -- which the caller has initialised from
+ * the address verdict, and which must not be overwritten here -- and the
+ * register's two fields: the significand in kX86pWasmLocal64Bits and sign_exp
+ * in kX86pWasmLocalR.
  *
- * It leaves the significand in kX86pWasmLocal64Bits and the TARGET's biased
- * exponent -- already rebiased from ext80 -- in kX86pWasmLocalA, because the
- * emitted store needs both and the helper recomputes everything from the
- * register file, so the two arms cannot disagree about a case they do not
- * share.
+ * Nothing here depends on the value, so both the zero arm and the ordinary
+ * one start from it.
  */
-static void classify(X86pWasmLower *l, X86pExt80Source target) {
+static void locate_top(X86pWasmLower *l) {
   /* p = top & 7, which is ST(0)'s physical register. */
   x87_base(l);
   x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
@@ -86,16 +84,6 @@ static void classify(X86pWasmLower *l, X86pExt80Source target) {
   x86p_wasm_i32_op(l->e, kWasmI32Eq);
   refuse_if(l);
 
-  /* The RC field. Only round-to-nearest is this path's, and #162 measured the
-     guest moving RC on 1.65% of its operations, so the other three are real. */
-  x87_base(l);
-  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kControlOffset);
-  constant(l, (int32_t)X86P_X87_RC_MASK);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  constant(l, (int32_t)X86P_X87_RC_NEAREST);
-  x86p_wasm_i32_op(l->e, kWasmI32Ne);
-  refuse_if(l);
-
   /* The two fields of reg[p]. Its address is recomputed for the second rather
      than held in a local: kX86pWasmLocalAddr is the DESTINATION for the whole
      instruction, and there is no spare i32 local to keep a second address in.
@@ -106,6 +94,43 @@ static void classify(X86pWasmLower *l, X86pExt80Source target) {
   register_field(l);
   x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
+}
+
+/* One i32: the fields locate_top() read are a zero of either sign and nothing
+   refused the store. A zero narrows exactly in every rounding mode, so the RC
+   field is not consulted for it. */
+static void zero_and_permitted(X86pWasmLower *l) {
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalR);
+  constant(l, kExt80ExpMax);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  x86p_wasm_i32_op(l->e, kWasmI32Eqz);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
+  x86p_wasm_i64_eqz(l->e);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
+  x86p_wasm_i32_op(l->e, kWasmI32Eqz);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+}
+
+/*
+ * Everything about the value and the machine that can refuse the ordinary
+ * arm, ADDED to kX86pWasmLocalB.
+ *
+ * It leaves the TARGET's biased exponent -- already rebiased from ext80 -- in
+ * kX86pWasmLocalA, because the emitted store needs it and the helper
+ * recomputes everything from the register file, so the two arms cannot
+ * disagree about a case they do not share.
+ */
+static void classify(X86pWasmLower *l, X86pExt80Source target) {
+  /* The RC field. Only round-to-nearest is this path's, and #162 measured the
+     guest moving RC on 1.65% of its operations, so the other three are real. */
+  x87_base(l);
+  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kControlOffset);
+  constant(l, (int32_t)X86P_X87_RC_MASK);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  constant(l, (int32_t)X86P_X87_RC_NEAREST);
+  x86p_wasm_i32_op(l->e, kWasmI32Ne);
+  refuse_if(l);
 
   /* An unnormal -- a stored exponent with no explicit integer bit -- is an
      invalid encoding rather than a value, and is refused before the exponent
@@ -208,18 +233,61 @@ static void call_helper(X86pWasmLower *l, const X86pInsn *insn, int width, uint3
   x86p_wasm_end(l->e);
 }
 
-/* The ordinary case: assemble the bits, write them, and retire the slot. */
-static void store_narrowed(X86pWasmLower *l, const X86pInsn *insn, int width, X86pExt80Source target) {
-  const int64_t fraction_mask = (int64_t)((((uint64_t)1u << target.field) - 1u));
+/* The i64 of the destination's bits on the stack, at kX86pWasmLocalAddr. */
+static void store_bits(X86pWasmLower *l, int width) {
+  if (width == 4) {
+    x86p_wasm_i32_wrap_i64(l->e);
+    x86p_wasm_i32_store(l->e, ALIGN_NONE, 0u);
+  } else {
+    x86p_wasm_i64_store(l->e, ALIGN_NONE, 0u);
+  }
+}
 
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
-  /* sign, from the register's sign bit, at the top of the destination. */
+/* The register's sign, as the destination's top bit, on the stack as an i64. */
+static void sign_bit(X86pWasmLower *l, int width) {
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalR);
   constant(l, 15);
   x86p_wasm_i32_op(l->e, kWasmI32ShrU);
   x86p_wasm_i64_extend_i32_u(l->e);
   x86p_wasm_i64_const(l->e, (int64_t)(width * 8 - 1));
   x86p_wasm_i64_shl(l->e);
+}
+
+/* The pop x86p_x87_pop_raw performs, in the order it performs it: the slot
+   becomes empty and TOP moves up one. */
+static void retire_top(X86pWasmLower *l, const X86pInsn *insn) {
+  if (insn->x87_pops == 0u) {
+    return;
+  }
+  x87_base(l);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
+  x86p_wasm_i32_op(l->e, kWasmI32Add);
+  constant(l, (int32_t)kX86pX87TagEmpty);
+  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
+  x87_base(l);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
+  constant(l, 1);
+  x86p_wasm_i32_op(l->e, kWasmI32Add);
+  constant(l, X86P_X87_REGS - 1);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
+}
+
+/* A zero: the sign alone, and the slot retired. */
+static void store_zero(X86pWasmLower *l, const X86pInsn *insn, int width) {
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
+  sign_bit(l, width);
+  store_bits(l, width);
+  retire_top(l, insn);
+}
+
+/* The ordinary case: assemble the bits, write them, and retire the slot. */
+static void store_narrowed(X86pWasmLower *l, const X86pInsn *insn, int width, X86pExt80Source target) {
+  const int64_t fraction_mask = (int64_t)((((uint64_t)1u << target.field) - 1u));
+
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
+  /* sign, from the register's sign bit, at the top of the destination. */
+  sign_bit(l, width);
   /* the exponent field, already rebiased and proved to be a normal. */
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_i64_extend_i32_u(l->e);
@@ -234,30 +302,8 @@ static void store_narrowed(X86pWasmLower *l, const X86pInsn *insn, int width, X8
   x86p_wasm_i64_const(l->e, fraction_mask);
   x86p_wasm_i64_and(l->e);
   x86p_wasm_i64_or(l->e);
-  if (width == 4) {
-    x86p_wasm_i32_wrap_i64(l->e);
-    x86p_wasm_i32_store(l->e, ALIGN_NONE, 0u);
-  } else {
-    x86p_wasm_i64_store(l->e, ALIGN_NONE, 0u);
-  }
-
-  if (insn->x87_pops == 0u) {
-    return;
-  }
-  /* The pop x86p_x87_pop_raw performs, in the order it performs it: the slot
-     becomes empty and TOP moves up one. */
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, (int32_t)kX86pX87TagEmpty);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  constant(l, 1);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, X86P_X87_REGS - 1);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
+  store_bits(l, width);
+  retire_top(l, insn);
 }
 
 int x86p_wasm_x87_store_inline(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
@@ -276,14 +322,19 @@ int x86p_wasm_x87_store_inline(X86pWasmLower *l, const X86pInsn *insn, uint32_t 
   x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalCarry);
   x86p_wasm_i32_op(l->e, kWasmI32Eqz);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
+  locate_top(l);
+  zero_and_permitted(l);
+  x86p_wasm_if(l->e, kWasmVoid);
+  store_zero(l, insn, width);
+  x86p_wasm_else(l->e);
   classify(l, target);
   round_to_nearest(l, target);
-
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
   x86p_wasm_if(l->e, kWasmVoid);
   call_helper(l, insn, width, pc);
   x86p_wasm_else(l->e);
   store_narrowed(l, insn, width, target);
+  x86p_wasm_end(l->e);
   x86p_wasm_end(l->e);
   l->x87_stores_inline++;
   return 1;

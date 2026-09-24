@@ -1,7 +1,6 @@
 /* See x87_double_arith.h. */
 #include "x87_double_arith.h"
 
-#include "x87_ext80_arith.h"
 #include "x87_ext80_narrow.h"
 
 #include <string.h>
@@ -14,9 +13,7 @@ int x86p_x87_double_control_applies(uint16_t control) {
 
 int x86p_ext80_to_double(X86pExt80 v, double *out) {
   uint64_t bits;
-  if (x86p_ext80_is_zero(v)) {
-    bits = (uint64_t)(v.sign_exp >> 15) << 63;
-  } else if (!x86p_ext80_narrow_nearest(v, 8u, &bits)) {
+  if (!x86p_ext80_narrow_nearest(v, 8u, &bits)) {
     return 0;
   }
   memcpy(out, &bits, sizeof bits);

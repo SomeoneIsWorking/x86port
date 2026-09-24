@@ -328,6 +328,8 @@ void x86p_wasm_i64_add(X86pWasmEmit *e);
 void x86p_wasm_i64_eq(X86pWasmEmit *e);
 void x86p_wasm_i64_xor(X86pWasmEmit *e);
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount);
+/* And the one a signed zero is recognised by: a significand with no bits. */
+void x86p_wasm_i64_eqz(X86pWasmEmit *e);
 
 /* ---- binary64 ---------------------------------------------------------- */
 

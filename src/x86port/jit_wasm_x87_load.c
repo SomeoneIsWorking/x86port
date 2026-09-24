@@ -84,11 +84,20 @@ static void classify_operand(X86pWasmLower *l, X86pExt80Source source) {
   constant(l, (int32_t)source.exp_max);
   x86p_wasm_i32_op(l->e, kWasmI32And);
   x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalA);
-  /* A zero exponent is a zero or a subnormal and the all-ones one is an
-     infinity or a NaN. Each needs a significand the shift below does not
+  /* A zero exponent with a fraction is a subnormal and the all-ones exponent
+     is an infinity or a NaN. Each needs a significand the shift below does not
      produce, and each is rare enough in the guest's geometry to be worth a
-     call rather than three more branches here. */
+     call rather than three more branches here. A zero exponent WITHOUT a
+     fraction is a zero, which is not rare at all -- 45 million of the loads
+     that reached the helper in 90 seconds of the Dead Zone -- and
+     push_widened() answers it with two selects. */
   x86p_wasm_i32_op(l->e, kWasmI32Eqz);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
+  x86p_wasm_i64_const(l->e, (int64_t)((((uint64_t)1u << source.field) - 1u)));
+  x86p_wasm_i64_and(l->e);
+  x86p_wasm_i64_eqz(l->e);
+  x86p_wasm_i32_op(l->e, kWasmI32Eqz);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   constant(l, (int32_t)source.exp_max);
   x86p_wasm_i32_op(l->e, kWasmI32Eq);
@@ -139,8 +148,14 @@ static void call_helper(X86pWasmLower *l, int width, uint32_t pc) {
   x86p_wasm_end(l->e);
 }
 
-/* The ordinary case: widen, push, tag valid. The three stores are what
-   x86p_x87_push_raw does on its success path, in the order it does them. */
+/* The ordinary case -- a normal or a zero -- widened and pushed. The three
+   stores are what x86p_x87_push_raw does on its success path, in the order it
+   does them.
+
+   A zero differs from a normal in two places, each a select on the stored
+   exponent in kX86pWasmLocalA: no leading one in the significand, and no
+   rebias, ext80's zero keeping exponent zero. classify_operand() already
+   refused every other value with a zero exponent. */
 static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
   const int64_t mantissa_mask = (int64_t)((((uint64_t)1u << source.field) - 1u));
   const int64_t implicit_one = (int64_t)((uint64_t)1u << source.field);
@@ -160,6 +175,9 @@ static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
   x86p_wasm_i64_const(l->e, mantissa_mask);
   x86p_wasm_i64_and(l->e);
   x86p_wasm_i64_const(l->e, implicit_one);
+  x86p_wasm_i64_const(l->e, 0);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
+  x86p_wasm_select(l->e);
   x86p_wasm_i64_or(l->e);
   x86p_wasm_i64_const(l->e, (int64_t)(63u - source.field));
   x86p_wasm_i64_shl(l->e);
@@ -177,6 +195,9 @@ static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   constant(l, (int32_t)(X86P_EXT80_BIAS - (int32_t)source.bias));
   x86p_wasm_i32_op(l->e, kWasmI32Add);
+  constant(l, 0);
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
+  x86p_wasm_select(l->e);
   x86p_wasm_i32_op(l->e, kWasmI32Or);
   x86p_wasm_i64_extend_i32_u(l->e);
   x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
@@ -185,9 +206,8 @@ static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
   x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
 
-  /* The tag is VALID and not classify()'s answer, because the arm that got
-     here already excluded both of the other two: an exponent that is neither
-     zero nor all ones cannot produce an ext80 zero or special. */
+  /* VALID, which is "occupied": the zero class exists only in the
+     architectural tag word, derived from the register (x87.h). */
   x87_base(l);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
   x86p_wasm_i32_op(l->e, kWasmI32Add);
