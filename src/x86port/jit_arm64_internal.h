@@ -11,6 +11,7 @@
 #include "cpu.h"
 #include "decode.h"
 #include "emit_arm64.h"
+#include "jit_chain.h"
 #include "jit_x64.h"
 
 #include <stddef.h>
@@ -86,6 +87,34 @@ typedef struct BlockCtx {
   unsigned nfaults;
   X86pA64EmitSite divide_faults[MAX_INSNS];
   unsigned ndivide_faults;
+  /* Exit slots for chained transfers (jit_chain.h), or NULL: every exit then
+     returns to the dispatcher. */
+  X86pJitChain *chain;
+  unsigned chain_exits;
+  unsigned chain_exits_unslotted;
+  /* Exits that missed their slot and jump to the block's one probe. */
+  X86pA64EmitSite chain_probes[4];
+  unsigned nchain_probes;
+  /* Branches to the block's one return from a chained exit, with W4 naming
+     the pending slot (jit_arm64_branch.c): each exit's miss and transfer
+     checks, and the probe's. */
+  X86pA64EmitSite chain_leaves[16];
+  unsigned nchain_leaves;
+  /* Leaves (X86pJitLeafFn), only with `chain`: a leaf returns into the block
+     through a chained exit. */
+  X86pJitLeafResolveFn leaf;
+  void *leaf_user;
+  X86pJitLeafSites *leaf_sites;
+  unsigned leaf_calls;
+  unsigned leaf_site_count;
+  /* The block's leaf site's refill, which runs only on a miss and so lives in
+     the tail (jit_arm64_branch.c): the miss that enters it and the body's
+     offsets it returns to. A CALL ends its block, so there is at most one. */
+  struct X86pJitLeafSite *site_refill;
+  X86pA64EmitSite site_miss;
+  size_t site_call_leaf;
+  size_t site_reload;
+  size_t site_ordinary;
 } BlockCtx;
 
 /*
@@ -156,9 +185,32 @@ static inline void emit_store_w(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X
     x86p_a64_emit_store32(e, base, disp, src);
   }
 }
+/* Block entry and exits (jit_arm64_branch.c). A transfer enters a block past
+   its prologue, so the prologue is emitted there too. */
+void emit_prologue(X86pA64Emit *e);
 void emit_epilogue(X86pA64Emit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pA64Emit *e, X86pA64Reg eip_reg, X86pJitExit exit);
+/* The exit to a guest EIP, chained through a slot when the block has them. */
+void emit_exit(BlockCtx *c, uint32_t next_eip);
+void emit_exit_from(BlockCtx *c, X86pA64Reg eip_reg);
+/* The block's last exit: chained when it is a plain block end. */
+void emit_block_end(BlockCtx *c, uint32_t next_eip, X86pJitExit exit);
+/* NZCV holds `cc` true: to `taken`; otherwise to `not_taken`. Two exits
+   rather than one to a selected address, so each keeps its own slot. */
+void emit_exits_on(BlockCtx *c, X86pA64Cond cc, uint32_t taken, uint32_t not_taken);
+/* A CALL's end, its return address already pushed: to the target, or its
+   leaf completes the CALL in place. The indirect form takes its target in
+   TARGET_REG and asks a leaf site (jit_leaf_sites.h). */
+void emit_call_exit(BlockCtx *c, uint32_t return_eip, uint32_t target);
+void emit_call_indirect_exit(BlockCtx *c, uint32_t return_eip);
+/* After every exit and fault stub: the chain probe the exits jump to. */
+void emit_tail_routines(BlockCtx *c);
 void emit_loop(BlockCtx *c, const X86pInsn *insn, uint32_t target, uint32_t next);
+
+/* Jcc and SETcc (jit_arm64_cond.c): the condition read off the host flags
+   when the block knows who wrote them (`last_kind`, `last_w`), else x86p_cond. */
+void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w);
+void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w);
 
 void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 

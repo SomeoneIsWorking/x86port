@@ -182,12 +182,18 @@ void x86p_a64_emit_alu_x_imm(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, uint
 void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* asr w(dst), w(dst), #count -- arithmetic (sign-propagating) right shift. */
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
+/* lsr w(dst), w(dst), #count */
+void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 
 /* cmp w(a), w(b) -- SUBS with the result discarded; sets NZCV. */
 void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
 void x86p_a64_emit_cmn_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
 /* cmp w(a), #imm */
 void x86p_a64_emit_cmp_w_imm(X86pA64Emit *e, X86pA64Reg a, uint32_t imm);
+/* cmp x(a), x(b) -- SUBS XZR, Xa, Xb: the 64-bit compare. */
+void x86p_a64_emit_cmp_x_x(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
+/* subs x(dst), x(dst), #imm (imm <= 4095): a decrement that sets NZCV. */
+void x86p_a64_emit_subs_x_imm(X86pA64Emit *e, X86pA64Reg dst, uint32_t imm);
 /* tst w(a), w(b) -- ANDS with the result discarded; sets NZCV (V and C to 0). */
 void x86p_a64_emit_tst_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
 
@@ -224,6 +230,9 @@ X86pA64EmitSite x86p_a64_emit_bcc(X86pA64Emit *e, X86pA64Cond cc);
 /* b <unbound> */
 X86pA64EmitSite x86p_a64_emit_b(X86pA64Emit *e);
 void x86p_a64_emit_bind(X86pA64Emit *e, X86pA64EmitSite site);
+/* Bind `site` to the code at offset `target` (<= the current length), which
+   may lie before it: a backward branch. */
+void x86p_a64_emit_bind_to(X86pA64Emit *e, X86pA64EmitSite site, size_t target);
 int x86p_a64_emit_sites_bound(const X86pA64Emit *e);
 
 /* ---- structure -------------------------------------------------------------- */
@@ -245,6 +254,10 @@ void x86p_a64_emit_ret(X86pA64Emit *e);
    backend goes through a register, exactly as x86p_emit_call_r64 documents:
    the target is not guaranteed to be within a direct branch's reach. */
 void x86p_a64_emit_blr(X86pA64Emit *e, X86pA64Reg target);
+
+/* br x(target) -- indirect jump, LR untouched: a chained block transfer
+   enters its successor in the frame the dispatcher's call opened. */
+void x86p_a64_emit_br(X86pA64Emit *e, X86pA64Reg target);
 
 #ifdef __cplusplus
 } /* extern "C" */

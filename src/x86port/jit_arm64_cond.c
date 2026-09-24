@@ -1,5 +1,6 @@
 /*
- * jit_arm64_cond.c -- lowering an x86 condition code onto AArch64's own NZCV.
+ * jit_arm64_cond.c -- lowering an x86 condition code onto AArch64's own NZCV,
+ * and the two instructions that consume one: Jcc and SETcc.
  *
  * Split out of jit_arm64.c because this is one responsibility with one
  * question to answer -- "can this condition be read off the host flags, and
@@ -295,4 +296,77 @@ int x86p_a64_emit_condition_flags(
   }
   *out_cc = cc;
   return 1;
+}
+
+/* ---- the consumers ---------------------------------------------------- */
+
+static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w) {
+  X86pA64Cond cc;
+  int constant;
+  if (x86p_a64_emit_condition_flags(c->e, cond, last_kind, last_w, &cc, &constant)) {
+    c->cond_inline++;
+    if (constant >= 0) {
+      x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)constant);
+    } else {
+      x86p_a64_emit_cset_w(c->e, cc, kA64X0);
+    }
+    return;
+  }
+  c->cond_helper_calls++;
+  if (last_kind < 0) {
+    c->cond_unknown_kind++;
+  }
+  x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)cond);
+  x86p_a64_emit_lea64(c->e, kA64X1, CPU_REG, flags_off());
+  emit_call(c->e, (void *)&x86p_cond);
+}
+
+void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, int last_kind, int last_w) {
+  X86pA64Emit *e = c->e;
+  X86pA64Cond cc;
+  int constant;
+  c->conds++;
+  /*
+   * A branch selects between two exits, so the inline form reads the host
+   * condition DIRECTLY with a b.cc -- materialising 0/1 with a cset and then
+   * testing it again would be three instructions to say what one already says.
+   * A condition that is constant for the kind (CF and OF after a logic
+   * operation) picks its successor here, at translation time.
+   */
+  if (x86p_a64_emit_condition_flags(e, cond, last_kind, last_w, &cc, &constant)) {
+    c->cond_inline++;
+    if (constant >= 0) {
+      emit_exit(c, constant ? target : fallthrough);
+    } else {
+      emit_exits_on(c, cc, target, fallthrough);
+    }
+    return;
+  }
+  c->cond_helper_calls++;
+  if (last_kind < 0) {
+    c->cond_unknown_kind++;
+  }
+  x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)cond);
+  x86p_a64_emit_lea64(e, kA64X1, CPU_REG, flags_off());
+  emit_call(e, (void *)&x86p_cond);
+  x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
+  emit_exits_on(c, kA64CondNe, target, fallthrough);
+}
+
+/* SETcc materialises the canonical condition evaluator's 0/1 result without
+   touching guest flags. A memory destination computes the condition first,
+   then preserves it in CARRY_REG while the shared address/bounds path uses
+   X0. */
+void emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w) {
+  const X86pOperand *dst = &insn->operand[0];
+
+  c->conds++;
+  emit_condition_value(c, insn->cond, last_kind, last_w);
+  if (dst->kind == kX86pOperandMem) {
+    x86p_a64_emit_mov_w_w(c->e, CARRY_REG, kA64X0);
+    emit_mem_prepare_w(c, dst, insn_eip, 1);
+    x86p_a64_emit_store8_reg(c->e, HOSTPTR_REG, 0, CARRY_REG);
+    return;
+  }
+  x86p_a64_emit_store8_reg(c->e, CPU_REG, reg_off_w(dst->reg, 1), kA64X0);
 }

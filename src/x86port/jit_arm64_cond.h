@@ -19,7 +19,7 @@
  * and condition whose derivation is not exactly a host condition code.
  *
  * The caller chooses what to do with the condition -- a `cset` for SETcc, a
- * `csel` for a Jcc's target selection -- so a branch never materialises a 0/1
+ * `b.cc` between a Jcc's two exits -- so a branch never materialises a 0/1
  * only to test it again.
  */
 int x86p_a64_emit_condition_flags(

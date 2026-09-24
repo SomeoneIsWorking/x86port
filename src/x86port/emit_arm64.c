@@ -377,6 +377,11 @@ void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   bitfield(e, 0u /* SBFM */, dst, dst, s, 31u);
 }
 
+void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
+  /* LSR Wd, Wn, #s == UBFM Wd, Wn, #s, #31. */
+  bitfield(e, 2u /* UBFM */, dst, dst, count & 31u, 31u);
+}
+
 void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
   uint32_t word = (0u << 31) | (1u << 30) | (1u << 29) | (0x0Bu << 24) | ((uint32_t)b << 16) | ((uint32_t)a << 5) | 31u;
   put32(e, word);
@@ -399,6 +404,19 @@ void x86p_a64_emit_cmp_w_imm(X86pA64Emit *e, X86pA64Reg a, uint32_t imm) {
   }
   x86p_a64_emit_mov_w_imm32(e, kA64X9, imm);
   x86p_a64_emit_cmp_w_w(e, a, kA64X9);
+}
+
+void x86p_a64_emit_cmp_x_x(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
+  uint32_t word = (1u << 31) | (1u << 30) | (1u << 29) | (0x0Bu << 24) | ((uint32_t)b << 16) | ((uint32_t)a << 5) | 31u;
+  put32(e, word);
+}
+
+void x86p_a64_emit_subs_x_imm(X86pA64Emit *e, X86pA64Reg dst, uint32_t imm) {
+  if (imm > 0xFFFu) {
+    e->overflow = 1; /* no caller needs more; refuse rather than encode a wrong immediate */
+    return;
+  }
+  put32(e, (1u << 31) | (1u << 30) | (1u << 29) | (0x22u << 23) | (imm << 10) | ((uint32_t)dst << 5) | (uint32_t)dst);
 }
 
 void x86p_a64_emit_tst_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
@@ -486,14 +504,18 @@ X86pA64EmitSite x86p_a64_emit_b(X86pA64Emit *e) {
 }
 
 void x86p_a64_emit_bind(X86pA64Emit *e, X86pA64EmitSite site) {
+  x86p_a64_emit_bind_to(e, site, e->len);
+}
+
+void x86p_a64_emit_bind_to(X86pA64Emit *e, X86pA64EmitSite site, size_t target) {
   int64_t delta;
   uint32_t word;
-  if (e->overflow || site.at + 4 > e->len) {
+  if (e->overflow || site.at + 4 > e->len || target > e->len) {
     e->overflow = 1;
     return;
   }
   memcpy(&word, e->buf + site.at, 4);
-  delta = (int64_t)e->len - (int64_t)site.at;
+  delta = (int64_t)target - (int64_t)site.at;
   if ((delta & 3) != 0) {
     e->overflow = 1;
     return;
@@ -551,4 +573,8 @@ void x86p_a64_emit_ret(X86pA64Emit *e) {
 
 void x86p_a64_emit_blr(X86pA64Emit *e, X86pA64Reg target) {
   put32(e, 0xD63F0000u | ((uint32_t)target << 5));
+}
+
+void x86p_a64_emit_br(X86pA64Emit *e, X86pA64Reg target) {
+  put32(e, 0xD61F0000u | ((uint32_t)target << 5));
 }
