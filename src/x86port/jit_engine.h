@@ -80,15 +80,17 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s);
 typedef struct X86pJitEngineStats {
   uint64_t blocks_entered;
   /*
-   * Of those, the ones that re-entered the block just left: a guest loop going
-   * round again, having paid a full dispatch to do it.
+   * Of those, the ones the dispatcher made to the block just left: a guest
+   * loop going round again, having paid a full dispatch to do it. On a
+   * chaining backend a block's exit to its own entry links like any other, so
+   * this is the loops chaining did not keep out of the dispatcher -- an
+   * unlinked first pass, a stop, a spent budget, a guarded block -- and a
+   * rising figure there says a self-link is being refused.
    *
    * COUNTED PER ENTRY, WHICH IS THE POINT. Every other loop figure here is
    * summed at translation, so a loop that runs a million times weighs the same
-   * as one that never runs -- useless for sizing a fix whose whole value is in
-   * iterations. This is the share of real dispatches a backend lowering a
-   * self-exit as a WebAssembly `loop` would remove, and it can report a low
-   * number as readily as a high one.
+   * as one that never runs -- useless for sizing a cost that is all in
+   * iterations. It can report a low number as readily as a high one.
    */
   uint64_t blocks_reentered;
   uint64_t blocks_translated;

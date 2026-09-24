@@ -999,10 +999,17 @@ static void test_chained_blocks_agree_with_the_interpreter(void) {
   CHECK(ce.eip == GUEST_BASE + CHAIN_SPIN);
   CHECK(same_cpu(&ci, &ce));
   x86p_jit_engine_stats(eng, &st);
-  /* The spin re-enters itself, which is never linked, so every step of the
-     budget is a block entered by one route or the other. */
+  /* Every step of the budget is a block entered by one route or the other.
+     The spin's exit to its own entry links like any other, so a backend that
+     chains goes round it without the dispatcher; one that does not re-enters
+     it through the dispatcher every time. */
   CHECK(st.blocks_entered == 4096u);
-  CHECK(st.blocks_reentered >= 4000u);
+  if (backend_chains()) {
+    CHECK(st.blocks_reentered <= 2u);
+    CHECK(st.blocks_chained >= 4080u);
+  } else {
+    CHECK(st.blocks_reentered >= 4000u);
+  }
   check_chained(st.chain_links, 1u);
   check_chained(st.blocks_chained, 1u);
   printf("    %llu of %llu block entries chained, %llu link(s), %llu chain exit(s)\n",
@@ -1161,8 +1168,8 @@ static void test_an_exit_with_changing_targets_transfers_through_the_front(void)
   probe_run_agrees(eng, 1001u, 700u);
   x86p_jit_engine_destroy(eng);
 
-  /* An indirect jump to its own block: the probe must leave that re-entry to
-     the dispatcher, which counts it.
+  /* An indirect jump to its own block: after one dispatch it goes round
+     without the dispatcher, like any other target.
        0: B8 imm32  MOV EAX, GUEST_BASE + 5
        5: FF E0     JMP EAX */
   memset(g_guest, 0x90, sizeof g_guest);
@@ -1182,7 +1189,50 @@ static void test_an_exit_with_changing_targets_transfers_through_the_front(void)
     x86p_jit_engine_stats(eng, &st);
     CHECK(ce.eip == GUEST_BASE + 5u);
     CHECK(st.blocks_entered == 200u);
-    CHECK(st.blocks_reentered == 198u);
+    if (backend_chains()) {
+      CHECK(st.blocks_reentered <= 1u);
+      CHECK(st.blocks_chained >= 197u);
+    } else {
+      CHECK(st.blocks_reentered == 198u);
+    }
+  }
+  x86p_jit_engine_destroy(eng);
+
+  /* An indirect jump whose target alternates between its own block and
+     another: its slot links to one, and the probe must answer for the other,
+     its own entry included.
+       0: B8 imm32  MOV EAX, GUEST_BASE + 16
+       5: B9 imm32  MOV ECX, (GUEST_BASE + 10) ^ (GUEST_BASE + 16)
+      10: 31 C8     XOR EAX, ECX        <- B
+      12: FF E0     JMP EAX             -> B, then X, then B ...
+      16: EB F8     JMP 10              <- X */
+  memset(g_guest, 0x90, sizeof g_guest);
+  g_guest[0] = 0xB8;
+  memcpy(&g_guest[1], &(uint32_t){GUEST_BASE + 16u}, 4u);
+  g_guest[5] = 0xB9;
+  memcpy(&g_guest[6], &(uint32_t){(GUEST_BASE + 10u) ^ (GUEST_BASE + 16u)}, 4u);
+  g_guest[10] = 0x31;
+  g_guest[11] = 0xC8;
+  g_guest[12] = 0xFF;
+  g_guest[13] = 0xE0;
+  g_guest[16] = 0xEB;
+  g_guest[17] = 0xF8;
+  eng = chain_engine(&mem, &policy, reason);
+  if (!eng) {
+    return;
+  }
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, &no_stop, 3000u, reason, sizeof reason) == kX86pRunBudget);
+  {
+    X86pJitEngineStats st;
+    x86p_jit_engine_stats(eng, &st);
+    CHECK(st.blocks_entered == 3000u);
+    if (backend_chains()) {
+      CHECK(st.blocks_reentered <= 2u);
+      CHECK(st.blocks_chained >= 2990u);
+    } else {
+      CHECK(st.blocks_reentered >= 900u);
+    }
   }
   x86p_jit_engine_destroy(eng);
 }

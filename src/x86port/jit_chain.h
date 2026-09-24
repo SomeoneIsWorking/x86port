@@ -82,8 +82,8 @@ X86pJitChainRun *x86p_jit_chain_run(X86pJitChain *chain);
  * On the Dead Zone route those round trips were the dispatcher's 4.5% of
  * samples. So an exit that misses its slot first asks the block cache's front
  * array, the dispatcher's own first question, and transfers when it holds the
- * address: under the same stop and budget rules as a linked slot, and never to
- * the block that exited, whose re-entry the dispatcher counts. The front holds
+ * address: under the same stop and budget rules as a linked slot, the block that
+ * exited included. The front holds
  * only blocks the cache does not guard (jc_block_take_hit), exactly the ones a
  * link may reach, and every path that retires a translation clears its front
  * slot. The engine owns both structures, with the same lifetime.

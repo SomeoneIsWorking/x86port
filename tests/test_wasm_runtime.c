@@ -387,13 +387,16 @@ static void chaining(const X86pMem *mem) {
   check(cpu.reg[kX86pEax] == 1020050u, "the stop was not reached by the ring");
   policy.take = 0u;
 
-  /* Block 1 now spins. A link still naming its old code keeps the ring going. */
+  /* Block 1 now spins. A link still naming its old code keeps the ring going.
+     The spin's exit to its own entry links like any other: past the dispatches
+     that find block 1 and then find it again, it goes round without them. */
   guest[kRingStride + 1u] = 0xeb;
   guest[kRingStride + 2u] = 0xfe;
   x86p_jit_engine_invalidate(engine, kGuestBase + kRingStride, kGuestBase + 2u * kRingStride);
   cpu.eip = kGuestBase;
-  chained_run(engine, &cpu, &no_stop, 100u, kX86pRunBudget);
+  const uint64_t spin = chained_run(engine, &cpu, &no_stop, 100u, kX86pRunBudget);
   check(cpu.eip == kGuestBase + kRingStride + 1u, "a link survived the invalidation of its target");
+  check(spin >= 100u - 4u, "a block looping to its own entry went through the dispatcher");
   printf(
       "chaining: %llu of 10000 entries chained cold, %llu warm\n", (unsigned long long)first, (unsigned long long)warm);
   x86p_jit_engine_destroy(engine);

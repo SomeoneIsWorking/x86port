@@ -919,7 +919,6 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     ctx.leaf_user = env->leaf_user;
     ctx.leaf_sites = env->leaf_sites;
   }
-  ctx.entry_eip = eip;
   out->host_state = ctx.host_state;
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;

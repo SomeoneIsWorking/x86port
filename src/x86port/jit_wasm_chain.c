@@ -15,11 +15,10 @@ static const uint32_t kRunPending = (uint32_t)offsetof(X86pJitChainRun, pending)
 
 _Static_assert(sizeof(JcBlockFront) == 16u, "the probe scales the front index by a shift of 4");
 
-void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use, uint32_t entry) {
+void x86p_wasm_chain_exits_init(X86pWasmChainExits *c, const X86pWasmChainUse *use) {
   memset(c, 0, sizeof *c);
   c->use.reuse_first = -1;
   c->first = -1;
-  c->entry = entry;
   if (use) {
     c->use = *use;
   }
@@ -124,8 +123,7 @@ static void emit_transfer(X86pWasmEmit *e, uint32_t base, uint32_t imm, int loca
 
 /*
  * THE PROBE (jit_chain.h), for the computed EIP in `local` that missed its
- * slot: the front entry for that address, when it holds it with a host --
- * never the block that exited, whose re-entry the dispatcher counts.
+ * slot: the front entry for that address, when it holds it with a host.
  */
 static void emit_probe(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t base, int local) {
   const uint32_t front = linear(e, (uintptr_t)x86p_jit_chain_front(c->use.chain));
@@ -133,10 +131,6 @@ static void emit_probe(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t base, in
     return;
   }
   x86p_wasm_block(e, kWasmVoid);
-  x86p_wasm_local_get(e, (uint32_t)local);
-  x86p_wasm_i32_const(e, (int32_t)c->entry);
-  x86p_wasm_i32_op(e, kWasmI32Eq);
-  x86p_wasm_br_if(e, 0u);
   /* front + ((target >> SHIFT) & (SLOTS - 1)) * 16 */
   x86p_wasm_i32_const(e, (int32_t)front);
   x86p_wasm_local_get(e, (uint32_t)local);
