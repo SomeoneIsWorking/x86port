@@ -4,6 +4,7 @@
  */
 #include "jit_wasm_lower.h"
 
+#include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 
 #include <stdarg.h>
@@ -71,7 +72,8 @@ void x86p_wasm_push_operand(X86pWasmLower *l, const X86pOperand *o, int w) {
 
 void x86p_wasm_lower_flags_written(X86pWasmLower *l, int kind, int w) {
   l->last_kind = kind;
-  l->last_w = (kind == (int)kX86pFlagsAdd || kind == (int)kX86pFlagsSub || kind == (int)kX86pFlagsLogic) ? w : -1;
+  /* The width exactly where a condition can be derived from it inline. */
+  l->last_w = x86p_wasm_cond_is_inline(kind, kX86pCondZ) ? w : -1;
 }
 
 void x86p_wasm_call_import(X86pWasmLower *l, X86pWasmImport which) {
