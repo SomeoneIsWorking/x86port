@@ -58,4 +58,17 @@ int x86p_wasm_x87_load_inline(struct X86pWasmLower *l, const X86pInsn *insn, uin
    where X86pX87Reg is the architectural pair. */
 void x86p_wasm_x87_load_operand_bits(struct X86pWasmLower *l, int width);
 
+/* The operand bits in kX86pWasmLocal64Bits, of `width` 4 or 8, as the forms
+   that widen them see it. Emitted only where X86pX87Reg is the architectural
+   pair, and in this order:
+
+   _operand_refusal leaves on the stack whether the operand is a subnormal, an
+   infinity or a NaN -- everything the widening below does not answer -- and
+   its stored exponent in kX86pWasmLocalA. The two widenings read that exponent
+   and leave, respectively, the ext80 significand as an i64 and the ext80
+   sign_exp as an i32, for a normal or a zero of either sign. */
+void x86p_wasm_x87_operand_refusal(struct X86pWasmLower *l, int width);
+void x86p_wasm_x87_widened_signif(struct X86pWasmLower *l, int width);
+void x86p_wasm_x87_widened_sign_exp(struct X86pWasmLower *l, int width);
+
 #endif /* X86PORT_JIT_WASM_X87_LOAD_H */

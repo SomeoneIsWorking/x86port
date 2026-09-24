@@ -3,6 +3,7 @@
 
 #include "jit_wasm_internal.h"
 #include "jit_wasm_x87_load.h"
+#include "jit_wasm_x87_slot.h"
 #include "x87.h"
 #include "x87_ext80_widen.h"
 
@@ -13,10 +14,6 @@
    code runs: wasm32. A 64-bit host lowering for its own tests calls the helper. */
 #if X86P_X87_BINARY128 && UINTPTR_MAX == UINT32_MAX
 
-_Static_assert(sizeof(X86pX87Reg) == 16u, "the emitted x87 result writes a 16-byte register");
-_Static_assert(offsetof(X86pX87Reg, signif) == 0u, "the emitted x87 result writes the significand first");
-_Static_assert(offsetof(X86pX87Reg, sign_exp) == 8u,
-               "the emitted x87 result writes sign_exp and its padding as one i64");
 _Static_assert(X86P_X87_RC_NEAREST == 0u && X86P_X87_PC_SINGLE == 0u,
                "the emitted control test reads nearest and single precision as zero fields");
 _Static_assert(sizeof(((X86pX87 *)0)->op_census) == 4u, "the emitted census test loads a 32-bit pointer");
@@ -29,15 +26,8 @@ _Static_assert(kX86pX87Add == 0 && kWasmF64Sub == kWasmF64Add + kX86pX87Sub &&
    was a sixth of this instruction's bytes. */
 enum {
   kX87 = (int)offsetof(X86pCpu, x87),
-  kRegOffset = kX87 + (int)offsetof(X86pX87, reg),
-  kTagOffset = kX87 + (int)offsetof(X86pX87, tag),
-  kTopOffset = kX87 + (int)offsetof(X86pX87, top),
-  kControlOffset = kX87 + (int)offsetof(X86pX87, control),
   kDoubleOffset = kX87 + (int)offsetof(X86pX87, double_arith),
-  kCensusOffset = kX87 + (int)offsetof(X86pX87, op_census),
-  kRegSize = (int)sizeof(X86pX87Reg),
-  kSignifOffset = (int)offsetof(X86pX87Reg, signif),
-  kSignExpOffset = (int)offsetof(X86pX87Reg, sign_exp)
+  kCensusOffset = kX87 + (int)offsetof(X86pX87, op_census)
 };
 
 /* binary64's fields, and the ext80 exponents whose narrowing is one
@@ -88,28 +78,13 @@ static void or_refused(X86pWasmLower *l) {
 /* phys(i) = (top + i) & 7 into `local`, and whether that register is empty
    ORed into the refusal. */
 static void physical(X86pWasmLower *l, unsigned index, int local) {
-  cpu(l);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
-  constant(l, (int32_t)index);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, X86P_X87_REGS - 1);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  x86p_wasm_local_tee(l->e, (uint32_t)local);
-  cpu(l);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-  constant(l, (int32_t)kX86pX87TagEmpty);
-  x86p_wasm_i32_op(l->e, kWasmI32Eq);
+  x86p_wasm_x87_slot_index(l, (int)index, local);
   or_refused(l);
 }
 
 /* &reg[phys], from the index in `local`, into kX86pWasmLocalAddr. */
 static void register_address(X86pWasmLower *l, int local) {
-  cpu(l);
-  get(l, local);
-  constant(l, kRegSize);
-  x86p_wasm_i32_op(l->e, kWasmI32Mul);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
+  x86p_wasm_x87_slot_register(l, local);
   set(l, kX86pWasmLocalAddr);
 }
 
@@ -123,7 +98,7 @@ static void gate(X86pWasmLower *l) {
   x86p_wasm_i32_load(l->e, ALIGN_NONE, (uint32_t)kCensusOffset);
   or_refused(l);
   cpu(l);
-  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kControlOffset);
+  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Control);
   x86p_wasm_local_tee(l->e, (uint32_t)kSignExp);
   constant(l, (int32_t)X86P_X87_RC_MASK);
   x86p_wasm_i32_op(l->e, kWasmI32And);
@@ -143,10 +118,10 @@ static void gate(X86pWasmLower *l) {
 static void narrow_register(X86pWasmLower *l, int local, int out) {
   register_address(l, local);
   get(l, kX86pWasmLocalAddr);
-  x86p_wasm_i64_load(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignifOffset));
+  x86p_wasm_i64_load(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Signif);
   set(l, out);
   get(l, kX86pWasmLocalAddr);
-  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
+  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87SignExp);
   x86p_wasm_local_tee(l->e, (uint32_t)kSignExp);
   constant(l, kExt80ExpMask);
   x86p_wasm_i32_op(l->e, kWasmI32And);
@@ -317,7 +292,7 @@ void x86p_wasm_x87_arith_end(X86pWasmLower *l, const X86pInsn *insn) {
   x86p_wasm_i64_const(l->e, 0);
   get(l, kExponent);
   x86p_wasm_select(l->e);
-  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignifOffset));
+  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Signif);
 
   /* sign_exp = sign << 15 | (e ? e + rebias : 0), and its padding zeroed */
   get(l, kX86pWasmLocalAddr);
@@ -335,30 +310,13 @@ void x86p_wasm_x87_arith_end(X86pWasmLower *l, const X86pInsn *insn) {
   x86p_wasm_select(l->e);
   x86p_wasm_i32_op(l->e, kWasmI32Or);
   x86p_wasm_i64_extend_i32_u(l->e);
-  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
+  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87SignExp);
 
-  cpu(l);
-  get(l, kDst);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, (int32_t)kX86pX87TagValid);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
+  x86p_wasm_x87_slot_set_tag(l, kDst, kX86pX87TagValid);
 
   /* The pops, which cannot underflow: a popping form reads ST(0). */
   for (unsigned pop = 0; pop < insn->x87_pops; pop++) {
-    cpu(l);
-    cpu(l);
-    x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
-    x86p_wasm_local_tee(l->e, (uint32_t)kSrc);
-    x86p_wasm_i32_op(l->e, kWasmI32Add);
-    constant(l, (int32_t)kX86pX87TagEmpty);
-    x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-    cpu(l);
-    get(l, kSrc);
-    constant(l, 1);
-    x86p_wasm_i32_op(l->e, kWasmI32Add);
-    constant(l, X86P_X87_REGS - 1);
-    x86p_wasm_i32_op(l->e, kWasmI32And);
-    x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
+    x86p_wasm_x87_slot_pop(l, kSrc);
   }
   x86p_wasm_end(l->e);
 }

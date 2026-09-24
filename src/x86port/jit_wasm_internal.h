@@ -64,6 +64,9 @@ typedef struct X86pWasmLower {
      narrower set of values than the load's and the share matters more. */
   unsigned x87_stores;
   unsigned x87_stores_inline;
+  /* And for memory-operand x87 comparisons. See jit_wasm_x87_compare.h. */
+  unsigned x87_compares;
+  unsigned x87_compares_inline;
   /* SIMD instructions lowered, and how many became WebAssembly SIMD instead of
      the import call. See jit_wasm_simd_inline.h. Both are needed: the share is
      what says whether a route's packed work is actually taking the new path,

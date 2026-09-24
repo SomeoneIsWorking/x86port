@@ -202,7 +202,9 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_cond.c
   src/x86port/jit_wasm_x87.c
   src/x86port/jit_wasm_x87_arith.c
+  src/x86port/jit_wasm_x87_compare.c
   src/x86port/jit_wasm_x87_load.c
+  src/x86port/jit_wasm_x87_slot.c
   src/x86port/jit_wasm_x87_store.c
   src/x86port/jit_wasm_simd.c
   src/x86port/jit_wasm_simd_inline.c

@@ -362,6 +362,12 @@ void x86p_wasm_i64_eq(X86pWasmEmit *e) {
 void x86p_wasm_i64_eqz(X86pWasmEmit *e) {
   x86p_wasm_byte(e, 0x50);
 }
+void x86p_wasm_i64_lt_u(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0x54);
+}
+void x86p_wasm_i64_gt_u(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0x56);
+}
 void x86p_wasm_f64_op(X86pWasmEmit *e, X86pWasmF64Op op) {
   x86p_wasm_byte(e, (uint8_t)op);
 }

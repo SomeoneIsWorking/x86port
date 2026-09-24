@@ -520,6 +520,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->x87_loads_inline = l.x87_loads_inline;
   out->x87_stores = l.x87_stores;
   out->x87_stores_inline = l.x87_stores_inline;
+  out->x87_compares = l.x87_compares;
+  out->x87_compares_inline = l.x87_compares_inline;
   out->simd_ops = l.simd_ops;
   out->simd_inline = l.simd_inline;
   out->exits = l.state.exits.total;
