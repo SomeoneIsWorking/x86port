@@ -25,6 +25,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
                                 X86pJitBoundaryFn boundary,
                                 void *boundary_user,
                                 const X86pWasmChainUse *chains,
+                                const X86pWasmLeafUse *leaves,
                                 X86pJitBlock *out,
                                 char *reason,
                                 unsigned reason_len) {
@@ -43,8 +44,17 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
   x86p_wasm_plan_from_mem(mem, &plan);
   x86p_wasm_module_init(&module, code, code_cap, count);
   for (i = 0; i < count; ++i) {
-    X86pJitStatus status = x86p_wasm_lower_block(
-        &module, mem, &plan, eips[i], boundary, boundary_user, chains ? &chains[i] : NULL, &out[i], reason, reason_len);
+    X86pJitStatus status = x86p_wasm_lower_block(&module,
+                                                 mem,
+                                                 &plan,
+                                                 eips[i],
+                                                 boundary,
+                                                 boundary_user,
+                                                 chains ? &chains[i] : NULL,
+                                                 leaves ? &leaves[i] : NULL,
+                                                 &out[i],
+                                                 reason,
+                                                 reason_len);
     if (status != kX86pJitOk) {
       /*
        * All or nothing. The module's sections already promised `count` bodies,
@@ -81,16 +91,15 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
  * does is refuse.
  */
 static int lowered_the_same(const X86pWasmCompactBlock *was, const X86pJitBlock *now) {
-  return now->guest_eip == was->guest && now->guest_len == was->guest_len && now->chain_exits == was->chain_exits;
+  return now->guest_eip == was->guest && now->guest_len == was->guest_len && now->chain_exits == was->chain_exits &&
+         now->leaf_site == was->leaf_site;
 }
 
 int x86p_wasm_compact(X86pWasmArena *arena,
                       const X86pMem *mem,
                       void *buffer,
                       size_t buffer_bytes,
-                      X86pJitBoundaryFn boundary,
-                      void *boundary_user,
-                      X86pJitChain *chain,
+                      const X86pJitTranslateEnv *env,
                       const X86pWasmCompactBlock *blocks,
                       unsigned count,
                       X86pWasmCompactResult *out,
@@ -98,6 +107,8 @@ int x86p_wasm_compact(X86pWasmArena *arena,
                       unsigned reason_len) {
   uint32_t eips[X86P_WASM_MAX_BODIES];
   X86pWasmChainUse chains[X86P_WASM_MAX_BODIES];
+  X86pWasmLeafUse leaves[X86P_WASM_MAX_BODIES];
+  X86pJitChain *const chain = env ? env->chain : NULL;
   X86pJitBlock lowered[X86P_WASM_MAX_BODIES];
   size_t bytes;
   int token;
@@ -123,9 +134,22 @@ int x86p_wasm_compact(X86pWasmArena *arena,
     eips[i] = blocks[i].guest;
     /* A block published with no slot keeps none: reuse of zero slots. */
     chains[i] = (X86pWasmChainUse){chain, blocks[i].chain_exits ? blocks[i].chain_first : 0, blocks[i].chain_exits};
+    /* The same resolver, and the site the block was published with: a
+       relowering claims none. */
+    leaves[i] = (X86pWasmLeafUse){env ? env->leaf : NULL, env ? env->leaf_user : NULL, NULL, 1, blocks[i].leaf_site};
   }
-  bytes = x86p_jit_translate_batch(
-      mem, eips, count, buffer, buffer_bytes, boundary, boundary_user, chains, lowered, reason, reason_len);
+  bytes = x86p_jit_translate_batch(mem,
+                                   eips,
+                                   count,
+                                   buffer,
+                                   buffer_bytes,
+                                   env ? env->boundary : NULL,
+                                   env ? env->boundary_user : NULL,
+                                   chains,
+                                   leaves,
+                                   lowered,
+                                   reason,
+                                   reason_len);
   if (bytes == 0u) {
     return 0;
   }

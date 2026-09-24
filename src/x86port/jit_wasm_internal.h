@@ -22,6 +22,7 @@
 #include "jit_wasm_bitops.h"
 #include "jit_wasm_control.h"
 #include "jit_wasm_integer.h"
+#include "jit_wasm_leaf.h"
 #include "jit_wasm_lower.h"
 #include "jit_wasm_module.h"
 #include "jit_wasm_simd.h"
@@ -74,6 +75,12 @@ typedef struct X86pWasmLower {
      ran at all". */
   unsigned simd_ops;
   unsigned simd_inline;
+  /* How this block's CALLs find leaves, or NULL for none (jit_wasm_leaf.h);
+     the direct CALLs that call one, and the site an indirect CALL took. */
+  const X86pWasmLeafUse *leaf;
+  unsigned leaf_calls;
+  unsigned leaf_sites;
+  struct X86pJitLeafSite *leaf_site;
   int last_kind;
   int last_w;
 } X86pWasmLower;

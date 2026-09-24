@@ -2,10 +2,12 @@
 #include "alu.h"
 #include "cond.h"
 #include "flags.h"
+#include "jit_leaf_sites.h"
 #include "jit_wasm_bitops.h"
 #include "jit_wasm_chain.h"
 #include "jit_wasm_control.h"
 #include "jit_wasm_integer.h"
+#include "jit_wasm_leaf.h"
 #include "jit_wasm_memory.h"
 #include "jit_wasm_simd.h"
 #include "jit_wasm_x87.h"
@@ -72,6 +74,8 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportSimdArithmetic] = {"wasm_simd_arithmetic", (X86pWasmImportFn)x86p_wasm_simd_arithmetic, 8, 1},
     /* No C function: the host binds it to the chain trampoline (jit_wasm_chain.h). */
     [kX86pWasmImportChainCall] = {"wasm_chain_call", NULL, 2, 1},
+    [kX86pWasmImportLeafCall] = {"wasm_leaf_call", (X86pWasmImportFn)x86p_wasm_leaf_call, 2, 1},
+    [kX86pWasmImportLeafSiteFill] = {"leaf_site_fill", (X86pWasmImportFn)x86p_jit_leaf_site_fill, 2, 1},
 };
 
 const char *x86p_wasm_import_field(X86pWasmImport which) {

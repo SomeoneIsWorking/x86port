@@ -162,7 +162,7 @@ static int lower_counts(const uint8_t *code, unsigned size, X86pJitBlock *out) {
   plan.lo = kGuestLo;
   plan.size = sizeof g_arena;
   x86p_wasm_module_init(&module, g_module, sizeof g_module, 1u);
-  if (x86p_wasm_lower_block(&module, &mem, &plan, kGuestLo, NULL, NULL, NULL, out, reason, sizeof reason) !=
+  if (x86p_wasm_lower_block(&module, &mem, &plan, kGuestLo, NULL, NULL, NULL, NULL, out, reason, sizeof reason) !=
       kX86pJitOk) {
     printf("FAIL: lowering refused: %s\n", reason);
     return 0;

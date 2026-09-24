@@ -285,6 +285,9 @@ typedef struct X86pJitBlock {
   unsigned leaf_calls;
   /* CALLs through a register or memory given a leaf site. */
   unsigned leaf_sites;
+  /* That site, which a backend relowering a published block gives the same
+     CALL again (jit_wasm_leaf.h); NULL without one. */
+  struct X86pJitLeafSite *leaf_site;
 } X86pJitBlock;
 
 /*

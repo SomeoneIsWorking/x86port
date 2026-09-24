@@ -389,7 +389,8 @@ void x86p_jit_engine_set_boundary(X86pJitEngine *e, X86pJitBoundaryFn fn, void *
  *
  * Only a chaining translation calls a leaf: its return lands on a chained exit
  * to the return address, under the run's stop and budget like any transfer.
- * The x86-64 backend calls leaves; the others run every call the ordinary way.
+ * The x86-64 and WebAssembly backends call leaves; ARM64 runs every call the
+ * ordinary way.
  *
  * Refused (returns 0, with `reason`) when blocks are already cached: they were
  * translated under the previous answer, which the new one does not replace.

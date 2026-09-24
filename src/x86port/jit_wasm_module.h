@@ -95,6 +95,8 @@ typedef enum X86pWasmImport {
   kX86pWasmImportX87Emms,
   kX86pWasmImportSimdArithmetic,
   kX86pWasmImportChainCall,
+  kX86pWasmImportLeafCall,
+  kX86pWasmImportLeafSiteFill,
   kX86pWasmImportCount
 } X86pWasmImport;
 

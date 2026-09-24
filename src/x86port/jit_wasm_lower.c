@@ -321,6 +321,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
                                     X86pJitBoundaryFn boundary,
                                     void *boundary_user,
                                     const X86pWasmChainUse *chain,
+                                    const X86pWasmLeafUse *leaf,
                                     X86pJitBlock *out,
                                     char *reason,
                                     unsigned reason_len) {
@@ -349,6 +350,8 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   l.module = m;
   l.e = x86p_wasm_module_emitter(m);
   l.fetch = fetch;
+  /* A leaf returns into the block through a chained exit. */
+  l.leaf = chain && chain->chain && leaf && leaf->resolve ? leaf : NULL;
   x86p_wasm_lower_flags_written(&l, -1, -1);
   x86p_wasm_state_init(&l.state, l.e, plan, eip, chain);
 
@@ -537,6 +540,9 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->chain_exits = l.state.chain.slotted;
   out->chain_exits_unslotted = l.state.chain.unslotted;
   out->chain_first_slot = l.state.chain.first;
+  out->leaf_calls = l.leaf_calls;
+  out->leaf_sites = l.leaf_sites;
+  out->leaf_site = l.leaf_site;
   out->ends_in_branch = terminated;
   return kX86pJitOk;
 }

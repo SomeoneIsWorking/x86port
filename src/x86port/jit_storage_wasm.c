@@ -36,6 +36,7 @@ typedef struct X86pWasmStoredBlock {
   int live;
   int64_t chain_first; /* the chain slots its exits took, which a rebuild reuses */
   unsigned chain_exits;
+  struct X86pJitLeafSite *leaf_site; /* the leaf site its CALL took, which a rebuild reuses */
 } X86pWasmStoredBlock;
 
 /* What a published module costs and how many blocks still need it. A module is
@@ -308,15 +309,14 @@ static void share_a_module(X86pJitStorage *storage, const X86pMem *mem, const X8
     batch[i].entry = block->entry;
     batch[i].chain_first = block->chain_first;
     batch[i].chain_exits = block->chain_exits;
+    batch[i].leaf_site = block->leaf_site;
   }
   why[0] = '\0';
   if (!x86p_wasm_compact(&storage->arena,
                          mem,
                          storage->batch,
                          storage->batch_bytes,
-                         env ? env->boundary : NULL,
-                         env ? env->boundary_user : NULL,
-                         env ? env->chain : NULL,
+                         env,
                          batch,
                          storage->pending_count,
                          &result,
@@ -460,8 +460,14 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
     }
     return kX86pJitOutOfSpace;
   }
-  storage->blocks[slot] = (X86pWasmStoredBlock){
-      block->guest_eip, block->guest_len, token, block->entry, 1, block->chain_first_slot, block->chain_exits};
+  storage->blocks[slot] = (X86pWasmStoredBlock){block->guest_eip,
+                                                block->guest_len,
+                                                token,
+                                                block->entry,
+                                                1,
+                                                block->chain_first_slot,
+                                                block->chain_exits,
+                                                block->leaf_site};
   /* Counted here rather than where the slot was found, because the two paths
      between them return without making the record live, and a count raised for
      a record that never became live never comes back down. */

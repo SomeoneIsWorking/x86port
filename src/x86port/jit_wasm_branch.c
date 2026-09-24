@@ -134,6 +134,9 @@ void x86p_wasm_call_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_i32_const(l->e, (int32_t)next);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
   x86p_wasm_push_local(l, kX86pWasmLocalR, pc);
+  if (x86p_wasm_leaf_call_lower(l, indirect ? 0u : relative_target(insn, pc), next, indirect)) {
+    return;
+  }
   if (indirect) {
     x86p_wasm_state_exit_local(&l->state, kX86pWasmLocalTarget, kX86pJitExitBlockEnd);
     return;
