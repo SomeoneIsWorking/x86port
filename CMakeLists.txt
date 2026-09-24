@@ -356,6 +356,9 @@ if(EMSCRIPTEN)
   add_test(NAME test_wasm_runtime COMMAND test_wasm_runtime)
   add_executable(test_wasm_leaves tests/test_wasm_leaves.c)
   target_link_libraries(test_wasm_leaves PRIVATE x86port_runtime x86port_test_oracle)
+  # The last pass holds 256 MiB so the engine's data lies where the product's
+  # does, past the addresses a short constant can encode.
+  target_link_options(test_wasm_leaves PRIVATE "-sALLOW_MEMORY_GROWTH=1")
   x86p_strict_target(test_wasm_leaves)
   add_test(NAME test_wasm_leaves COMMAND test_wasm_leaves)
   add_executable(test_wasm_threads tests/test_wasm_threads.c)

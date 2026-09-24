@@ -10,6 +10,15 @@
  * Every leaf does what its callee does, so each route -- completed, declined,
  * refilled, exhausted -- must end in the interpreter's state. The counts say
  * which route was taken; the state says it was taken correctly.
+ *
+ * Every case runs over a flat mapping, then over one with a page permission
+ * table as the product maps its guest, and then again with the engine's own
+ * data -- its chain slots, block front and leaf sites -- above 128 MiB of
+ * linear memory, as the product's is. Each of those addresses is a constant
+ * in the emitted code, and there it takes the longest encoding a constant has.
+ * A leaf CALL carries two chained exits besides; the product's first one was
+ * refused as oversized until the size check stopped charging an instruction
+ * for the chained exits the chain reserve pays for.
  */
 #include "cpu.h"
 #include "cpu_compare.h"
@@ -18,11 +27,14 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-enum { kGuestBase = 0x400000u, kGuestBytes = 0x4000u, kStack = 0x3F00u };
+enum { kGuestBase = 0x400000u, kGuestBytes = 0x4000u, kStack = 0x3F00u, kPageShift = 12u };
 
 static uint8_t guest[kGuestBytes];
+static uint8_t perms[kGuestBytes >> kPageShift];
+static int with_perms; /* map the guest through `perms` */
 static unsigned checks;
 static unsigned failures;
 static const char *current;
@@ -36,7 +48,13 @@ static void check(int value, const char *message) {
 }
 
 static X86pMem guest_mem(void) {
-  return (X86pMem){.host = guest, .lo = kGuestBase, .size = sizeof guest};
+  X86pMem mem = {.host = guest, .lo = kGuestBase, .size = sizeof guest};
+  if (with_perms) {
+    memset(perms, kX86pMemRead | kX86pMemWrite, sizeof perms);
+    mem.perms = perms;
+    mem.page_shift = kPageShift;
+  }
+  return mem;
 }
 
 static void seed(X86pCpu *cpu) {
@@ -280,6 +298,41 @@ static void site_call(int alternate, int decline, SiteExpect want) {
 }
 
 /*
+ * The widest CALL a site is emitted for, base + index * 4 + disp32 through
+ * memory:
+ *
+ *   0: BB <base>                MOV EBX, base
+ *   5: 31 C9                    XOR ECX, ECX
+ *   7: FF 94 8B 00 02 00 00     CALL [EBX + ECX*4 + 0x200]  ; = callee A
+ *  14: 31 C9                    XOR ECX, ECX
+ *  16: EB FE                    JMP 16
+ */
+static void widest_call(void) {
+  static const uint8_t prog[] = {
+      0xBB, 0, 0, 0, 0, 0x31, 0xC9, 0xFF, 0x94, 0x8B, 0x00, 0x02, 0x00, 0x00, 0x31, 0xC9, 0xEB, 0xFE};
+  X86pMem mem = guest_mem();
+  X86pCpu expect;
+  current = "CALL [EBX+ECX*4+disp32]";
+  memset(guest, 0x90, sizeof guest);
+  memcpy(guest, prog, sizeof prog);
+  put32(1u, kGuestBase);
+  put32(0x200u, kGuestBase + 0x300u);
+  callee(0u, 0x300u, 3u);
+  callee(1u, 0x310u, 5u);
+  interpret(&expect, 16u);
+  X86pJitEngine *engine = leaf_engine(&mem);
+  if (!engine) {
+    return;
+  }
+  memset(&record, 0, sizeof record);
+  record.returns_to = 14u;
+  run_to_spin(engine, &expect, 16u, 50u);
+  check(record.wrong == 0u, "a leaf was not entered as its callee would be");
+  check(record.calls == 1u, "the widest CALL did not call its leaf");
+  x86p_jit_engine_destroy(engine);
+}
+
+/*
  * More callers than a compaction batch, so later laps run bodies relowered
  * into shared modules: each must call its leaf through the site it was
  * published with, and stay chained while it does.
@@ -357,7 +410,7 @@ static void relowered_sites(void) {
   x86p_jit_engine_destroy(engine);
 }
 
-int main(void) {
+static void every_case(void) {
   direct_call(0);
   direct_call(1);
   /* One fill per site; every call takes the leaf. */
@@ -368,7 +421,22 @@ int main(void) {
      last target, takes the leaf, and B runs as an ordinary CALL. The first
      call (A) is the block at 0's; 1 + 4 + 2 leaf calls in all. */
   site_call(1, 0, (SiteExpect){7u, 5u, 1u});
+  widest_call();
   relowered_sites();
+}
+
+int main(void) {
+  every_case();
+  with_perms = 1;
+  printf("-- with a page permission table --\n");
+  every_case();
+  /* Held, not used: everything the engines allocate from here on lies above
+     it, where a signed LEB128 constant needs five bytes. */
+  void *const ballast = malloc(256u << 20);
+  check(ballast != NULL && (uintptr_t)ballast + (256u << 20) > (1u << 27), "no room to move the engine's data up");
+  printf("-- with the engine's data above 128 MiB --\n");
+  every_case();
+  free(ballast);
   printf("%u checks, %u failures\n", checks, failures);
   return failures == 0u ? 0 : 1;
 }

@@ -73,6 +73,11 @@ typedef struct X86pWasmChainExits {
   int64_t first;      /* the block's first slot, or -1 */
   unsigned slotted;   /* exits given a slot */
   unsigned unslotted; /* exits that asked for one and had none */
+  /* Bytes the chained attempts took, which x86p_wasm_chain_reserve set aside
+     apart from their instructions' own, and the first attempt that took more
+     than X86P_WASM_CHAIN_EXIT_BYTES of them, or 0. */
+  size_t bytes;
+  size_t oversized;
 } X86pWasmChainExits;
 
 /* `use` may be NULL, for a block that does not chain. `entry` is the guest
