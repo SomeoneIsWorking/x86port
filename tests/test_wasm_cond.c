@@ -177,10 +177,13 @@ static void the_inline_path_is_the_one_being_tested(void) {
      must NOT be -- which is the other answer this check has to be able to
      give. A suite where everything fell back would otherwise look identical. */
   static const uint8_t alone[] = {0x0F, 0x9C, 0xC1};
-  /* SHL then SETcc: a kind whose derivation is not implemented, so the
-     fall-back is reached through a path the block's first instruction does not
-     exercise. */
+  /* SHL by one then SETcc: a recorded kind whose derivation is not
+     implemented, so the fall-back is reached through a path the block's first
+     instruction does not exercise. */
   static const uint8_t after_shl[] = {0xD1, 0xE0, 0x0F, 0x9C, 0xC1};
+  /* SHL by CL then SETcc: a count of zero would write no flags, so the shift
+     records no kind at translation time. */
+  static const uint8_t after_shl_cl[] = {0xD3, 0xE0, 0x0F, 0x9C, 0xC1};
   X86pJitBlock block;
 
   suite.current = "counters";
@@ -199,7 +202,12 @@ static void the_inline_path_is_the_one_being_tested(void) {
   if (lower_counts(after_shl, sizeof after_shl, &block)) {
     wasm_test_check(&suite, block.cond_inline == 0u, "a shift's flags were treated as a derivable kind");
     wasm_test_check(&suite, block.cond_helper_calls == 1u, "SHL+SETcc did not reach the authority");
-    wasm_test_check(&suite, block.cond_unknown_kind == 1u, "a shift that records no kind was counted as classified");
+    wasm_test_check(&suite, block.cond_unknown_kind == 0u, "an immediate shift's kind was reported as unrecorded");
+  }
+  if (lower_counts(after_shl_cl, sizeof after_shl_cl, &block)) {
+    wasm_test_check(&suite, block.cond_helper_calls == 1u, "SHL CL+SETcc did not reach the authority");
+    wasm_test_check(
+        &suite, block.cond_unknown_kind == 1u, "a CL shift, which records no kind, was counted as classified");
   }
   wasm_test_check(&suite, !x86p_wasm_cond_is_inline(-1, kX86pCondZ), "an unknown predecessor claimed an inline form");
   wasm_test_check(&suite,
