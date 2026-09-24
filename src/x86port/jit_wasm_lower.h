@@ -125,4 +125,8 @@ int x86p_wasm_can_lower(const X86pInsn *insn);
    `kind` at width `w` answers it itself, without calling x86p_flag_cf. */
 int x86p_wasm_carry_in_inline(int kind, int w);
 
+/* Whether the lowering of a two-operand ALU instruction calls x86p_alu rather
+   than computing it in the block. */
+int x86p_wasm_alu_calls_helper(const X86pInsn *insn);
+
 #endif /* X86PORT_JIT_WASM_LOWER_H */
