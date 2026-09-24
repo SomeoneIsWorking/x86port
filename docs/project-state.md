@@ -199,7 +199,11 @@ indirect call, reading a CALL-through-register's leaf site as linear memory
 and reusing that site when the block is relowered (`jit_wasm_leaf.h`;
 `test_wasm_leaves` checks direct, declined, refilled and exhausted calls
 against the interpreter, and a 100-caller ring that stays chained, 19,999 of
-20,000 entries, across six compactions with one fill per site). The ARM64
+20,000 entries, across six compactions with one fill per site), over a flat
+mapping, a page-permission table, and engine data above 128 MiB where every
+address constant takes five bytes. An instruction's size bound excludes its
+chained exits, which the chain reserve pays for, each held to
+`X86P_WASM_CHAIN_EXIT_BYTES`: a leaf CALL has two. The ARM64
 backend never calls one (`x86p_jit_engine_set_leaves`), so every CALL to a
 consumer's leaf reaches it through the dispatcher there.
 

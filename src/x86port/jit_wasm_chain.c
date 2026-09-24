@@ -175,6 +175,7 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
     return;
   }
   const uint32_t disp = (uint32_t)x86p_jit_chain_slot_disp(c->use.chain, slot);
+  const size_t start = x86p_wasm_here(e);
   if (c->first < 0) {
     c->first = slot;
   }
@@ -194,6 +195,11 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
   x86p_wasm_i32_store(e, ALIGN_NONE, kRunPending);
   if (local >= 0) {
     emit_probe(c, e, base, local);
+  }
+  const size_t emitted = x86p_wasm_here(e) - start;
+  c->bytes += emitted;
+  if (emitted > X86P_WASM_CHAIN_EXIT_BYTES && c->oversized == 0u) {
+    c->oversized = emitted;
   }
 }
 

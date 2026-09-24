@@ -456,16 +456,21 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
     continuation = entry->terminates ? x86p_wasm_continue_lower((uint8_t)insn.op) : NULL;
     keep_going = continuation != NULL && count < X86P_WASM_MAX_INSNS;
     const size_t insn_start = x86p_wasm_here(l.e);
+    const size_t chain_start = l.state.chain.bytes;
     if (keep_going) {
       continuation(&l, &insn, pc);
     } else {
       entry->lower(&l, &insn, pc);
     }
     /* The room check above reserved the worst case; an instruction past it
-       makes that check a guess, so the reservation is wrong, not this block. */
-    if (!oversized_insn && x86p_wasm_here(l.e) - insn_start > X86P_WASM_WORST_CASE_INSN_BYTES) {
+       makes that check a guess, so the reservation is wrong, not this block.
+       Its chained exits are not its own bytes: they draw on the chain reserve,
+       which holds each to X86P_WASM_CHAIN_EXIT_BYTES. A CALL that calls a
+       leaf has two. */
+    const size_t insn_bytes = x86p_wasm_here(l.e) - insn_start - (l.state.chain.bytes - chain_start);
+    if (!oversized_insn && insn_bytes > X86P_WASM_WORST_CASE_INSN_BYTES) {
       oversized_at = pc;
-      oversized_bytes = x86p_wasm_here(l.e) - insn_start;
+      oversized_bytes = insn_bytes;
       oversized_insn = insn.mnemonic;
     }
     pc += insn.length;
@@ -492,6 +497,15 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
         oversized_at,
         oversized_bytes,
         X86P_WASM_WORST_CASE_INSN_BYTES);
+    return kX86pJitOutOfSpace;
+  }
+  if (l.state.chain.oversized != 0u) {
+    say(reason,
+        reason_len,
+        "a chained exit of the block at %08X lowered to %zu bytes, past X86P_WASM_CHAIN_EXIT_BYTES (%u)",
+        eip,
+        l.state.chain.oversized,
+        X86P_WASM_CHAIN_EXIT_BYTES);
     return kX86pJitOutOfSpace;
   }
   if (!x86p_wasm_intact(l.e)) {
