@@ -529,7 +529,10 @@ static void test_bcc_bound_backward(void) {
   CHECK(fbits(w, 31, 24) == 0x54u);
   CHECK(fbits(w, 3, 0) == (uint32_t)kA64CondNe);
   CHECK(sext(fbits(w, 23, 5), 19) == -2);
-  x86p_a64_emit_bind_to(&e, x86p_a64_emit_b(&e), e.len + 4u);
+  /* The branch is emitted before the target is read: as two arguments of one
+     call their order is unspecified, and clang-cl reads e.len first. */
+  site = x86p_a64_emit_b(&e);
+  x86p_a64_emit_bind_to(&e, site, e.len + 4u);
   CHECK(!x86p_a64_emit_ok(&e)); /* past the code: refused, not encoded */
 }
 
