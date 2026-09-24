@@ -69,6 +69,8 @@ typedef struct X86pWasmCompactResult {
   int token;
   size_t bytes;
   unsigned moved;
+  /* Exits in the module that call a block of it directly (jit_wasm_chain.h). */
+  unsigned direct_exits;
 } X86pWasmCompactResult;
 
 /*

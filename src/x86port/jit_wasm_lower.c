@@ -553,6 +553,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   out->exits_self = l.state.exits.to_entry;
   out->chain_exits = l.state.chain.slotted;
   out->chain_exits_unslotted = l.state.chain.unslotted;
+  out->chain_exits_direct = l.state.chain.direct;
   out->chain_first_slot = l.state.chain.first;
   out->leaf_calls = l.leaf_calls;
   out->leaf_sites = l.leaf_sites;

@@ -84,7 +84,13 @@ typedef enum ChainHost {
  * which every transfer honours, then the transfer, whose answer this block
  * returns. A probe's exit had already named its slot, so a probe clears it.
  */
-static void emit_transfer(X86pWasmEmit *e, uint32_t base, uint32_t imm, int local, ChainHost host, uint32_t disp) {
+static void emit_transfer(X86pWasmEmit *e,
+                          uint32_t base,
+                          uint32_t imm,
+                          int local,
+                          ChainHost host,
+                          uint32_t disp,
+                          const X86pWasmChainSibling *sibling) {
   /* Not the run's stop address, which only the dispatcher enters. */
   push_target(e, imm, local);
   x86p_wasm_i32_const(e, (int32_t)base);
@@ -111,14 +117,37 @@ static void emit_transfer(X86pWasmEmit *e, uint32_t base, uint32_t imm, int loca
     x86p_wasm_i32_const(e, 0);
     x86p_wasm_i32_store(e, ALIGN_NONE, kRunPending);
   }
-  x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalCpu);
-  if (host == kChainHostProbed) {
-    x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalAddr);
-  } else {
+  if (host == kChainHostSlot) {
     x86p_wasm_i32_const(e, (int32_t)base);
     x86p_wasm_i32_load(e, ALIGN_NONE, disp + (uint32_t)offsetof(X86pJitChainSlot, host));
+    x86p_wasm_local_set(e, (uint32_t)kX86pWasmLocalAddr);
   }
+  /* The host is in the Addr local either way. Every path from here leaves the
+     block, so nothing reads the local's earlier value again. */
+  if (sibling) {
+    x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_i32_const(e, (int32_t)sibling->entry);
+    x86p_wasm_i32_op(e, kWasmI32Eq);
+    x86p_wasm_if(e, kWasmVoid);
+    x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalCpu);
+    x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalAddr);
+    x86p_wasm_return_call(e, sibling->function);
+    x86p_wasm_end(e);
+  }
+  x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalCpu);
+  x86p_wasm_local_get(e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_return_call(e, (uint32_t)kX86pWasmImportChainCall);
+}
+
+/* The sibling at guest address `imm`, or NULL. */
+static const X86pWasmChainSibling *sibling_at(const X86pWasmChainUse *use, uint32_t imm) {
+  unsigned i;
+  for (i = 0; use->siblings && i < use->sibling_count; ++i) {
+    if (use->siblings[i].guest == imm) {
+      return &use->siblings[i];
+    }
+  }
+  return NULL;
 }
 
 /*
@@ -151,7 +180,7 @@ static void emit_probe(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t base, in
   x86p_wasm_local_tee(e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_i32_op(e, kWasmI32Eqz);
   x86p_wasm_br_if(e, 0u);
-  emit_transfer(e, base, 0u, local, kChainHostProbed, 0u);
+  emit_transfer(e, base, 0u, local, kChainHostProbed, 0u, NULL);
   x86p_wasm_end(e);
 }
 
@@ -181,7 +210,11 @@ void x86p_wasm_chain_emit(X86pWasmChainExits *c, X86pWasmEmit *e, uint32_t imm, 
   x86p_wasm_i64_load(e, ALIGN_NONE, disp + (uint32_t)offsetof(X86pJitChainSlot, guest));
   guest_differs(e, imm, local);
   x86p_wasm_br_if(e, 0u);
-  emit_transfer(e, base, imm, local, kChainHostSlot, disp);
+  const X86pWasmChainSibling *const sibling = local < 0 ? sibling_at(&c->use, imm) : NULL;
+  if (sibling) {
+    c->direct++;
+  }
+  emit_transfer(e, base, imm, local, kChainHostSlot, disp, sibling);
   x86p_wasm_end(e);
   /* Missed: name the slot for the dispatcher to link. */
   x86p_wasm_i32_const(e, (int32_t)base);

@@ -375,6 +375,12 @@ static void chaining(const X86pMem *mem) {
   check(cpu.reg[kX86pEax] == 20000u, "a relowered ring did not run every block once per entry");
   /* One dispatch, and every other entry a transfer. */
   check(warm >= 10000u - 1u, "relowered blocks lost their links");
+  /* Neighbours in the ring share a module, so their exits call each other
+     without the trampoline; the counts above prove those calls land. */
+  X86pJitEngineStats shared;
+  x86p_jit_engine_stats(engine, &shared);
+  check(shared.compactions > 0u && shared.chain_exits_direct >= shared.compactions,
+        "blocks relowered into a shared module did not call their siblings directly");
   /* A million transfers from one dispatch: as ordinary calls, two engine
      frames each, this overflows any worker's stack. */
   const uint64_t deep = chained_run(engine, &cpu, &no_stop, 1000000u, kX86pRunBudget);
@@ -399,6 +405,45 @@ static void chaining(const X86pMem *mem) {
   check(spin >= 100u - 4u, "a block looping to its own entry went through the dispatcher");
   printf(
       "chaining: %llu of 10000 entries chained cold, %llu warm\n", (unsigned long long)first, (unsigned long long)warm);
+  x86p_jit_engine_destroy(engine);
+}
+
+/*
+ * A sibling call's guard. Blocks 4 and 5 of the ring share a module; block 5
+ * is rewritten to count in ECX and retranslated, which gives it a new entry
+ * while the old body stays in the module its neighbours still use. Block 4's
+ * relinked slot names the new entry, so its exit must go through the
+ * trampoline to the new code -- a direct call to the old body would count
+ * every lap in EAX.
+ */
+static void sibling_relinked(const X86pMem *mem) {
+  char reason[256] = {0};
+  ChainPolicy policy = {0u};
+  uint32_t no_stop = 0xFFFFFFF0u;
+  X86pCpu cpu;
+  X86pJitEngine *engine = create(mem, 1u << 20, 256u);
+  if (!engine) {
+    return;
+  }
+  x86p_jit_engine_set_intercept(engine, chain_intercept, &policy);
+  x86p_jit_engine_set_boundary(engine, chain_boundary, &policy);
+  check(x86p_jit_engine_set_run_stop(engine, chain_stop, reason, sizeof reason), reason);
+  ring();
+  x86p_cpu_reset(&cpu);
+  cpu.eip = kGuestBase;
+  chained_run(engine, &cpu, &no_stop, 10u * kRingBlocks, kX86pRunBudget);
+  X86pJitEngineStats warm;
+  x86p_jit_engine_stats(engine, &warm);
+  check(warm.chain_exits_direct > 0u, "the warm ring made no sibling calls");
+
+  guest[5u * kRingStride] = 0x41; /* INC ECX */
+  x86p_jit_engine_invalidate(engine, kGuestBase + 5u * kRingStride, kGuestBase + 6u * kRingStride);
+  cpu.eip = kGuestBase;
+  cpu.reg[kX86pEax] = 0u;
+  cpu.reg[kX86pEcx] = 0u;
+  chained_run(engine, &cpu, &no_stop, 10u * kRingBlocks, kX86pRunBudget);
+  check(cpu.reg[kX86pEcx] == 10u && cpu.reg[kX86pEax] == 10u * (kRingBlocks - 1u),
+        "a slot relinked to a retranslated sibling still called its old body");
   x86p_jit_engine_destroy(engine);
 }
 
@@ -460,6 +505,7 @@ int main(void) {
   invalid_module();
   chain_census(&mem);
   chaining(&mem);
+  sibling_relinked(&mem);
   probing(&mem);
   printf("WebAssembly shipping runtime: %u checks, %u failures\n", checks, failures);
   return failures ? 1 : 0;

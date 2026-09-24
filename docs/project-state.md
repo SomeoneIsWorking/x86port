@@ -191,7 +191,10 @@ chain runs in constant stack (the main module cannot hold the tail call, which
 Binaryen's asyncify refuses); a block chains its first
 `X86P_WASM_CHAIN_SLOTS` (4) exits;
 a block relowered into a shared module reuses the slots it was published with,
-and an exit to a computed EIP that misses its slot probes the block cache's
+and its exit to another block of that module tail-calls it directly when the
+slot names that block's entry, skipping the trampoline (`chain_exits_direct`;
+`test_wasm_runtime` checks a ring that makes such calls and a slot relinked to
+a retranslated sibling, which must not call the old body); an exit to a computed EIP that misses its slot probes the block cache's
 front array (`jit_wasm_chain.h`). An exit to its own block's entry links and
 probes like any other, so a guest loop goes round without the dispatcher
 (`test_jit_engine`'s spin and alternating indirect jump, `test_wasm_runtime`'s

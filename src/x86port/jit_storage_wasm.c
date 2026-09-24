@@ -72,6 +72,7 @@ struct X86pJitStorage {
      then no batch will ever compact and asking again each time is waste. */
   int cannot_compact;
   unsigned compactions;         /* batches that became one module */
+  uint64_t direct_exits;        /* their exits that call a sibling directly */
   unsigned compaction_refusals; /* batches left as they were, with a reason */
   char compaction_why[256];     /* what the last refusal said */
   size_t byte_budget;           /* how many bytes of LIVE module may be held at once */
@@ -350,6 +351,7 @@ static void share_a_module(X86pJitStorage *storage, const X86pMem *mem, const X8
   storage->modules[result.token].blocks = result.moved;
   storage->used += result.bytes;
   storage->compactions++;
+  storage->direct_exits += result.direct_exits;
   storage->pending_count = 0u;
 }
 
@@ -484,6 +486,10 @@ X86pJitStatus x86p_jit_storage_translate(X86pJitStorage *storage,
 
 unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {
   return storage ? storage->compactions : 0u;
+}
+
+uint64_t x86p_jit_storage_direct_exits(const X86pJitStorage *storage) {
+  return storage ? storage->direct_exits : 0u;
 }
 
 unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {

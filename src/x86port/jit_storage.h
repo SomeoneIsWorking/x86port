@@ -70,6 +70,10 @@ unsigned x86p_jit_storage_evict(X86pJitStorage *storage, X86pJitStorageDropFn dr
  */
 unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage);
 unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage);
+/* Exits of compacted blocks that call a block of their own module directly
+   (jit_wasm_chain.h, SIBLING CALLS), summed as batches are rebuilt; zero on a
+   native storage. */
+uint64_t x86p_jit_storage_direct_exits(const X86pJitStorage *storage);
 /*
  * How many published blocks are waiting for a batch to fill, and whether this
  * storage has stopped compacting altogether.
