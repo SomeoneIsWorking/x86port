@@ -187,25 +187,39 @@ void x86p_wasm_alu_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
    * access must leave every flag field exactly as it was. Storing it before
    * the check leaves the flags half-updated on a fault: a divergence that
    * appears several instructions later, when something finally reads CF.
+   *
+   * Only when x86p_flags_carry_in_is_live says the recorded kind reads it,
+   * which no kind inline_shape records does. Deriving it anyway cost the first
+   * flag write of nearly every block a call to x86p_flag_cf, whose predecessor
+   * a block never knows: 2.8% of the browser's guest worker.
    */
-  x86p_wasm_carry_in(l);
+  const int carry_live = x86p_flags_carry_in_is_live(kind);
+  if (carry_live) {
+    x86p_wasm_carry_in(l);
+  }
 
   if (dst->kind == kX86pOperandMem) {
     x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemRead | (writes_dest ? kX86pMemWrite : 0u));
-    x86p_wasm_state_store_carry(&l->state);
+    if (carry_live) {
+      x86p_wasm_state_store_carry(&l->state);
+    }
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalA);
     x86p_wasm_push_operand(l, src, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
   } else if (src->kind == kX86pOperandMem) {
     x86p_wasm_state_guard(&l->state, src, pc, w, kX86pMemRead);
-    x86p_wasm_state_store_carry(&l->state);
+    if (carry_live) {
+      x86p_wasm_state_store_carry(&l->state);
+    }
     x86p_wasm_state_load_mem(&l->state, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
     x86p_wasm_state_load_reg(&l->state, dst->reg, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalA);
   } else {
-    x86p_wasm_state_store_carry(&l->state);
+    if (carry_live) {
+      x86p_wasm_state_store_carry(&l->state);
+    }
     x86p_wasm_push_operand(l, src, w);
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
     x86p_wasm_state_load_reg(&l->state, dst->reg, w);
