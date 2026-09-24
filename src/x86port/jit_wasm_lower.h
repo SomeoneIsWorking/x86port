@@ -41,13 +41,18 @@ extern "C" {
 #define X86P_WASM_MAX_INSNS 64
 
 /*
- * The smallest byte budget in which any single block body can be lowered.
+ * The most bytes one guest instruction lowers to.
  *
  * Exported for the same reason the machine-code backends export theirs: a
  * caller has to decide when its buffer is too full to lower into, and a number
  * it chose itself would be a second opinion about this file's worst case.
+ *
+ * ENFORCED, not estimated: the lowering refuses a block holding an instruction
+ * past it (jit_wasm_lower.c), so every form a test lowers is measured. The
+ * largest are the binary64 x87 arithmetic (jit_wasm_x87_arith.h), 470 bytes,
+ * and the inline FSTP, 378; at 320 this was already short of the FSTP.
  */
-#define X86P_WASM_WORST_CASE_INSN_BYTES 320u
+#define X86P_WASM_WORST_CASE_INSN_BYTES 512u
 /* CPU local, EIP/status constants, store, return and body end. */
 #define X86P_WASM_EXIT_BYTES 24u
 /* Framing/types/exports plus a bounded field name and import descriptor per helper. */

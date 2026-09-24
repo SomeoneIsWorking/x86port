@@ -165,6 +165,8 @@ typedef enum X86pWasmLocal {
  */
 typedef enum X86pWasmLocal64 {
   kX86pWasmLocal64Bits = (int)kX86pWasmLocalCount, /* an operand's raw bits, then its significand */
+  kX86pWasmLocal64X,                               /* binary64 arithmetic: the destination, then the result */
+  kX86pWasmLocal64Y,                               /* binary64 arithmetic: the source */
   kX86pWasmLocal64Count                            /* MUST stay last */
 } X86pWasmLocal64;
 

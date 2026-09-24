@@ -359,6 +359,24 @@ void x86p_wasm_i64_add(X86pWasmEmit *e) {
 void x86p_wasm_i64_eq(X86pWasmEmit *e) {
   x86p_wasm_byte(e, 0x51);
 }
+void x86p_wasm_f64_op(X86pWasmEmit *e, X86pWasmF64Op op) {
+  x86p_wasm_byte(e, (uint8_t)op);
+}
+void x86p_wasm_f64_convert_i64_u(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0xBA);
+}
+void x86p_wasm_f64_promote_f32(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0xBB);
+}
+void x86p_wasm_i64_reinterpret_f64(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0xBD);
+}
+void x86p_wasm_f32_reinterpret_i32(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0xBE);
+}
+void x86p_wasm_f64_reinterpret_i64(X86pWasmEmit *e) {
+  x86p_wasm_byte(e, 0xBF);
+}
 void x86p_wasm_i64_xor(X86pWasmEmit *e) {
   x86p_wasm_byte(e, 0x85);
 }

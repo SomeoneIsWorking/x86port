@@ -52,4 +52,9 @@ struct X86pWasmLower;
  */
 int x86p_wasm_x87_load_inline(struct X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 
+/* A float operand of `width` 4 or 8 bytes, from guest memory at
+   kX86pWasmLocalAddr (already guarded) into kX86pWasmLocal64Bits. Emitted only
+   where X86pX87Reg is the architectural pair. */
+void x86p_wasm_x87_load_operand_bits(struct X86pWasmLower *l, int width);
+
 #endif /* X86PORT_JIT_WASM_X87_LOAD_H */

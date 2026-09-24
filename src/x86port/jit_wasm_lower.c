@@ -256,6 +256,10 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   size_t body_start;
   X86pJitExit exit = kX86pJitExitBlockEnd;
   const char *stopper = NULL;
+  /* The first instruction that lowered past its reservation, if any. */
+  const char *oversized_insn = NULL;
+  uint32_t oversized_at = 0;
+  size_t oversized_bytes = 0;
   int terminated = 0;
   int keep_going;
   void (*continuation)(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
@@ -374,10 +378,18 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
 
     continuation = entry->terminates ? x86p_wasm_continue_lower((uint8_t)insn.op) : NULL;
     keep_going = continuation != NULL && count < X86P_WASM_MAX_INSNS;
+    const size_t insn_start = x86p_wasm_here(l.e);
     if (keep_going) {
       continuation(&l, &insn, pc);
     } else {
       entry->lower(&l, &insn, pc);
+    }
+    /* The room check above reserved the worst case; an instruction past it
+       makes that check a guess, so the reservation is wrong, not this block. */
+    if (!oversized_insn && x86p_wasm_here(l.e) - insn_start > X86P_WASM_WORST_CASE_INSN_BYTES) {
+      oversized_at = pc;
+      oversized_bytes = x86p_wasm_here(l.e) - insn_start;
+      oversized_insn = insn.mnemonic;
     }
     pc += insn.length;
     count++;
@@ -395,6 +407,16 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
   }
   x86p_wasm_module_body_end(m);
 
+  if (oversized_insn) {
+    say(reason,
+        reason_len,
+        "%s at %08X lowered to %zu bytes, past X86P_WASM_WORST_CASE_INSN_BYTES (%u)",
+        oversized_insn,
+        oversized_at,
+        oversized_bytes,
+        X86P_WASM_WORST_CASE_INSN_BYTES);
+    return kX86pJitOutOfSpace;
+  }
   if (!x86p_wasm_intact(l.e)) {
     /* `intact` and not `ok`: the module's code section is still open here, and
        ok() would also be false for a healthy one. */
