@@ -2,6 +2,7 @@
 
 #include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
+#include "jit_wasm_x87_arith.h"
 #include "jit_wasm_x87_load.h"
 #include "jit_wasm_x87_store.h"
 #include "jit_x87_predicates.h"
@@ -293,6 +294,19 @@ static void memory_bits_arguments(X86pWasmLower *l, const X86pInsn *insn, uint32
   integer(l, (uint32_t)width);
   integer(l, operand_is_integer(insn));
 }
+/* The same arguments from the bits already in kX86pWasmLocal64Bits, for a
+   helper reached from an emitted arm that has read and guarded the operand. */
+static void loaded_bits_arguments(X86pWasmLower *l, const X86pInsn *insn) {
+  self(l);
+  x86p_wasm_local_get(l->e, kX86pWasmLocal64Bits);
+  x86p_wasm_i32_wrap_i64(l->e);
+  x86p_wasm_local_get(l->e, kX86pWasmLocal64Bits);
+  x86p_wasm_i64_const(l->e, 32);
+  x86p_wasm_i64_shr_u(l->e);
+  x86p_wasm_i32_wrap_i64(l->e);
+  integer(l, (uint32_t)insn->operand[0].size);
+  integer(l, operand_is_integer(insn));
+}
 static void memory_result(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_local_tee(l->e, kX86pWasmLocalR);
   x86p_wasm_i32_op(l->e, kWasmI32Eqz);
@@ -384,9 +398,15 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     store_arguments(l, insn);
     memory_result(l, insn, pc);
     return;
-  case kX86pX87InsnArith:
+  case kX86pX87InsnArith: {
+    /* The binary64 arm, when it applies, is the else of the helper's. */
+    const int computed = x86p_wasm_x87_arith_begin(l, insn, pc);
     if (memory) {
-      memory_bits_arguments(l, insn, pc);
+      if (computed) {
+        loaded_bits_arguments(l, insn);
+      } else {
+        memory_bits_arguments(l, insn, pc);
+      }
       integer(l, insn->x87_op);
       integer(l, insn->x87_reverse);
       integer(l, insn->x87_pops);
@@ -402,7 +422,11 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
       x86p_wasm_call_import(l, kX86pWasmImportX87ArithReg);
       x86p_wasm_drop(l->e);
     }
+    if (computed) {
+      x86p_wasm_x87_arith_end(l, insn);
+    }
     return;
+  }
   case kX86pX87InsnCompare:
     if (memory) {
       memory_bits_arguments(l, insn, pc);

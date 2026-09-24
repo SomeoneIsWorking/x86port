@@ -329,6 +329,27 @@ void x86p_wasm_i64_eq(X86pWasmEmit *e);
 void x86p_wasm_i64_xor(X86pWasmEmit *e);
 void x86p_wasm_i64_const_shift(X86pWasmEmit *e, int64_t amount);
 
+/* ---- binary64 ---------------------------------------------------------- */
+
+/*
+ * The scalar float forms x87 arithmetic in binary64 needs (jit_wasm_x87_arith.h).
+ * Every one of them is IEEE round-to-nearest-even and none traps, so a value
+ * computed from operands that turn out to be refused is harmless.
+ */
+typedef enum X86pWasmF64Op {
+  kWasmF64Add = 0xA0,
+  kWasmF64Sub = 0xA1,
+  kWasmF64Mul = 0xA2,
+  kWasmF64Div = 0xA3
+} X86pWasmF64Op;
+
+void x86p_wasm_f64_op(X86pWasmEmit *e, X86pWasmF64Op op);
+void x86p_wasm_f64_convert_i64_u(X86pWasmEmit *e);
+void x86p_wasm_f64_promote_f32(X86pWasmEmit *e);
+void x86p_wasm_f64_reinterpret_i64(X86pWasmEmit *e);
+void x86p_wasm_i64_reinterpret_f64(X86pWasmEmit *e);
+void x86p_wasm_f32_reinterpret_i32(X86pWasmEmit *e);
+
 /* ---- 128-bit SIMD ------------------------------------------------------ */
 
 /*

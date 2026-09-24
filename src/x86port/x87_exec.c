@@ -4,6 +4,7 @@
 #include "cond.h"
 #include "flags.h"
 #include "x87_memory.h"
+#include "x87_stack.h"
 #include "x87_state.h"
 #include "x87_transcendental.h"
 
@@ -86,29 +87,28 @@ static void write_float(Ctx *c, int size, long double value) {
  *
  * Returns 0 without touching *src or *dst when a named stack position is
  * empty, which is a stack fault and not a zero to compute with.
+ *
+ * A register source is read RAW, as the destination is. Through a long double
+ * it was normalised on a host whose long double is not x87's: an unnormal,
+ * which the arithmetic refuses as an invalid operand, arrived as the ordinary
+ * number of the same value.
  */
-static int arith_operands(Ctx *c, int *dst, long double *src) {
+static int arith_operands(Ctx *c, int *dst, X86pX87Reg *src) {
   const X86pInsn *in = c->insn;
   if (c->has_mem) {
     const X86pOperand *o = &in->operand[0];
     *dst = 0; /* a memory form always accumulates into ST(0) */
-    *src = in->x87_mem_int ? read_integer(c, o->size) : read_float(c, o->size);
+    *src = x86p_x87_reg_of(in->x87_mem_int ? read_integer(c, o->size) : read_float(c, o->size));
     return c->status == kX86pX87ExecOk;
   }
   if (in->operands == 2 && in->operand[0].kind == kX86pOperandSt && in->operand[1].kind == kX86pOperandSt) {
     *dst = in->operand[0].reg;
-    if (!x86p_x87_get(c->fpu, in->operand[1].reg, src)) {
-      return 0;
-    }
-    return 1;
+    return x86p_x87_get_raw(c->fpu, in->operand[1].reg, src);
   }
   if (in->operands == 1 && in->operand[0].kind == kX86pOperandSt) {
     /* The one-operand register form is `FADD ST(0), ST(i)` written short. */
     *dst = 0;
-    if (!x86p_x87_get(c->fpu, in->operand[0].reg, src)) {
-      return 0;
-    }
-    return 1;
+    return x86p_x87_get_raw(c->fpu, in->operand[0].reg, src);
   }
   c->status = kX86pX87ExecUnsupported;
   return 0;
@@ -202,11 +202,11 @@ static void execute(Ctx *c) {
 
   case kX86pX87InsnArith: {
     int dst = 0;
-    long double src = 0.0L;
+    X86pX87Reg src;
     if (!arith_operands(c, &dst, &src)) {
       return;
     }
-    x86p_x87_arith(f, (X86pX87Op)in->x87_op, dst, src, in->x87_reverse);
+    x86p_x87_arith_raw(f, (X86pX87Op)in->x87_op, dst, src, in->x87_reverse);
     do_pops(c, in->x87_pops);
     return;
   }

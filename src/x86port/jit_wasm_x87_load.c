@@ -47,9 +47,7 @@ static void constant(X86pWasmLower *l, int32_t value) {
   x86p_wasm_i32_const(l->e, value);
 }
 
-/* The operand's bits, from guest memory into the i64 local, through the same
-   guarded load every other reading form uses. */
-static void load_operand_bits(X86pWasmLower *l, int width) {
+void x86p_wasm_x87_load_operand_bits(X86pWasmLower *l, int width) {
   if (width == 4) {
     x86p_wasm_state_load_mem(&l->state, 4);
     x86p_wasm_i64_extend_i32_u(l->e);
@@ -204,7 +202,7 @@ int x86p_wasm_x87_load_inline(X86pWasmLower *l, const X86pInsn *insn, uint32_t p
     return 0;
   }
   x86p_wasm_state_guard(&l->state, &insn->operand[0], pc, width, kX86pMemRead);
-  load_operand_bits(l, width);
+  x86p_wasm_x87_load_operand_bits(l, width);
   classify_operand(l, source);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
   x86p_wasm_if(l->e, kWasmVoid);

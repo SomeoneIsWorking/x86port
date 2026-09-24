@@ -437,6 +437,154 @@ static void store_narrowing(void) {
   }
 }
 
+/* An ext80 value by its two fields, for values a long double cannot name. */
+typedef struct Ext80Value {
+  const char *name;
+  uint16_t sign_exp;
+  uint64_t signif;
+} Ext80Value;
+
+static void set_ext80(X86pCpu *cpu, int i, Ext80Value v) {
+  uint8_t bytes[10];
+  for (unsigned b = 0; b < 8; b++) {
+    bytes[b] = (uint8_t)(v.signif >> (8u * b));
+  }
+  bytes[8] = (uint8_t)v.sign_exp;
+  bytes[9] = (uint8_t)(v.sign_exp >> 8);
+  check(x86p_x87_set_raw(&cpu->x87, i, x86p_x87_reg_from_f80(bytes)), "fixture register write");
+}
+
+static X86pCpu binary64_machine(void) {
+  X86pCpu cpu = initial(2);
+  check(x86p_x87_set_double_arith(&cpu.x87, 1), "binary64 arithmetic is available on this host");
+  return cpu;
+}
+
+/*
+ * FADD/FSUB/FMUL/FDIV with binary64 arithmetic selected, which the backend
+ * computes in the block (jit_wasm_x87_arith.h) against the interpreter, which
+ * answers through x86p_ext80_double_arith. The values separate each refusal
+ * from the arm: the two ends of the exponents the emitted narrowing takes and
+ * one past each, the ties its rounding must send to even, the classes it
+ * leaves to the helper, results that leave the normals, and the control words
+ * and census that the mode does not answer under.
+ */
+static void binary64_arithmetic(void) {
+  static const Ext80Value values[] = {
+      {"one", 0x3fffu, 0x8000000000000000ull},
+      {"negative one and a half", 0xbfffu, 0xc000000000000000ull},
+      {"tie to even, down", 0x3fffu, 0x8000000000000400ull},
+      {"tie to even, up", 0x3fffu, 0x8000000000000c00ull},
+      {"one above the tie", 0x3fffu, 0x8000000000000401ull},
+      {"carries into the exponent", 0x3fffu, 0xffffffffffffffffull},
+      {"positive zero", 0x0000u, 0x0000000000000000ull},
+      {"negative zero", 0x8000u, 0x0000000000000000ull},
+      {"lowest narrowed exponent", 0x3fffu - 959u, 0x8000000000000001ull},
+      {"one below it", 0x3fffu - 960u, 0x8000000000000001ull},
+      {"highest narrowed exponent", 0x3fffu + 1022u, 0xfffffffffffff800ull},
+      {"one above it", 0x3fffu + 1023u, 0x8000000000000000ull},
+      {"rounds up out of binary64", 0x3fffu + 1023u, 0xffffffffffffffffull},
+      {"infinity", 0x7fffu, 0x8000000000000000ull},
+      {"quiet NaN", 0x7fffu, 0xc000000000000000ull},
+      {"unnormal", 0x3fffu, 0x4000000000000000ull},
+      {"ext80 subnormal", 0x0000u, 0x0000000000000001ull},
+  };
+  static const Ext80Value partners[] = {
+      {"three", 0x4000u, 0xc000000000000000ull},
+      {"huge", 0x3fffu + 1000u, 0x8000000000000000ull},
+      {"tiny", 0x3fffu - 950u, 0x8000000000000000ull},
+      {"zero", 0x0000u, 0x0000000000000000ull},
+  };
+  static const struct {
+    const char *name;
+    uint8_t code[2];
+  } registers[] = {{"FADD ST1", {0xd8, 0xc1}},
+                   {"FSUBR ST1", {0xd8, 0xe9}},
+                   {"FMUL ST1,ST0", {0xdc, 0xc9}},
+                   {"FDIV ST1", {0xd8, 0xf1}},
+                   {"FDIVP", {0xde, 0xf9}},
+                   {"FSUBP", {0xde, 0xe9}},
+                   {"FADD ST0,ST0", {0xd8, 0xc0}}};
+  static const struct {
+    const char *name;
+    uint8_t code[2];
+  } memories[] = {{"FADD32", {0xd8, 0x07}},
+                  {"FMUL64", {0xdc, 0x0f}},
+                  {"FSUBR64", {0xdc, 0x2f}},
+                  {"FDIV32", {0xd8, 0x37}},
+                  {"FIADD32", {0xda, 0x07}}};
+  static const struct {
+    uint64_t f64;
+    uint32_t f32;
+  } operands[] = {{0x3ffc000000000000ull, 0x3fe00000u},
+                  {0x0000000000000000ull, 0x00000000u},
+                  {0x8000000000000000ull, 0x80000000u},
+                  {0x0000000000000001ull, 0x00000001u},
+                  {0x7ff0000000000000ull, 0x7f800000u},
+                  {0x7ff8000000000000ull, 0x7fc00000u},
+                  {0x7fefffffffffffffull, 0x7f7fffffu},
+                  {0x0010000000000000ull, 0x00800000u}};
+  for (unsigned v = 0; v < sizeof values / sizeof *values; v++) {
+    for (unsigned p = 0; p < sizeof partners / sizeof *partners; p++) {
+      for (unsigned f = 0; f < sizeof registers / sizeof *registers; f++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+          X86pCpu cpu = binary64_machine();
+          set_ext80(&cpu, 0, swap ? partners[p] : values[v]);
+          set_ext80(&cpu, 1, swap ? values[v] : partners[p]);
+          run_case(values[v].name, registers[f].code, 2, cpu, kMapPlain);
+        }
+      }
+      for (unsigned f = 0; f < sizeof memories / sizeof *memories; f++) {
+        X86pCpu cpu = binary64_machine();
+        set_ext80(&cpu, 0, values[v]);
+        run_case(values[v].name, memories[f].code, 2, cpu, kMapPlain);
+      }
+    }
+  }
+  for (unsigned o = 0; o < sizeof operands / sizeof *operands; o++) {
+    for (unsigned f = 0; f < sizeof memories / sizeof *memories; f++) {
+      static const unsigned modes[] = {kMapPlain, kMapSparse | 3u, kMapPerms | 0u};
+      for (unsigned m = 0; m < sizeof modes / sizeof *modes; m++) {
+        X86pCpu cpu = binary64_machine();
+        memcpy(guest + 512, memories[f].code[0] == 0xdc ? (const void *)&operands[o].f64 : &operands[o].f32, 8);
+        set_ext80(&cpu, 0, values[1]);
+        run_case("binary64 memory operand", memories[f].code, 2, cpu, modes[m]);
+      }
+    }
+  }
+  /* The control words the mode does not answer under, and an empty stack. */
+  static const uint16_t controls[] = {0x37f, 0x27f, 0x07f, 0x77f, 0xb7f, 0xf7f};
+  for (unsigned c = 0; c < sizeof controls / sizeof *controls; c++) {
+    for (unsigned f = 0; f < sizeof registers / sizeof *registers; f++) {
+      X86pCpu cpu = binary64_machine();
+      cpu.x87.control = controls[c];
+      set_ext80(&cpu, 0, values[2]);
+      set_ext80(&cpu, 1, values[4]);
+      run_case("binary64 control word", registers[f].code, 2, cpu, kMapPlain);
+    }
+  }
+  for (unsigned f = 0; f < sizeof registers / sizeof *registers; f++) {
+    X86pCpu cpu = binary64_machine();
+    x86p_x87_reset(&cpu.x87);
+    check(x86p_x87_set_double_arith(&cpu.x87, 1), "binary64 arithmetic after reset");
+    run_case("binary64 empty stack", registers[f].code, 2, cpu, kMapPlain);
+  }
+  /* An armed census counts every operation, so the helper must answer: the
+     oracle and the block each count one. */
+  {
+    X86pX87OpCensus census;
+    memset(&census, 0, sizeof census);
+    X86pCpu cpu = binary64_machine();
+    x86p_x87_set_op_census(&cpu.x87, &census);
+    run_case("binary64 with the census armed", registers[0].code, 2, cpu, kMapPlain);
+    uint64_t counted = 0;
+    for (unsigned i = 0; i < 4; i++) {
+      counted += census.by_precision[i];
+    }
+    check(counted == 2u, "an operation under an armed census went uncounted");
+  }
+}
+
 static void precision_and_refusals(void) {
   static const uint16_t precision[] = {0, 0x200, 0x300};
   static const uint8_t forms[][2] = {
@@ -470,6 +618,7 @@ int main(void) {
   load_widening();
   store_narrowing();
   precision_and_refusals();
+  binary64_arithmetic();
   current = "denominators";
   check(cases == entries && entries > 400, "missing translated cases");
   check(faults > 50 && refusals == 6, "negative classes were not exercised");
