@@ -3,7 +3,8 @@
  *
  * TWO PATHS, AND THE SPLIT IS ABOUT AUTHORITY RATHER THAN SPEED.
  *
- * ADD, SUB, CMP, OR, AND, TEST and XOR are lowered inline: the operation is
+ * ADD, SUB, CMP, OR, AND, TEST and XOR are lowered inline, and so are NOT,
+ * NEG, INC and DEC: the operation is
  * one WebAssembly instruction and the flag state it leaves behind is the plain
  * lazy tuple, stored field for field as x86p_flags_set stores it. Nothing
  * about the flag DERIVATIONS is reproduced -- only the tuple those derivations
@@ -273,11 +274,7 @@ void x86p_wasm_alu_unary_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t 
   }
 
   if (insn->alu == (uint8_t)kX86pAluNot) {
-    /*
-     * NOT writes NO flags, which is why it is inlined and NEG is not: as
-     * `XOR a, -1` it would clear CF and OF, and as a call it would cost one
-     * for an operation with no flag state to get right.
-     */
+    /* NOT writes NO flags: as `XOR a, -1` it would clear CF and OF. */
     if (dst->kind == kX86pOperandMem) {
       x86p_wasm_state_load_mem(&l->state, w);
     } else {
@@ -292,27 +289,42 @@ void x86p_wasm_alu_unary_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t 
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
   } else {
     /*
-     * NEG, INC and DEC go through x86p_alu_unary. INC and DEC PRESERVE CF,
-     * which they do by having x86p_flags_set carry the current CF into
-     * carry_in -- a rule that reads the flag state it is about to overwrite,
-     * and one this file must not restate. `l->last_kind` below is what those
-     * kinds are; the derivation stays where it is.
+     * The tuple x86p_alu_unary stores. NEG records the SUB it is, (0, a), so
+     * CF falls out of the borrow. INC and DEC record (a, 1) and PRESERVE CF:
+     * their kinds read carry_in, derived here from the state this instruction
+     * is about to overwrite.
      */
-    x86p_wasm_i32_const(l->e, (int32_t)insn->alu);
+    const X86pFlagKind kind = (insn->alu == (uint8_t)kX86pAluNeg)   ? kX86pFlagsSub
+                              : (insn->alu == (uint8_t)kX86pAluInc) ? kX86pFlagsInc
+                                                                    : kX86pFlagsDec;
+    if (x86p_flags_carry_in_is_live(kind)) {
+      x86p_wasm_carry_in(l);
+      x86p_wasm_state_store_carry(&l->state);
+    }
+    if (kind == kX86pFlagsSub) {
+      x86p_wasm_i32_const(l->e, 0);
+      x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalA);
+    }
     if (dst->kind == kX86pOperandMem) {
       x86p_wasm_state_load_mem(&l->state, w);
     } else {
       x86p_wasm_state_load_reg(&l->state, dst->reg, w);
     }
-    x86p_wasm_i32_const(l->e, w);
-    x86p_wasm_state_flags_addr(&l->state);
-    x86p_wasm_call_import(l, kX86pWasmImportAluUnary);
+    x86p_wasm_local_set(l->e, (uint32_t)(kind == kX86pFlagsSub ? kX86pWasmLocalB : kX86pWasmLocalA));
+    if (kind != kX86pFlagsSub) {
+      x86p_wasm_i32_const(l->e, 1);
+      x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
+    }
+    x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
+    x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
+    x86p_wasm_i32_op(l->e, kind == kX86pFlagsInc ? kWasmI32Add : kWasmI32Sub);
+    if (w != 4) {
+      x86p_wasm_i32_const(l->e, (int32_t)x86p_wasm_width_mask(w));
+      x86p_wasm_i32_op(l->e, kWasmI32And);
+    }
     x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
-    x86p_wasm_lower_flags_written(l,
-                                  (insn->alu == (uint8_t)kX86pAluNeg)   ? (int)kX86pFlagsSub
-                                  : (insn->alu == (uint8_t)kX86pAluInc) ? (int)kX86pFlagsInc
-                                                                        : (int)kX86pFlagsDec,
-                                  w);
+    x86p_wasm_state_store_flags(&l->state, kind, w);
+    x86p_wasm_lower_flags_written(l, (int)kind, w);
   }
 
   if (dst->kind == kX86pOperandMem) {

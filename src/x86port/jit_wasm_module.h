@@ -51,7 +51,6 @@ extern "C" {
  */
 typedef enum X86pWasmImport {
   kX86pWasmImportAlu,
-  kX86pWasmImportAluUnary,
   kX86pWasmImportCond,
   kX86pWasmImportFlagCf,
   kX86pWasmImportMemOk,

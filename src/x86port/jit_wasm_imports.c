@@ -21,7 +21,6 @@ typedef struct X86pWasmImportDesc {
 
 static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportAlu] = {"alu", (X86pWasmImportFn)x86p_alu, 5, 1},
-    [kX86pWasmImportAluUnary] = {"alu_unary", (X86pWasmImportFn)x86p_alu_unary, 4, 1},
     [kX86pWasmImportCond] = {"cond", (X86pWasmImportFn)x86p_cond, 2, 1},
     [kX86pWasmImportFlagCf] = {"flag_cf", (X86pWasmImportFn)x86p_flag_cf, 1, 1},
     [kX86pWasmImportMemOk] = {"mem_ok", (X86pWasmImportFn)x86p_wasm_mem_ok, 4, 1},

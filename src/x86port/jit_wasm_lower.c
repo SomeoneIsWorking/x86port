@@ -78,8 +78,11 @@ void x86p_wasm_call_import(X86pWasmLower *l, X86pWasmImport which) {
   x86p_wasm_call(l->e, (uint32_t)which);
 }
 
-void x86p_wasm_carry_in(X86pWasmLower *l) {
-  switch (l->last_kind) {
+/* CF for a predecessor of known `kind`, whose a/b/r are recorded at 32 bits or
+   masked to their width: 0 or 1 on the stack. Returns 0, having emitted
+   nothing, for a kind with no inline form. */
+static int emit_known_cf(X86pWasmLower *l, int kind) {
+  switch (kind) {
   case kX86pFlagsNone:
   case kX86pFlagsLogic:
     /* Both give CF == 0 with no computation at all. */
@@ -117,11 +120,82 @@ void x86p_wasm_carry_in(X86pWasmLower *l) {
     x86p_wasm_i32_load8_u(l->e, 0u, (uint32_t)(offsetof(X86pCpu, flags) + offsetof(X86pFlags, carry_in)));
     break;
   default:
-    /* Unknown predecessor: ask the one authority. Once per block. */
-    x86p_wasm_state_flags_addr(&l->state);
-    x86p_wasm_call_import(l, kX86pWasmImportFlagCf);
+    return 0;
+  }
+  return 1;
+}
+
+/*
+ * The kinds an unknown predecessor is answered for in the block, in the order
+ * they are tested. Add and Sub only at 32 bits: state recorded outside a
+ * translated block is not masked to its width, and at 32 bits there is nothing
+ * to mask.
+ */
+typedef struct CarryArm {
+  uint8_t kind;
+  uint8_t dword_only;
+} CarryArm;
+
+static const CarryArm kCarryArms[] = {
+    {kX86pFlagsSub, 1},
+    {kX86pFlagsLogic, 0},
+    {kX86pFlagsDec, 0},
+    {kX86pFlagsInc, 0},
+    {kX86pFlagsAdd, 1},
+    {kX86pFlagsExplicit, 0},
+    {kX86pFlagsNone, 0},
+};
+
+#define CARRY_ARMS (sizeof kCarryArms / sizeof kCarryArms[0])
+
+_Static_assert(offsetof(X86pFlags, w) == offsetof(X86pFlags, kind) + 1u,
+               "the unknown-predecessor dispatch reads kind and width as one halfword");
+
+int x86p_wasm_carry_in_inline(int kind, int w) {
+  size_t i;
+  for (i = 0; i < CARRY_ARMS; ++i) {
+    if (kCarryArms[i].kind == kind) {
+      return !kCarryArms[i].dword_only || w == 4;
+    }
+  }
+  return 0;
+}
+
+/*
+ * An unknown predecessor: dispatch on the recorded kind and width, and ask the
+ * one authority only for a pair no arm answers. The halfword waits in the
+ * carry local, which the answer then replaces.
+ */
+static void emit_unknown_cf(X86pWasmLower *l) {
+  size_t i;
+  x86p_wasm_state_cpu(&l->state);
+  x86p_wasm_i32_load16_u(l->e, 0u, (uint32_t)(offsetof(X86pCpu, flags) + offsetof(X86pFlags, kind)));
+  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalCarry);
+  for (i = 0; i < CARRY_ARMS; ++i) {
+    x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalCarry);
+    if (kCarryArms[i].dword_only) {
+      x86p_wasm_i32_const(l->e, (int32_t)(kCarryArms[i].kind | (4u << 8)));
+    } else {
+      x86p_wasm_i32_const(l->e, 0xFF);
+      x86p_wasm_i32_op(l->e, kWasmI32And);
+      x86p_wasm_i32_const(l->e, (int32_t)kCarryArms[i].kind);
+    }
+    x86p_wasm_i32_op(l->e, kWasmI32Eq);
+    x86p_wasm_if(l->e, kWasmI32);
+    (void)emit_known_cf(l, kCarryArms[i].kind);
+    x86p_wasm_else(l->e);
+  }
+  x86p_wasm_state_flags_addr(&l->state);
+  x86p_wasm_call_import(l, kX86pWasmImportFlagCf);
+  for (i = 0; i < CARRY_ARMS; ++i) {
+    x86p_wasm_end(l->e);
+  }
+}
+
+void x86p_wasm_carry_in(X86pWasmLower *l) {
+  if (!emit_known_cf(l, l->last_kind)) {
+    emit_unknown_cf(l);
     l->flag_helper_calls++;
-    break;
   }
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalCarry);
 }
