@@ -211,7 +211,23 @@ static const Case kCases[] = {
     /* INC word [EBX]: a memory destination at sixteen bits. */
     {"inc_memory_word", {0x66, 0xFF, 0x03}, 3, 1, .ebx = DATA, .borrow = 1, .expect_exit = kX86pJitExitBlockEnd},
     /* SHL EAX,3 */
-    {"shl_helper", {0xC1, 0xE0, 0x03}, 3, 1, .eax = 0x12345678, .expect_exit = kX86pJitExitBlockEnd},
+    {"shl_inline", {0xC1, 0xE0, 0x03}, 3, 1, .eax = 0x12345678, .expect_exit = kX86pJitExitBlockEnd},
+    /* SHR EAX,1 and SAR EAX,1, the implicit-count form. */
+    {"shr_one", {0xD1, 0xE8}, 2, 1, .eax = 0x80000003, .expect_exit = kX86pJitExitBlockEnd},
+    {"sar_one", {0xD1, 0xF8}, 2, 1, .eax = 0x80000003, .expect_exit = kX86pJitExitBlockEnd},
+    /* SAR AL,3 and SAR AX,15 on negative operands: the sign of the narrower
+       width is what is replicated, not bit 31. */
+    {"sar_byte", {0xC0, 0xF8, 0x03}, 3, 1, .eax = 0x11223385, .expect_exit = kX86pJitExitBlockEnd},
+    {"sar_word", {0x66, 0xC1, 0xF8, 0x0F}, 4, 1, .eax = 0x12348001, .expect_exit = kX86pJitExitBlockEnd},
+    /* SHL AL,7, whose result must be masked to the byte. */
+    {"shl_byte", {0xC0, 0xE0, 0x07}, 3, 1, .eax = 0x112233FF, .expect_exit = kX86pJitExitBlockEnd},
+    /* SHR dword [EBX],4: a memory destination. */
+    {"shr_memory", {0xC1, 0x2B, 0x04}, 3, 1, .ebx = DATA, .expect_exit = kX86pJitExitBlockEnd},
+    /* SHL AL,9 is past the byte, and SHL EAX,0 writes no flags: x86p_alu's. */
+    {"shl_past_width", {0xC0, 0xE0, 0x09}, 3, 1, .eax = 0x000000FF, .expect_exit = kX86pJitExitBlockEnd},
+    /* SAR AL,9 fills with the sign however far past the byte it goes. */
+    {"sar_past_width", {0xC0, 0xF8, 0x09}, 3, 1, .eax = 0x00000080, .expect_exit = kX86pJitExitBlockEnd},
+    {"shl_zero", {0xC1, 0xE0, 0x00}, 3, 1, .eax = 0x12345678, .borrow = 1, .expect_exit = kX86pJitExitBlockEnd},
     /* SETE AL, reading the flag state this case set up. */
     {"setcc_helper", {0x0F, 0x94, 0xC0}, 3, 1, .eax = 0x11223344, .expect_exit = kX86pJitExitBlockEnd},
     /* JE +5: the conditional branch. It no longer ends the block -- the taken
@@ -358,11 +374,7 @@ static const char *helper_field(Helper h) {
  */
 static Helper needs_helper(const X86pInsn *insn) {
   if (insn->op == (uint8_t)kX86pInsnAlu) {
-    if (insn->alu == (uint8_t)kX86pAluAdc || insn->alu == (uint8_t)kX86pAluSbb ||
-        (insn->alu >= (uint8_t)kX86pAluShl && insn->alu <= (uint8_t)kX86pAluRcr)) {
-      return kHelperAlu;
-    }
-    return kHelperNone;
+    return x86p_wasm_alu_calls_helper(insn) ? kHelperAlu : kHelperNone;
   }
   if (insn->op == (uint8_t)kX86pInsnSetcc || insn->op == (uint8_t)kX86pInsnJcc) {
     return kHelperCond;

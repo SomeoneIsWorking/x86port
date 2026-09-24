@@ -10,8 +10,11 @@
  * about the flag DERIVATIONS is reproduced -- only the tuple those derivations
  * read.
  *
- * ADC, SBB and every shift and rotate call x86p_alu. Their flag rules are not
- * a tuple: ADC and SBB compute a real EFLAGS word eagerly because a carry-in
+ * So do SHL, SHR and SAR by an immediate count inside the width, whose kind
+ * the count settles at translation time.
+ *
+ * ADC, SBB, the rotates and the other shifts call x86p_alu. Their flag rules
+ * are not a tuple: ADC and SBB compute a real EFLAGS word eagerly because a carry-in
  * cannot be expressed lazily, and a shift by a masked count of zero writes no
  * flags at all -- a rule of the instruction, not of the derivation. Emitting
  * either inline would make this file a second authority on rules that already
@@ -100,6 +103,73 @@ int x86p_wasm_alu_accepts(const X86pInsn *insn) {
   return !(dst->kind == kX86pOperandMem && src->kind == kX86pOperandMem);
 }
 
+/*
+ * An immediate SHL, SHR or SAR whose masked count is in [1, width - 1] bits:
+ * its flag kind is known at translation time and its result is one shift.
+ * Returns that count, or 0 for a shift x86p_alu answers -- a CL count, a zero
+ * count (which writes no flags at all), a count at or past the width -- and
+ * for every other operation.
+ */
+static uint32_t inline_shift_count(const X86pInsn *insn) {
+  const X86pOperand *src = &insn->operand[1];
+  uint32_t count;
+  if (insn->alu != (uint8_t)kX86pAluShl && insn->alu != (uint8_t)kX86pAluShr && insn->alu != (uint8_t)kX86pAluSar) {
+    return 0u;
+  }
+  if (src->kind != kX86pOperandImm) {
+    return 0u;
+  }
+  count = src->imm & 0x1Fu;
+  return count < (uint32_t)insn->operand[0].size * 8u ? count : 0u;
+}
+
+int x86p_wasm_alu_calls_helper(const X86pInsn *insn) {
+  X86pWasmI32Op op;
+  X86pFlagKind kind;
+  int writes_dest;
+  return !inline_shape(insn->alu, &op, &kind, &writes_dest) && inline_shift_count(insn) == 0u;
+}
+
+/* The tuple x86p_alu stores for a shift by `count`: (a, count, r). SAR
+   replicates the sign of a narrower operand by moving it to bit 31 first. */
+static void lower_shift(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc, uint32_t count) {
+  const X86pOperand *dst = &insn->operand[0];
+  const int w = (int)dst->size;
+  const uint32_t spare = 32u - (uint32_t)w * 8u;
+  const X86pFlagKind kind = (insn->alu == (uint8_t)kX86pAluShl)   ? kX86pFlagsShl
+                            : (insn->alu == (uint8_t)kX86pAluShr) ? kX86pFlagsShr
+                                                                  : kX86pFlagsSar;
+  if (dst->kind == kX86pOperandMem) {
+    x86p_wasm_state_guard(&l->state, dst, pc, w, kX86pMemRead | kX86pMemWrite);
+    x86p_wasm_state_load_mem(&l->state, w);
+  } else {
+    x86p_wasm_state_load_reg(&l->state, dst->reg, w);
+  }
+  x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalA);
+  if (kind == kX86pFlagsSar && spare != 0u) {
+    x86p_wasm_i32_const(l->e, (int32_t)spare);
+    x86p_wasm_i32_op(l->e, kWasmI32Shl);
+    x86p_wasm_i32_const(l->e, (int32_t)(spare + count));
+  } else {
+    x86p_wasm_i32_const(l->e, (int32_t)count);
+  }
+  x86p_wasm_i32_op(l->e, kind == kX86pFlagsShl ? kWasmI32Shl : kind == kX86pFlagsShr ? kWasmI32ShrU : kWasmI32ShrS);
+  if (kind != kX86pFlagsShr && w != 4) {
+    x86p_wasm_i32_const(l->e, (int32_t)x86p_wasm_width_mask(w));
+    x86p_wasm_i32_op(l->e, kWasmI32And);
+  }
+  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
+  x86p_wasm_i32_const(l->e, (int32_t)count);
+  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
+  x86p_wasm_state_store_flags(&l->state, kind, w);
+  if (dst->kind == kX86pOperandMem) {
+    x86p_wasm_state_store_mem(&l->state, w, kX86pWasmLocalR);
+  } else {
+    x86p_wasm_state_store_reg(&l->state, dst->reg, w, kX86pWasmLocalR);
+  }
+  x86p_wasm_lower_flags_written(l, (int)kind, w);
+}
+
 /* Push the count operand of a shift or rotate. x86p_alu masks it to five bits
    itself -- that masking is architectural and belongs in one place -- so this
    only has to deliver the byte the encoding named. */
@@ -156,9 +226,9 @@ static void lower_via_helper(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc
 
   if (shift) {
     /*
-     * A shift's recorded kind depends on its COUNT, which is not known until
-     * the block runs: a zero count writes no flags, leaving whatever was
-     * there. Genuinely unknown, so the next carry-in asks the real function.
+     * A shift's recorded kind depends on its COUNT, which here is not known
+     * until the block runs: a zero count writes no flags, leaving whatever was
+     * there. Genuinely unknown, so the next carry-in dispatches on it.
      */
     x86p_wasm_lower_flags_written(l, -1, -1);
   } else {
@@ -176,7 +246,12 @@ void x86p_wasm_alu_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   X86pWasmI32Op op;
   X86pFlagKind kind;
   int writes_dest;
+  const uint32_t shift_count = inline_shift_count(insn);
 
+  if (shift_count != 0u) {
+    lower_shift(l, insn, pc, shift_count);
+    return;
+  }
   if (!inline_shape(insn->alu, &op, &kind, &writes_dest)) {
     lower_via_helper(l, insn, pc);
     return;
