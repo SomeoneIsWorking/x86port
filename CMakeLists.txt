@@ -26,6 +26,8 @@ function(x86p_strict_target target)
   target_compile_options(${target} PRIVATE ${X86P_WARN_FLAGS})
 endfunction()
 
+include(cmake/binary128_model.cmake)
+
 # The guest is x86-32 and this is a HOST library: nothing here is compiled for
 # the guest architecture, so no -m32 anywhere. That is the whole point of a
 # runtime engine.
@@ -734,3 +736,5 @@ set_tests_properties(
   verify_format
   verify_format_negative
   PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+x86p_binary128_model_link_executables()

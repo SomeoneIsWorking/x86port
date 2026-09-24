@@ -92,13 +92,31 @@ static inline int x86p_x87_read(const X86pX87 *f, int i, X86pX87Reg *out) {
   return 1;
 }
 
+/*
+ * THE ONE STORE INTO THE REGISTER FILE. On a binary128 host the register is a
+ * signif/sign_exp pair in sixteen bytes, and the six between are padding the
+ * file keeps zero: it is compared as memory (the WASM differential memcmps the
+ * whole X86pX87), and a value's own padding cannot be relied on -- a pair
+ * returned by value comes back in RAX:RDX with RDX's upper bits unspecified.
+ * So the store writes the fields over a zeroed slot, whatever `v` carried.
+ */
+static inline void x86p_x87_store_slot(X86pX87Reg *slot, X86pX87Reg v) {
+#if X86P_X87_BINARY128
+  memset(slot, 0, sizeof *slot);
+  slot->signif = v.signif;
+  slot->sign_exp = v.sign_exp;
+#else
+  *slot = v;
+#endif
+}
+
 static inline int x86p_x87_write(X86pX87 *f, int i, X86pX87Reg v) {
   int p;
   if (!f || i < 0 || i >= X86P_X87_REGS) {
     return 0;
   }
   p = x86p_x87_phys(f, i);
-  f->reg[p] = v;
+  x86p_x87_store_slot(&f->reg[p], v);
   f->tag[p] = (uint8_t)kX86pX87TagValid;
   return 1;
 }
@@ -117,7 +135,7 @@ static inline int x86p_x87_push_value(X86pX87 *f, X86pX87Reg v) {
     return 0;
   }
   f->top = (uint8_t)p;
-  f->reg[p] = v;
+  x86p_x87_store_slot(&f->reg[p], v);
   f->tag[p] = (uint8_t)kX86pX87TagValid;
   return 1;
 }

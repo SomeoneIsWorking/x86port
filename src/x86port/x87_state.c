@@ -134,7 +134,7 @@ int x86p_x87_restore_state(X86pX87 *fpu, const X86pMem *mem, uint32_t addr) {
   fpu->top = (uint8_t)((env[1] >> 11) & 7u);
   unpack_tags(fpu, (uint16_t)env[2]);
   for (i = 0; i < X86P_X87_REGS; i++) {
-    fpu->reg[i] = x86p_x87_reg_from_f80(regs[i]);
+    x86p_x87_store_slot(&fpu->reg[i], x86p_x87_reg_from_f80(regs[i]));
   }
   return 1;
 }

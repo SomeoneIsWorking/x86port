@@ -341,9 +341,6 @@ int main(void) {
   failed += production_rounding_checks(&checks);
   failed += transcendental_precision_checks(&checks, &oracle_cases);
   for (int fn = 0; fn < kX86pX87FnCount; fn++) {
-    if (fn == kX86pX87FnXtract) {
-      continue;
-    }
     for (int i = -100; i <= 100; i++) {
       long double a = (long double)i / 128, b = 0.375L;
       if (fn == kX86pX87FnYl2x || fn == kX86pX87FnSqrt) {
@@ -401,6 +398,18 @@ int main(void) {
     if (!x86p_x87_fn_software_control(
             kX86pX87FnRndint, (uint16_t)(0x37F | rc << 10), 1.75L, 0, &result, &extra, &pushed, &sw) ||
         result != expected[rc]) {
+      failed++;
+    }
+  }
+  {
+    /* FXTRACT of -12 = -1.5 * 2^3: ST(0) takes the exponent and the signed
+       significand is pushed. Independent of the host FPU, so every host runs it. */
+    long double exponent = 0, significand = 0;
+    int pushed = 0;
+    uint16_t sw = 0;
+    checks++;
+    if (!x86p_x87_fn_software(kX86pX87FnXtract, -12.0L, 0, &exponent, &significand, &pushed, &sw) || exponent != 3.0L ||
+        significand != -1.5L || pushed != 1) {
       failed++;
     }
   }

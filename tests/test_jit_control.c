@@ -899,7 +899,7 @@ static void test_x87_clear_exceptions_exact_state_and_neighbor_refusal(Fixture *
   X86pJitBlock block;
   X86pJitStatus translation;
   char reason[256] = {0};
-  long double registers[X86P_X87_REGS];
+  X86pX87Reg registers[X86P_X87_REGS];
   uint8_t tags[X86P_X87_REGS];
   unsigned index;
 
@@ -924,9 +924,9 @@ static void test_x87_clear_exceptions_exact_state_and_neighbor_refusal(Fixture *
     CHECK(result.x87.top == initial.x87.top);
     CHECK(result.x87.control == initial.x87.control);
     CHECK(memcmp(result.x87.tag, tags, sizeof tags) == 0);
-    for (index = 0u; index < X86P_X87_REGS; index++) {
-      CHECK(result.x87.reg[index] == registers[index]);
-    }
+    /* Byte-wise: a register is a long double on an ext80 host and a
+       significand/exponent pair on a binary128 one. */
+    CHECK(memcmp(result.x87.reg, registers, sizeof registers) == 0);
   }
 
   /* DB E3 is neighboring FNINIT, not a second spelling of FNCLEX. Until it

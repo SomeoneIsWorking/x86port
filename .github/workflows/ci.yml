@@ -50,6 +50,11 @@ jobs:
       - name: Verify the x64 product and oracle fixtures
         working-directory: x86port
         run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64 --cc clang --cxx clang++
+      # Android x86-64's `long double` is binary128, so its x87 register and
+      # operand forms differ from every other x86-64 host's (xmen2 #172).
+      - name: Verify the x64 product under Android x86-64's binary128 long double
+        working-directory: x86port
+        run: uv run --frozen python tools/verify.py --build-dir build/ci/linux-x86-64-binary128 --cc clang --cxx clang++ --binary128-model
 
   macos:
     name: macOS ${{ matrix.arch }} / Apple Clang

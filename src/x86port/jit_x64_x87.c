@@ -42,20 +42,37 @@ static void x87_call(X86pEmit *e, const void *fn) {
 /* Keep long double out of the generated-code ABI. System V passes an 80-bit
  * long double by value in memory while Win64 passes non-register-sized values
  * indirectly. These pointer-valued adapters give both emitters one ordinary
- * register-argument contract and dereference only inside compiler-generated C. */
+ * register-argument contract and dereference only inside compiler-generated C.
+ *
+ * TWO KINDS OF SCRATCH, AND THEY ARE NOT THE SAME BYTES. A value read out of
+ * the register file by x86p_x87_get is the host's own `long double`. A memory
+ * operand widened by the host `fld`/`fstp tbyte` pair is the ten-byte x87
+ * format. On a host whose `long double` IS that format the two coincide, which
+ * hid the difference; where it is IEEE binary128 -- Android x86_64 -- reading
+ * the widened bytes as a `long double` produced garbage values and status.
+ * The `_f80` adapters take the widened form and decode it through the one
+ * owner of that conversion. */
 static int jit_x87_push(X86pX87 *x87, const long double *value) {
   return x86p_x87_push(x87, *value);
+}
+
+static int jit_x87_push_f80(X86pX87 *x87, const uint8_t f80[10]) {
+  return x86p_x87_push(x87, x86p_x87_from_f80(f80));
 }
 
 static int jit_x87_set(X86pX87 *x87, uint32_t index, const long double *value) {
   return x86p_x87_set(x87, (int)index, *value);
 }
 
-static int jit_x87_arith(X86pX87 *x87, uint32_t operation_destination_reverse, const long double *source) {
+static int jit_x87_arith_value(X86pX87 *x87, uint32_t operation_destination_reverse, long double source) {
   X86pX87Op operation = (X86pX87Op)(operation_destination_reverse & 0xFFu);
   int destination = (int)((operation_destination_reverse >> 8) & 0xFFu);
   int reverse = (int)((operation_destination_reverse >> 16) & 1u);
-  return x86p_x87_arith(x87, operation, destination, *source, reverse);
+  return x86p_x87_arith(x87, operation, destination, source, reverse);
+}
+
+static int jit_x87_arith_f80(X86pX87 *x87, uint32_t operation_destination_reverse, const uint8_t f80[10]) {
+  return jit_x87_arith_value(x87, operation_destination_reverse, x86p_x87_from_f80(f80));
 }
 
 /*
@@ -85,15 +102,15 @@ static int jit_x87_arith_reg(X86pX87 *x87, uint32_t operation_destination_revers
   if (!x86p_x87_get(x87, source, &value)) {
     return 0;
   }
-  ok = jit_x87_arith(x87, operation_destination_reverse, &value);
+  ok = jit_x87_arith_value(x87, operation_destination_reverse, value);
   while (pops--) {
     x86p_x87_pop(x87, NULL);
   }
   return ok;
 }
 
-static int jit_x87_compare(X86pX87 *x87, const long double *value) {
-  return x86p_x87_compare(x87, *value);
+static int jit_x87_compare_f80(X86pX87 *x87, const uint8_t f80[10]) {
+  return x86p_x87_compare(x87, x86p_x87_from_f80(f80));
 }
 
 static uint32_t jit_x87_to_f32(const X86pX87 *x87, const long double *value) {
@@ -193,7 +210,7 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     }
     x87_lea_self(e);
     x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
-    x87_call(e, (const void *)&jit_x87_push);
+    x87_call(e, (const void *)&jit_x87_push_f80);
     x86p_emit_alu_r64_imm8(e, kX64Add, kX64Rsp, 16);
     x87_inline_end(c, &fast);
     return;
@@ -265,7 +282,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x87_lea_self(e);
   x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, operation_destination_reverse);
   x87_lea_scratch(e, X86P_JIT_HOST_ARG2);
-  x87_call(e, (const void *)&jit_x87_arith);
+  x87_call(e, (const void *)&jit_x87_arith_f80);
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
@@ -296,7 +313,7 @@ void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) 
   x87_widen_mem_to_scratch(e, o0->size, insn->x87_mem_int);
   x87_lea_self(e);
   x87_lea_scratch(e, X86P_JIT_HOST_ARG1);
-  x87_call(e, (const void *)&jit_x87_compare);
+  x87_call(e, (const void *)&jit_x87_compare_f80);
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
     x86p_emit_mov_r32_imm32(e, X86P_JIT_HOST_ARG1, 0u);
