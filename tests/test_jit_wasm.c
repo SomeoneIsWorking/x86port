@@ -15,7 +15,7 @@
  * tick for it would be the most expensive kind of wrong.
  *
  * THE IMPORTED HELPERS ARE RECORDED, NOT REIMPLEMENTED. A lowered block calls
- * x86p_alu, x86p_alu_unary, x86p_cond or x86p_flag_cf -- C functions node
+ * x86p_alu, x86p_cond or x86p_flag_cf -- C functions node
  * cannot reach. So this test calls the REAL function on the state the block
  * starts from and hands the oracle what it returned and which bytes it wrote,
  * and the oracle replays exactly that. Two rules keep it honest:
@@ -116,6 +116,9 @@ typedef struct Case {
    * explicit EFLAGS word the two agree, and the ordering bug hides.
    */
   int borrow;
+  /* Otherwise, flag state another owner recorded, exactly as recorded: what a
+     block entered after an unknown predecessor dispatches on. */
+  const X86pFlags *incoming;
   uint32_t fs_base; /* the one segment with a base that a guest really uses */
   X86pJitExit expect_exit;
 } Case;
@@ -164,9 +167,9 @@ static const Case kCases[] = {
     {"alu_memory_src", {0x03, 0x03}, 2, 1, .eax = 5, .ebx = DATA, .expect_exit = kX86pJitExitBlockEnd},
     /* NOT EAX writes no flags at all, which is why it is inlined. */
     {"not_inline", {0xF7, 0xD0}, 2, 1, .eax = 0x0F0F0F0F, .carry_in = 1, .expect_exit = kX86pJitExitBlockEnd},
-    {"neg_helper", {0xF7, 0xD8}, 2, 1, .eax = 0x00000007, .expect_exit = kX86pJitExitBlockEnd},
-    {"inc_helper", {0x40}, 1, 1, .eax = 0x7FFFFFFF, .carry_in = 1, .expect_exit = kX86pJitExitBlockEnd},
-    {"dec_helper", {0x48}, 1, 1, .eax = 0x00000000, .carry_in = 1, .expect_exit = kX86pJitExitBlockEnd},
+    {"neg_inline", {0xF7, 0xD8}, 2, 1, .eax = 0x00000007, .expect_exit = kX86pJitExitBlockEnd},
+    {"inc_inline", {0x40}, 1, 1, .eax = 0x7FFFFFFF, .carry_in = 1, .expect_exit = kX86pJitExitBlockEnd},
+    {"dec_inline", {0x48}, 1, 1, .eax = 0x00000000, .carry_in = 1, .expect_exit = kX86pJitExitBlockEnd},
     /* ADC EAX,EBX with CF set: the case the lazy triple cannot express, and
        the reason ADC calls the semantic owner. */
     {"adc_helper",
@@ -177,6 +180,36 @@ static const Case kCases[] = {
      .ebx = 0x00000020,
      .carry_in = 1,
      .expect_exit = kX86pJitExitBlockEnd},
+    /* INC EAX after a SHL that shifted a one out: no inline arm answers a
+       shift, so the block asks x86p_flag_cf. */
+    {"inc_after_shift",
+     {0x40},
+     1,
+     1,
+     .eax = 5,
+     .incoming = &(const X86pFlags){.kind = kX86pFlagsShl, .a = 0x80000000u, .b = 1u, .r = 0u, .w = 4},
+     .expect_exit = kX86pJitExitBlockEnd},
+    /* DEC EAX after a byte SUB recorded unmasked: 0x00 - 0x01 borrows, which
+       a 32-bit comparison of 0x100 with 0x01 would miss. */
+    {"dec_after_byte_borrow",
+     {0x48},
+     1,
+     1,
+     .eax = 5,
+     .incoming = &(const X86pFlags){.kind = kX86pFlagsSub, .a = 0x100u, .b = 1u, .r = 0xFFu, .w = 1},
+     .expect_exit = kX86pJitExitBlockEnd},
+    /* DEC EAX after a dword ADD that carried, answered in the block. */
+    {"dec_after_dword_carry",
+     {0x48},
+     1,
+     1,
+     .eax = 5,
+     .incoming = &(const X86pFlags){.kind = kX86pFlagsAdd, .a = 0xFFFFFFFFu, .b = 2u, .r = 1u, .w = 4},
+     .expect_exit = kX86pJitExitBlockEnd},
+    /* NEG AL, whose byte result must be masked. */
+    {"neg_byte", {0xF6, 0xD8}, 2, 1, .eax = 0x11223301, .expect_exit = kX86pJitExitBlockEnd},
+    /* INC word [EBX]: a memory destination at sixteen bits. */
+    {"inc_memory_word", {0x66, 0xFF, 0x03}, 3, 1, .ebx = DATA, .borrow = 1, .expect_exit = kX86pJitExitBlockEnd},
     /* SHL EAX,3 */
     {"shl_helper", {0xC1, 0xE0, 0x03}, 3, 1, .eax = 0x12345678, .expect_exit = kX86pJitExitBlockEnd},
     /* SETE AL, reading the flag state this case set up. */
@@ -286,23 +319,30 @@ static const Case kCases[] = {
      .ebx = 0x00500000u,
      .borrow = 1,
      .expect_exit = kX86pJitExitMemoryFault},
+    /* The same for INC, whose kind does read the carry_in it stores. */
+    {"inc_memory_dest_faults",
+     {0xFF, 0x03},
+     2,
+     1,
+     .ebx = 0x00500000u,
+     .borrow = 1,
+     .expect_exit = kX86pJitExitMemoryFault},
 };
 
 #define CASE_COUNT ((int)(sizeof kCases / sizeof kCases[0]))
 
 /* ---- which helper an instruction needs ---------------------------------- */
 
-typedef enum Helper { kHelperNone = 0, kHelperAlu, kHelperAluUnary, kHelperCond } Helper;
+typedef enum Helper { kHelperNone = 0, kHelperAlu, kHelperCond, kHelperCount } Helper;
 
 static const char *helper_field(Helper h) {
   switch (h) {
   case kHelperAlu:
     return "alu";
-  case kHelperAluUnary:
-    return "alu_unary";
   case kHelperCond:
     return "cond";
   case kHelperNone:
+  case kHelperCount:
   default:
     return "";
   }
@@ -323,9 +363,6 @@ static Helper needs_helper(const X86pInsn *insn) {
       return kHelperAlu;
     }
     return kHelperNone;
-  }
-  if (insn->op == (uint8_t)kX86pInsnAluUnary) {
-    return insn->alu == (uint8_t)kX86pAluNot ? kHelperNone : kHelperAluUnary;
   }
   if (insn->op == (uint8_t)kX86pInsnSetcc || insn->op == (uint8_t)kX86pInsnJcc) {
     return kHelperCond;
@@ -433,6 +470,10 @@ static void seed_cpu(const Case *c, X86pCpu *cpu) {
   if (c->borrow) {
     x86p_flags_set(&cpu->flags, kX86pFlagsSub, 0u, 1u, 0xFFFFFFFFu, 4);
   }
+  if (c->incoming) {
+    x86p_flags_set(
+        &cpu->flags, (X86pFlagKind)c->incoming->kind, c->incoming->a, c->incoming->b, c->incoming->r, c->incoming->w);
+  }
 }
 
 static uint32_t code_length(const Case *c) {
@@ -506,19 +547,6 @@ static int record_helper(const Case *c, const X86pCpu *cpu, uint32_t insns, Reco
         out->arg[1] = CPU_AT + (uint32_t)offsetof(X86pCpu, flags);
         out->argc = 2;
         out->result = (uint32_t)x86p_cond((X86pCond)insn.cond, &cpu->flags);
-      } else if (which == kHelperAluUnary) {
-        if (dst->kind != kX86pOperandReg) {
-          fail(c->name, "a helper case must not use a memory operand", NULL);
-          return 0;
-        }
-        out->arg[0] = insn.alu;
-        out->arg[1] = x86p_reg_read(cpu, dst->reg, w);
-        out->arg[2] = (uint32_t)w;
-        out->arg[3] = CPU_AT + (uint32_t)offsetof(X86pCpu, flags);
-        out->argc = 4;
-        out->result = x86p_alu_unary((X86pAluUnOp)insn.alu, out->arg[1], w, &f);
-        out->writes_flags = 1;
-        out->after = f;
       } else {
         const int shift = insn.alu >= (uint8_t)kX86pAluShl && insn.alu <= (uint8_t)kX86pAluRcr;
         if (dst->kind != kX86pOperandReg || (src->kind != kX86pOperandReg && src->kind != kX86pOperandImm)) {
@@ -573,13 +601,10 @@ static int write_job(const char *dir,
   FILE *out;
   Recording empty;
   const Recording *alu = &empty;
-  const Recording *alu_unary = &empty;
   const Recording *cond = &empty;
   memset(&empty, 0, sizeof empty);
   if (helper->which == kHelperAlu) {
     alu = helper;
-  } else if (helper->which == kHelperAluUnary) {
-    alu_unary = helper;
   } else if (helper->which == kHelperCond) {
     cond = helper;
   }
@@ -599,7 +624,6 @@ static int write_job(const char *dir,
   fprintf(out, "  \"cpu\": %u,\n", (unsigned)CPU_AT);
   fprintf(out, "  \"helpers\": {\n");
   write_helper(out, "alu", alu, 0);
-  write_helper(out, "alu_unary", alu_unary, 0);
   write_helper(out, "cond", cond, 0);
   write_helper(out, "flag_cf", flag_cf, 1);
   fprintf(out, "  }\n}\n");
@@ -610,7 +634,7 @@ typedef struct OracleResult {
   int have_exit;
   uint32_t exit;
   char refusal[256];
-  unsigned calls[4]; /* indexed by Helper */
+  unsigned calls[kHelperCount];
   uint32_t arg[MAX_HELPER_ARGS];
   unsigned argc;
 } OracleResult;
@@ -618,9 +642,6 @@ typedef struct OracleResult {
 static Helper helper_by_field(const char *field) {
   if (strcmp(field, "alu") == 0) {
     return kHelperAlu;
-  }
-  if (strcmp(field, "alu_unary") == 0) {
-    return kHelperAluUnary;
   }
   if (strcmp(field, "cond") == 0) {
     return kHelperCond;
@@ -795,12 +816,10 @@ static void run_case(const char *node, const char *oracle, const Case *c, unsign
   }
   check_u32(c->name, "guest bytes covered", block.guest_len, code_length(c));
   g_checks++;
-  /* No kind this backend records inline reads carry_in, so no block derives
-     one (x86p_flags_carry_in_is_live). */
-  if (block.flag_helper_calls != 0u) {
+  if (block.flag_helper_calls > 1u) {
     char detail[64];
     snprintf(detail, sizeof detail, "%u calls", block.flag_helper_calls);
-    fail(c->name, "a carry-in helper call in a block", detail);
+    fail(c->name, "more than one carry-in helper call in a block", detail);
     return;
   }
 
@@ -845,10 +864,12 @@ static void run_case(const char *node, const char *oracle, const Case *c, unsign
   }
 
   check_u32(c->name, "exit", result.exit, (uint32_t)c->expect_exit);
-  check_u32(c->name, "carry-in helper calls", result.calls[kHelperNone], block.flag_helper_calls);
+  /* The emitted call runs only for a recorded kind no inline arm answers. */
+  check_u32(c->name,
+            "carry-in helper calls",
+            result.calls[kHelperNone],
+            block.flag_helper_calls && !x86p_wasm_carry_in_inline(cpu.flags.kind, cpu.flags.w) ? 1u : 0u);
   check_u32(c->name, "alu helper calls", result.calls[kHelperAlu], helper.which == kHelperAlu ? 1u : 0u);
-  check_u32(
-      c->name, "alu_unary helper calls", result.calls[kHelperAluUnary], helper.which == kHelperAluUnary ? 1u : 0u);
   check_u32(c->name, "cond helper calls", result.calls[kHelperCond], helper.which == kHelperCond ? 1u : 0u);
   if (helper.which != kHelperNone) {
     unsigned i;

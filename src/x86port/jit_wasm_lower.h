@@ -121,4 +121,8 @@ int x86p_wasm_can_lower(const X86pInsn *insn);
 } /* extern "C" */
 #endif
 
+/* Whether a block reading CF after an unknown predecessor that recorded
+   `kind` at width `w` answers it itself, without calling x86p_flag_cf. */
+int x86p_wasm_carry_in_inline(int kind, int w);
+
 #endif /* X86PORT_JIT_WASM_LOWER_H */

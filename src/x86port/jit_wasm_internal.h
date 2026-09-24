@@ -159,8 +159,10 @@ void x86p_wasm_call_import(X86pWasmLower *l, X86pWasmImport which);
 
 /*
  * Leave the incoming CF in kX86pWasmLocalCarry, derived inline from
- * `l->last_kind` when that is known and asked of x86p_flag_cf when it is not.
- * Counts the helper call in the block's tally.
+ * `l->last_kind` when that is known. When it is not, the block dispatches on
+ * the recorded kind and width, and calls x86p_flag_cf only for a pair
+ * x86p_wasm_carry_in_inline refuses; that emitted call is counted in the
+ * block's tally.
  *
  * Computed BEFORE the operation, while the old flag state is still intact, and
  * stored only after any bounds check has passed -- a refused access must leave
