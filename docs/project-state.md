@@ -193,10 +193,15 @@ Binaryen's asyncify refuses); a block chains its first
 a block relowered into a shared module reuses the slots it was published with,
 and an exit to a computed EIP that misses its slot probes the block cache's
 front array (`jit_wasm_chain.h`). `test_jit_engine` checks that a non-chaining backend
-chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the ARM64 and WebAssembly backends
-never call one in place (`x86p_jit_engine_set_leaves`), so every CALL to a
-consumer's leaf, direct or through a leaf site, reaches it through the
-dispatcher there.
+chains nothing rather than asserting x64's chained counts there. Leaves follow chaining: the WebAssembly backend calls
+one in place as x64 does, through one import that makes the main module's
+indirect call, reading a CALL-through-register's leaf site as linear memory
+and reusing that site when the block is relowered (`jit_wasm_leaf.h`;
+`test_wasm_leaves` checks direct, declined, refilled and exhausted calls
+against the interpreter, and a 100-caller ring that stays chained, 19,999 of
+20,000 entries, across six compactions with one fill per site). The ARM64
+backend never calls one (`x86p_jit_engine_set_leaves`), so every CALL to a
+consumer's leaf reaches it through the dispatcher there.
 
 `x86p_jit_engine_run` now takes the caller's per-run state and hands it to the
 intercept and dispatch callbacks. The run loop consults the intercept once per
@@ -483,7 +488,7 @@ boundary, not a playable X-Men 2 or Little Fighter 2 release.
 ### S008 — native and original dispatch
 
 The JIT engine has consumer interception, inline dispatch, translation
-boundary callbacks, and leaves: host code a chaining x64 translation calls in
+boundary callbacks, and leaves: host code a chaining x64 or WebAssembly translation calls in
 place for a direct CALL, which completes the call or declines having changed
 nothing, and a declined call reaches the callee through the dispatcher
 (`test_jit_engine`, `test_a_leaf_completes_a_direct_call_in_place`, both routes

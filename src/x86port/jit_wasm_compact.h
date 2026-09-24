@@ -32,6 +32,7 @@
 
 #include "jit_wasm_arena.h"
 #include "jit_wasm_chain.h"
+#include "jit_wasm_leaf.h"
 #include "jit_x64.h"
 
 #include <stddef.h>
@@ -46,15 +47,18 @@ extern "C" {
  * from and covered; `token` is the module it is published in now; `entry` is
  * the address it is entered at, which must survive. `chain_first` and
  * `chain_exits` are the chain slots it was published with, which its links
- * name and which the rebuilt body reuses (jit_wasm_chain.h).
+ * name and which the rebuilt body reuses (jit_wasm_chain.h). `leaf_site` is
+ * the leaf site its CALL was published with, which the rebuilt CALL reads
+ * again (jit_wasm_leaf.h), or NULL.
  */
 typedef struct X86pWasmCompactBlock {
   uint32_t guest;
   uint32_t guest_len;
   int token;
+  unsigned chain_exits;
   void *entry;
   int64_t chain_first;
-  unsigned chain_exits;
+  struct X86pJitLeafSite *leaf_site;
 } X86pWasmCompactBlock;
 
 /*
@@ -87,7 +91,8 @@ typedef struct X86pWasmCompactResult {
  * times.
  *
  * `chains` is NULL, or `count` chain uses: block i's exits chain as
- * chains[i] says (jit_wasm_chain.h).
+ * chains[i] says (jit_wasm_chain.h). `leaves` is NULL, or `count` leaf uses:
+ * block i's CALL finds its leaf as leaves[i] says (jit_wasm_leaf.h).
  *
  * All or nothing: if any block cannot be lowered the module is abandoned and 0
  * is returned, because the sections have already promised every body.
@@ -100,6 +105,7 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
                                 X86pJitBoundaryFn boundary,
                                 void *boundary_user,
                                 const X86pWasmChainUse *chains,
+                                const X86pWasmLeafUse *leaves,
                                 X86pJitBlock *out,
                                 char *reason,
                                 unsigned reason_len);
@@ -117,15 +123,14 @@ size_t x86p_jit_translate_batch(const X86pMem *mem,
  *
  * On success the caller owns `out->token`, must account for `out->bytes`, and
  * must stop treating the old tokens as live: they have been released here.
- * `chain` is the slot table the blocks were published against, or NULL.
+ * `env` is what the blocks were published in, or NULL: its boundary, the
+ * slot table their exits claimed and the leaf resolver their CALLs asked.
  */
 int x86p_wasm_compact(X86pWasmArena *arena,
                       const X86pMem *mem,
                       void *buffer,
                       size_t buffer_bytes,
-                      X86pJitBoundaryFn boundary,
-                      void *boundary_user,
-                      X86pJitChain *chain,
+                      const X86pJitTranslateEnv *env,
                       const X86pWasmCompactBlock *blocks,
                       unsigned count,
                       X86pWasmCompactResult *out,

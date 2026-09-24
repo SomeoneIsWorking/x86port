@@ -27,6 +27,7 @@
 
 #include "cpu.h"
 #include "decode.h"
+#include "jit_wasm_leaf.h"
 #include "jit_wasm_module.h"
 #include "jit_wasm_state.h"
 #include "jit_x64.h"
@@ -92,6 +93,8 @@ void x86p_wasm_plan_from_mem(const X86pMem *mem, X86pWasmPlan *plan);
  * image it merely holds the bytes of.
  *
  * `chain` names the slots its exits chain through, or is NULL (jit_wasm_chain.h).
+ * `leaf` says how its CALLs find leaves, or is NULL (jit_wasm_leaf.h); only a
+ * block that chains calls one.
  *
  * `out->entry` is NOT set: a module is not an address, and it becomes callable
  * only once the engine has instantiated it. jit_wasm_arena.h owns that step.
@@ -104,6 +107,7 @@ X86pJitStatus x86p_wasm_lower_block(X86pWasmModule *m,
                                     X86pJitBoundaryFn boundary,
                                     void *boundary_user,
                                     const X86pWasmChainUse *chain,
+                                    const X86pWasmLeafUse *leaf,
                                     X86pJitBlock *out,
                                     char *reason,
                                     unsigned reason_len);

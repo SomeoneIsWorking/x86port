@@ -69,10 +69,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          X86pJitBlock *out,
                                          char *reason,
                                          unsigned reason_len) {
-  /* This backend chains (jit_wasm_chain.h) but calls no leaves. */
   const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
   void *const boundary_user = env ? env->boundary_user : NULL;
   const X86pWasmChainUse chain = {env ? env->chain : NULL, -1, 0u};
+  const X86pWasmLeafUse leaf = {
+      env ? env->leaf : NULL, env ? env->leaf_user : NULL, env ? env->leaf_sites : NULL, 0, NULL};
   X86pWasmModule module;
   X86pWasmPlan plan;
   X86pJitStatus status;
@@ -97,7 +98,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
      what the block cache will want; a caller that has only one block to
      translate is not made to pretend otherwise. */
   x86p_wasm_module_init(&module, code, code_cap, 1u);
-  status = x86p_wasm_lower_block(&module, mem, &plan, eip, boundary, boundary_user, &chain, out, reason, reason_len);
+  status =
+      x86p_wasm_lower_block(&module, mem, &plan, eip, boundary, boundary_user, &chain, &leaf, out, reason, reason_len);
   if (status != kX86pJitOk) {
     return status;
   }

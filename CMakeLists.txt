@@ -213,6 +213,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_module.c
   src/x86port/jit_wasm_memory.c
   src/x86port/jit_wasm_integer.c
+  src/x86port/jit_wasm_leaf.c
   src/x86port/jit_wasm_chain.c
   src/x86port/jit_wasm_state.c
   src/x86port/jit_wasm_lower.c
@@ -353,6 +354,10 @@ if(EMSCRIPTEN)
   target_link_options(test_wasm_runtime PRIVATE "-sALLOW_MEMORY_GROWTH=1")
   x86p_strict_target(test_wasm_runtime)
   add_test(NAME test_wasm_runtime COMMAND test_wasm_runtime)
+  add_executable(test_wasm_leaves tests/test_wasm_leaves.c)
+  target_link_libraries(test_wasm_leaves PRIVATE x86port_runtime x86port_test_oracle)
+  x86p_strict_target(test_wasm_leaves)
+  add_test(NAME test_wasm_leaves COMMAND test_wasm_leaves)
   add_executable(test_wasm_threads tests/test_wasm_threads.c)
   target_link_libraries(test_wasm_threads PRIVATE x86port_runtime)
   target_compile_options(test_wasm_threads PRIVATE -pthread)
