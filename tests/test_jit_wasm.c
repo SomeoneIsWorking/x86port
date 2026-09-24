@@ -695,7 +695,11 @@ static void compare_state(const Case *c, const X86pCpu *want, const X86pCpu *got
   check_u32(c->name, "flags.r", got->flags.r, want->flags.r);
   check_u32(c->name, "flags.kind", got->flags.kind, want->flags.kind);
   check_u32(c->name, "flags.w", got->flags.w, want->flags.w);
-  check_u32(c->name, "flags.carry_in", got->flags.carry_in, want->flags.carry_in);
+  /* A cache, compared where the recorded kind reads it (cpu_compare.c). */
+  const int carry_live = x86p_flags_carry_in_is_live((X86pFlagKind)want->flags.kind);
+  if (carry_live) {
+    check_u32(c->name, "flags.carry_in", got->flags.carry_in, want->flags.carry_in);
+  }
   check_u32(c->name, "df", got->df, want->df);
   /*
    * And then the whole struct, byte for byte. The named fields above are what
@@ -703,10 +707,14 @@ static void compare_state(const Case *c, const X86pCpu *want, const X86pCpu *got
    * a segment selector, MXCSR, the FPU -- from being written by emitted code
    * without anything noticing.
    */
+  X86pCpu expected = *want;
+  if (!carry_live) {
+    expected.flags.carry_in = got->flags.carry_in;
+  }
   g_checks++;
-  if (memcmp(want, got, sizeof *want) != 0) {
+  if (memcmp(&expected, got, sizeof expected) != 0) {
     size_t offset = 0;
-    const uint8_t *a = (const uint8_t *)want;
+    const uint8_t *a = (const uint8_t *)&expected;
     const uint8_t *b = (const uint8_t *)got;
     char detail[128];
     while (offset < sizeof *want && a[offset] == b[offset]) {
@@ -787,10 +795,12 @@ static void run_case(const char *node, const char *oracle, const Case *c, unsign
   }
   check_u32(c->name, "guest bytes covered", block.guest_len, code_length(c));
   g_checks++;
-  if (block.flag_helper_calls > 1u) {
+  /* No kind this backend records inline reads carry_in, so no block derives
+     one (x86p_flags_carry_in_is_live). */
+  if (block.flag_helper_calls != 0u) {
     char detail[64];
     snprintf(detail, sizeof detail, "%u calls", block.flag_helper_calls);
-    fail(c->name, "more than one carry-in helper call in a block", detail);
+    fail(c->name, "a carry-in helper call in a block", detail);
     return;
   }
 
