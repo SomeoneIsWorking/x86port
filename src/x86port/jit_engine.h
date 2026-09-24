@@ -115,6 +115,10 @@ typedef struct X86pJitEngineStats {
      is a property of the VALUES the route stores as well as of the code. */
   uint64_t x87_stores_translated;
   uint64_t x87_stores_inline;
+  /* Memory-operand x87 comparisons translated, and those the emitted code
+     orders itself. Same contract. */
+  uint64_t x87_compares_translated;
+  uint64_t x87_compares_inline;
   /* SIMD instructions translated, and those the emitted code performs with the
      host's own 128-bit SIMD. Same contract: the denominator is published so a
      zero numerator can be told apart from a corpus with no SIMD in it. */

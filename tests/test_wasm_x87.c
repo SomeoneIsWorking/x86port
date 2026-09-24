@@ -24,6 +24,9 @@ static unsigned long x87_loads, x87_loads_inline;
    the emitted narrowing never ran, and an inline count equal to the total
    means the values and forms it must DECLINE were never stored here. */
 static unsigned long x87_stores, x87_stores_inline;
+/* And for comparisons against memory, with the same two negatives: the
+   integer forms (FICOM) must be lowered here and must NOT be inlined. */
+static unsigned long x87_compares, x87_compares_inline;
 static const char *current;
 static void check(int pass, const char *reason) {
   checks++;
@@ -142,6 +145,8 @@ static void run_case(const char *name, const uint8_t *code, size_t size, X86pCpu
     x87_loads_inline += (unsigned long)stats.x87_loads_inline;
     x87_stores += (unsigned long)stats.x87_stores_translated;
     x87_stores_inline += (unsigned long)stats.x87_stores_inline;
+    x87_compares += (unsigned long)stats.x87_compares_translated;
+    x87_compares_inline += (unsigned long)stats.x87_compares_inline;
     x86p_jit_engine_destroy(engine);
   }
   x86p_sparse_destroy(sparse);
@@ -611,6 +616,90 @@ static void precision_and_refusals(void) {
     refusals += (unsigned)refused;
   }
 }
+/*
+ * FCOM/FCOMP m32 and m64, and FICOM beside them, over the ST(0) values and
+ * operands that separate the arms of the emitted ordering.
+ *
+ * The inline arm orders two magnitudes by (exponent, significand) and then by
+ * sign, so the values are chosen to make each of those decide on its own: an
+ * ST(0) one ulp above 1.0 that only the significand's low bits separate from a
+ * float 1.0; exponents far outside binary64's, which only the exponent
+ * separates; each sign against each; and the two zeros, which are equal
+ * whatever their signs. The classes the arm refuses -- infinity, NaN,
+ * subnormal on either side, an unnormal or pseudo-denormal ST(0), an empty
+ * stack -- must reach the helper and produce what it produced before.
+ *
+ * The status word starts with all four condition bits set, so an arm that
+ * forgot to clear one (C1 and C2 in particular, which an ordered result never
+ * sets) disagrees with the interpreter.
+ */
+static void compare_ordering(void) {
+  static const Ext80Value tops[] = {
+      {"one", 0x3fffu, 0x8000000000000000ull},
+      {"negative one", 0xbfffu, 0x8000000000000000ull},
+      {"one and a half", 0x3fffu, 0xc000000000000000ull},
+      {"one ulp above one", 0x3fffu, 0x8000000000000001ull},
+      {"one ulp below one", 0x3ffeu, 0xffffffffffffffffull},
+      {"negative two", 0xc000u, 0x8000000000000000ull},
+      {"positive zero", 0x0000u, 0x0000000000000000ull},
+      {"negative zero", 0x8000u, 0x0000000000000000ull},
+      {"below binary64", 0x3fffu - 2000u, 0x8000000000000000ull},
+      {"negative, below binary64", 0xbfffu - 2000u, 0x8000000000000000ull},
+      {"above binary64", 0x3fffu + 2000u, 0x8000000000000000ull},
+      {"infinity", 0x7fffu, 0x8000000000000000ull},
+      {"quiet NaN", 0x7fffu, 0xc000000000000000ull},
+      {"ext80 denormal", 0x0000u, 0x0000000000000001ull},
+      {"pseudo-denormal", 0x0000u, 0x8000000000000000ull},
+      {"unnormal", 0x3fffu, 0x4000000000000000ull},
+  };
+  static const struct {
+    uint64_t f64;
+    uint32_t f32;
+  } operands[] = {
+      {0x3ff0000000000000ull, 0x3f800000u}, /* 1 */
+      {0xbff0000000000000ull, 0xbf800000u}, /* -1 */
+      {0x3ff8000000000000ull, 0x3fc00000u}, /* 1.5 */
+      {0xc000000000000000ull, 0xc0000000u}, /* -2 */
+      {0x0000000000000000ull, 0x00000000u}, /* +0 */
+      {0x8000000000000000ull, 0x80000000u}, /* -0 */
+      {0x0010000000000000ull, 0x00800000u}, /* smallest normal */
+      {0x7fefffffffffffffull, 0x7f7fffffu}, /* largest normal */
+      {0x0000000000000001ull, 0x00000001u}, /* smallest subnormal */
+      {0x7ff0000000000000ull, 0x7f800000u}, /* infinity */
+      {0x7ff8000000000000ull, 0x7fc00000u}, /* quiet NaN */
+  };
+  static const struct {
+    uint8_t code[2];
+    unsigned width;
+  } forms[] = {{{0xd8, 0x17}, 4u},
+               {{0xd8, 0x1f}, 4u},
+               {{0xdc, 0x17}, 8u},
+               {{0xdc, 0x1f}, 8u},
+               {{0xda, 0x17}, 4u},
+               {{0xde, 0x1f}, 2u}};
+  static const unsigned modes[] = {kMapPlain, kMapSparse | 3u};
+  for (unsigned t = 0; t < sizeof tops / sizeof *tops; t++) {
+    for (unsigned o = 0; o < sizeof operands / sizeof *operands; o++) {
+      for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
+        for (unsigned m = 0; m < sizeof modes / sizeof *modes; m++) {
+          X86pCpu cpu = initial(2);
+          set_ext80(&cpu, 0, tops[t]);
+          cpu.x87.status |= X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3;
+          if (forms[f].width == 8u) {
+            memcpy(guest + 512, &operands[o].f64, 8);
+          } else {
+            memcpy(guest + 512, &operands[o].f32, 4);
+          }
+          run_case(tops[t].name, forms[f].code, 2, cpu, modes[m]);
+        }
+      }
+    }
+  }
+  for (unsigned f = 0; f < sizeof forms / sizeof *forms; f++) {
+    run_case("compare with an empty stack", forms[f].code, 2, initial(0), kMapPlain);
+  }
+}
+
 int main(void) {
   register_forms();
   comparison_sources();
@@ -619,6 +708,7 @@ int main(void) {
   store_narrowing();
   precision_and_refusals();
   binary64_arithmetic();
+  compare_ordering();
   current = "denominators";
   check(cases == entries && entries > 400, "missing translated cases");
   check(faults > 50 && refusals == 6, "negative classes were not exercised");
@@ -629,8 +719,10 @@ int main(void) {
   check(x87_loads_inline < x87_loads, "every x87 load was inlined, so the declined forms went untested");
   check(x87_stores_inline > 0, "no x87 store was lowered to the emitted narrowing");
   check(x87_stores_inline < x87_stores, "every x87 store was inlined, so the declined forms went untested");
+  check(x87_compares_inline > 0, "no x87 comparison was lowered to the emitted ordering");
+  check(x87_compares_inline < x87_compares, "every x87 comparison was inlined, so the declined forms went untested");
   printf("WASM x87: cases=%u entries=%u faults=%u refusals=%u loads=%lu inline=%lu stores=%lu inline=%lu "
-         "checks=%u failures=%u\n",
+         "compares=%lu inline=%lu checks=%u failures=%u\n",
          cases,
          entries,
          faults,
@@ -639,6 +731,8 @@ int main(void) {
          x87_loads_inline,
          x87_stores,
          x87_stores_inline,
+         x87_compares,
+         x87_compares_inline,
          checks,
          failures);
   return failures ? 1 : 0;

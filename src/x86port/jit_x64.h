@@ -220,6 +220,14 @@ typedef struct X86pJitBlock {
   unsigned x87_stores_inline;
 
   /*
+   * Memory-operand x87 comparisons lowered, and those the block orders itself.
+   * jit_wasm_x87_compare.h says what its inline arm takes; both counts, for the
+   * same reason again.
+   */
+  unsigned x87_compares;
+  unsigned x87_compares_inline;
+
+  /*
    * SIMD instructions lowered, and those the block performs with the host's own
    * 128-bit SIMD rather than calling out of its module for. Only the
    * WebAssembly backend emits the inline form; jit_wasm_simd_inline.h says what

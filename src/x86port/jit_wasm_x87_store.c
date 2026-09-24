@@ -2,6 +2,7 @@
 #include "jit_wasm_x87_store.h"
 
 #include "jit_wasm_internal.h"
+#include "jit_wasm_x87_slot.h"
 #include "x87.h"
 #include "x87_ext80_narrow.h"
 
@@ -9,31 +10,11 @@
 
 #if X86P_X87_BINARY128
 
-/* The same two assertions the load side makes, for the same reason: this
-   reads the architectural pair straight out of the register file, so where
-   the two fields sit is part of the contract rather than an assumption. */
-_Static_assert(sizeof(X86pX87Reg) == 16u, "the emitted x87 store reads a 16-byte register");
-_Static_assert(offsetof(X86pX87Reg, signif) == 0u, "the emitted x87 store reads the significand first");
-_Static_assert(offsetof(X86pX87Reg, sign_exp) == 8u, "the emitted x87 store reads sign_exp above it");
-
-enum {
-  kRegOffset = (int)offsetof(X86pX87, reg),
-  kTagOffset = (int)offsetof(X86pX87, tag),
-  kTopOffset = (int)offsetof(X86pX87, top),
-  kControlOffset = (int)offsetof(X86pX87, control),
-  kRegSize = (int)sizeof(X86pX87Reg),
-  kSignifOffset = (int)offsetof(X86pX87Reg, signif),
-  kSignExpOffset = (int)offsetof(X86pX87Reg, sign_exp),
-  kExt80ExpMax = 0x7FFF
-};
+enum { kExt80ExpMax = 0x7FFF };
 
 /* Alignment hints are zero throughout this backend; jit_wasm_state.c explains
    why a promise the guest does not make must not be emitted. */
 #define ALIGN_NONE 0u
-
-static void x87_base(X86pWasmLower *l) {
-  x86p_wasm_state_x87_addr(&l->state);
-}
 
 static void constant(X86pWasmLower *l, int32_t value) {
   x86p_wasm_i32_const(l->e, value);
@@ -48,15 +29,6 @@ static void refuse_if(X86pWasmLower *l) {
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
 }
 
-/* &f->reg[ST(0)], from the physical index classify() has already computed. */
-static void register_field(X86pWasmLower *l) {
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  constant(l, kRegSize);
-  x86p_wasm_i32_op(l->e, kWasmI32Mul);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-}
-
 /*
  * ST(0)'s physical index into kX86pWasmLocalTarget, an empty ST(0) ADDED to the
  * refusal already in kX86pWasmLocalB -- which the caller has initialised from
@@ -68,31 +40,19 @@ static void register_field(X86pWasmLower *l) {
  * one start from it.
  */
 static void locate_top(X86pWasmLower *l) {
-  /* p = top & 7, which is ST(0)'s physical register. */
-  x87_base(l);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
-  constant(l, X86P_X87_REGS - 1);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalTarget);
-
   /* An empty ST(0) is a stack underflow: three status bits and no store. */
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-  constant(l, (int32_t)kX86pX87TagEmpty);
-  x86p_wasm_i32_op(l->e, kWasmI32Eq);
+  x86p_wasm_x87_slot_index(l, 0, kX86pWasmLocalTarget);
   refuse_if(l);
 
   /* The two fields of reg[p]. Its address is recomputed for the second rather
      than held in a local: kX86pWasmLocalAddr is the DESTINATION for the whole
      instruction, and there is no spare i32 local to keep a second address in.
      Three instructions is the price of not needing one. */
-  register_field(l);
-  x86p_wasm_i64_load(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignifOffset));
+  x86p_wasm_x87_slot_register(l, kX86pWasmLocalTarget);
+  x86p_wasm_i64_load(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Signif);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocal64Bits);
-  register_field(l);
-  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
+  x86p_wasm_x87_slot_register(l, kX86pWasmLocalTarget);
+  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87SignExp);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
 }
 
@@ -124,8 +84,8 @@ static void zero_and_permitted(X86pWasmLower *l) {
 static void classify(X86pWasmLower *l, X86pExt80Source target) {
   /* The RC field. Only round-to-nearest is this path's, and #162 measured the
      guest moving RC on 1.65% of its operations, so the other three are real. */
-  x87_base(l);
-  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kControlOffset);
+  x86p_wasm_state_cpu(&l->state);
+  x86p_wasm_i32_load16_u(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Control);
   constant(l, (int32_t)X86P_X87_RC_MASK);
   x86p_wasm_i32_op(l->e, kWasmI32And);
   constant(l, (int32_t)X86P_X87_RC_NEAREST);
@@ -220,7 +180,7 @@ static void round_to_nearest(X86pWasmLower *l, X86pExt80Source target) {
 /* The path that existed before this file: the address, the guard's verdict and
    the widths, then the import that converts and writes. */
 static void call_helper(X86pWasmLower *l, const X86pInsn *insn, int width, uint32_t pc) {
-  x87_base(l);
+  x86p_wasm_state_x87_addr(&l->state);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalCarry);
   x86p_wasm_i32_const(l->e, width);
@@ -253,24 +213,11 @@ static void sign_bit(X86pWasmLower *l, int width) {
   x86p_wasm_i64_shl(l->e);
 }
 
-/* The pop x86p_x87_pop_raw performs, in the order it performs it: the slot
-   becomes empty and TOP moves up one. */
+/* FSTP's pop, of the ST(0) the store read. */
 static void retire_top(X86pWasmLower *l, const X86pInsn *insn) {
-  if (insn->x87_pops == 0u) {
-    return;
+  if (insn->x87_pops != 0u) {
+    x86p_wasm_x87_slot_retire(l, kX86pWasmLocalTarget);
   }
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, (int32_t)kX86pX87TagEmpty);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  constant(l, 1);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, X86P_X87_REGS - 1);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
 }
 
 /* A zero: the sign alone, and the slot retired. */

@@ -632,6 +632,8 @@ static void *translate_at(
   e->stats.x87_loads_inline += blk.x87_loads_inline;
   e->stats.x87_stores_translated += blk.x87_stores;
   e->stats.x87_stores_inline += blk.x87_stores_inline;
+  e->stats.x87_compares_translated += blk.x87_compares;
+  e->stats.x87_compares_inline += blk.x87_compares_inline;
   e->stats.simd_translated += blk.simd_ops;
   e->stats.simd_inline += blk.simd_inline;
   e->stats.exits += blk.exits;

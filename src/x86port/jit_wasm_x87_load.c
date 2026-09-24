@@ -2,6 +2,7 @@
 #include "jit_wasm_x87_load.h"
 
 #include "jit_wasm_internal.h"
+#include "jit_wasm_x87_slot.h"
 #include "x87.h"
 #include "x87_ext80_widen.h"
 
@@ -17,31 +18,12 @@
  * file with memcmp, so a fast path that left the padding alone would differ
  * from the helper on bytes no value depends on. Writing eight bytes at
  * `sign_exp` reproduces the zeroing exactly -- as long as the object really is
- * 16 bytes with the pair at 0 and 8, which is what these assert.
+ * 16 bytes with the pair at 0 and 8, which jit_wasm_x87_slot.h asserts.
  */
-_Static_assert(sizeof(X86pX87Reg) == 16u, "the emitted x87 load writes a 16-byte register");
-_Static_assert(offsetof(X86pX87Reg, signif) == 0u, "the emitted x87 load writes the significand first");
-_Static_assert(offsetof(X86pX87Reg, sign_exp) == 8u, "the emitted x87 load writes sign_exp and its padding as one i64");
-
-/* Every offset here is relative to the X86pX87 that x87_base() leaves on the
-   stack, so the one inside X86pCpu is the state helper's business and not
-   repeated. */
-enum {
-  kRegOffset = (int)offsetof(X86pX87, reg),
-  kTagOffset = (int)offsetof(X86pX87, tag),
-  kTopOffset = (int)offsetof(X86pX87, top),
-  kRegSize = (int)sizeof(X86pX87Reg),
-  kSignifOffset = (int)offsetof(X86pX87Reg, signif),
-  kSignExpOffset = (int)offsetof(X86pX87Reg, sign_exp)
-};
 
 /* Alignment hints are zero throughout this backend; jit_wasm_state.c explains
    why a promise the guest does not make must not be emitted. */
 #define ALIGN_NONE 0u
-
-static void x87_base(X86pWasmLower *l) {
-  x86p_wasm_state_x87_addr(&l->state);
-}
 
 static void constant(X86pWasmLower *l, int32_t value) {
   x86p_wasm_i32_const(l->e, value);
@@ -67,16 +49,8 @@ void x86p_wasm_x87_load_operand_bits(X86pWasmLower *l, int width) {
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocal64Bits);
 }
 
-/*
- * Everything the inline arm cannot do, as one i32 in kX86pWasmLocalB.
- *
- * Leaves the stored exponent in kX86pWasmLocalA and the destination's physical
- * index in kX86pWasmLocalTarget, because both arms need them: the inline one to
- * rebias and to store, and the cold one for nothing at all -- which is the
- * point, since the helper recomputes them from the bits it is handed and the
- * two cannot disagree about a case they are not sharing.
- */
-static void classify_operand(X86pWasmLower *l, X86pExt80Source source) {
+void x86p_wasm_x87_operand_refusal(X86pWasmLower *l, int width) {
+  const X86pExt80Source source = x86p_ext80_source((unsigned)width);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
   x86p_wasm_i64_const(l->e, (int64_t)source.field);
   x86p_wasm_i64_shr_u(l->e);
@@ -85,12 +59,12 @@ static void classify_operand(X86pWasmLower *l, X86pExt80Source source) {
   x86p_wasm_i32_op(l->e, kWasmI32And);
   x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalA);
   /* A zero exponent with a fraction is a subnormal and the all-ones exponent
-     is an infinity or a NaN. Each needs a significand the shift below does not
-     produce, and each is rare enough in the guest's geometry to be worth a
+     is an infinity or a NaN. Each needs a significand the widening below does
+     not produce, and each is rare enough in the guest's geometry to be worth a
      call rather than three more branches here. A zero exponent WITHOUT a
      fraction is a zero, which is not rare at all -- 45 million of the loads
-     that reached the helper in 90 seconds of the Dead Zone -- and
-     push_widened() answers it with two selects. */
+     that reached the helper in 90 seconds of the Dead Zone -- and the widening
+     answers it with two selects. */
   x86p_wasm_i32_op(l->e, kWasmI32Eqz);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
   x86p_wasm_i64_const(l->e, (int64_t)((((uint64_t)1u << source.field) - 1u)));
@@ -102,27 +76,24 @@ static void classify_operand(X86pWasmLower *l, X86pExt80Source source) {
   constant(l, (int32_t)source.exp_max);
   x86p_wasm_i32_op(l->e, kWasmI32Eq);
   x86p_wasm_i32_op(l->e, kWasmI32Or);
-  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
+}
 
-  /* p = (top - 1) & 7, exactly as x86p_x87_push_raw computes it: TOP is a
-     uint8_t, so a TOP of zero underflows to 7 rather than to a negative. */
-  x87_base(l);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
-  constant(l, 1);
-  x86p_wasm_i32_op(l->e, kWasmI32Sub);
-  constant(l, X86P_X87_REGS - 1);
-  x86p_wasm_i32_op(l->e, kWasmI32And);
-  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalTarget);
-
-  /* A destination that is not empty is a stack overflow, which sets three
-     status bits and pushes nothing. The helper owns that. */
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  x86p_wasm_i32_load8_u(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
-  constant(l, (int32_t)kX86pX87TagEmpty);
-  x86p_wasm_i32_op(l->e, kWasmI32Ne);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
+/*
+ * Everything the inline arm cannot do, as one i32 in kX86pWasmLocalB: the
+ * operand's own refusal, and a destination that is not empty -- a stack
+ * overflow, which sets three status bits and pushes nothing, and which the
+ * helper owns.
+ *
+ * Leaves the stored exponent in kX86pWasmLocalA and the destination's physical
+ * index in kX86pWasmLocalTarget, because both arms need them: the inline one to
+ * rebias and to store, and the cold one for nothing at all -- which is the
+ * point, since the helper recomputes them from the bits it is handed and the
+ * two cannot disagree about a case they are not sharing.
+ */
+static void classify_operand(X86pWasmLower *l, int width) {
+  x86p_wasm_x87_operand_refusal(l, width);
+  x86p_wasm_x87_slot_index(l, -1, kX86pWasmLocalTarget);
+  x86p_wasm_i32_op(l->e, kWasmI32Eqz);
   x86p_wasm_i32_op(l->e, kWasmI32Or);
   x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalB);
 }
@@ -131,7 +102,7 @@ static void classify_operand(X86pWasmLower *l, X86pExt80Source source) {
    i32 pair the import takes, and the same refusal-by-name on a width the
    conversion does not know. */
 static void call_helper(X86pWasmLower *l, int width, uint32_t pc) {
-  x87_base(l);
+  x86p_wasm_state_x87_addr(&l->state);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
   x86p_wasm_i32_wrap_i64(l->e);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
@@ -148,44 +119,27 @@ static void call_helper(X86pWasmLower *l, int width, uint32_t pc) {
   x86p_wasm_end(l->e);
 }
 
-/* The ordinary case -- a normal or a zero -- widened and pushed. The three
-   stores are what x86p_x87_push_raw does on its success path, in the order it
-   does them.
-
-   A zero differs from a normal in two places, each a select on the stored
-   exponent in kX86pWasmLocalA: no leading one in the significand, and no
-   rebias, ext80's zero keeping exponent zero. classify_operand() already
-   refused every other value with a zero exponent. */
-static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
-  const int64_t mantissa_mask = (int64_t)((((uint64_t)1u << source.field) - 1u));
-  const int64_t implicit_one = (int64_t)((uint64_t)1u << source.field);
-
-  /* &reg[p], held because both halves are written through it. */
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  constant(l, kRegSize);
-  x86p_wasm_i32_op(l->e, kWasmI32Mul);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalAddr);
-
-  /* signif = (mant | 1 << field) << (63 - field): ext80 keeps the leading one
+void x86p_wasm_x87_widened_signif(X86pWasmLower *l, int width) {
+  const X86pExt80Source source = x86p_ext80_source((unsigned)width);
+  /* (mant | 1 << field) << (63 - field): ext80 keeps the leading one
      explicitly, at the top of the significand, where the source formats imply
-     it at the top of the fraction. */
+     it at the top of the fraction. A zero has no leading one. */
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
-  x86p_wasm_i64_const(l->e, mantissa_mask);
+  x86p_wasm_i64_const(l->e, (int64_t)((((uint64_t)1u << source.field) - 1u)));
   x86p_wasm_i64_and(l->e);
-  x86p_wasm_i64_const(l->e, implicit_one);
+  x86p_wasm_i64_const(l->e, (int64_t)((uint64_t)1u << source.field));
   x86p_wasm_i64_const(l->e, 0);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_select(l->e);
   x86p_wasm_i64_or(l->e);
   x86p_wasm_i64_const(l->e, (int64_t)(63u - source.field));
   x86p_wasm_i64_shl(l->e);
-  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignifOffset));
+}
 
-  /* sign_exp = sign << 15 | (exp - bias + EXT80_BIAS), and the i64 store puts
-     the object's six padding bytes back to zero with it. */
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
+void x86p_wasm_x87_widened_sign_exp(X86pWasmLower *l, int width) {
+  const X86pExt80Source source = x86p_ext80_source((unsigned)width);
+  /* sign << 15 | (exp ? exp - bias + EXT80_BIAS : 0): a zero keeps exponent
+     zero rather than being rebiased. */
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocal64Bits);
   x86p_wasm_i64_const(l->e, (int64_t)(width * 8 - 1));
   x86p_wasm_i64_shr_u(l->e);
@@ -199,20 +153,28 @@ static void push_widened(X86pWasmLower *l, int width, X86pExt80Source source) {
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalA);
   x86p_wasm_select(l->e);
   x86p_wasm_i32_op(l->e, kWasmI32Or);
+}
+
+/* The ordinary case -- a normal or a zero -- widened and pushed. The three
+   stores are what x86p_x87_push_raw does on its success path, in the order it
+   does them. */
+static void push_widened(X86pWasmLower *l, int width) {
+  /* &reg[p], held because both halves are written through it. */
+  x86p_wasm_x87_slot_register(l, kX86pWasmLocalTarget);
+  x86p_wasm_local_tee(l->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_x87_widened_signif(l, width);
+  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87Signif);
+
+  /* The i64 store puts the object's six padding bytes back to zero. */
+  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalAddr);
+  x86p_wasm_x87_widened_sign_exp(l, width);
   x86p_wasm_i64_extend_i32_u(l->e);
-  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)(kRegOffset + kSignExpOffset));
+  x86p_wasm_i64_store(l->e, ALIGN_NONE, (uint32_t)kX86pWasmX87SignExp);
 
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTopOffset);
-
+  x86p_wasm_x87_slot_set_top(l, kX86pWasmLocalTarget);
   /* VALID, which is "occupied": the zero class exists only in the
      architectural tag word, derived from the register (x87.h). */
-  x87_base(l);
-  x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalTarget);
-  x86p_wasm_i32_op(l->e, kWasmI32Add);
-  constant(l, (int32_t)kX86pX87TagValid);
-  x86p_wasm_i32_store8(l->e, ALIGN_NONE, (uint32_t)kTagOffset);
+  x86p_wasm_x87_slot_set_tag(l, kX86pWasmLocalTarget, kX86pX87TagValid);
 }
 
 int x86p_wasm_x87_load_inline(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
@@ -223,12 +185,12 @@ int x86p_wasm_x87_load_inline(X86pWasmLower *l, const X86pInsn *insn, uint32_t p
   }
   x86p_wasm_state_guard(&l->state, &insn->operand[0], pc, width, kX86pMemRead);
   x86p_wasm_x87_load_operand_bits(l, width);
-  classify_operand(l, source);
+  classify_operand(l, width);
   x86p_wasm_local_get(l->e, (uint32_t)kX86pWasmLocalB);
   x86p_wasm_if(l->e, kWasmVoid);
   call_helper(l, width, pc);
   x86p_wasm_else(l->e);
-  push_widened(l, width, source);
+  push_widened(l, width);
   x86p_wasm_end(l->e);
   l->x87_loads_inline++;
   return 1;

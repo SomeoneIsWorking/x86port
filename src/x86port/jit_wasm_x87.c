@@ -3,6 +3,7 @@
 #include "jit_wasm_cond.h"
 #include "jit_wasm_internal.h"
 #include "jit_wasm_x87_arith.h"
+#include "jit_wasm_x87_compare.h"
 #include "jit_wasm_x87_load.h"
 #include "jit_wasm_x87_store.h"
 #include "jit_x87_predicates.h"
@@ -429,6 +430,11 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   }
   case kX86pX87InsnCompare:
     if (memory) {
+      /* The denominator for the inline ordering, as for loads and stores. */
+      l->x87_compares++;
+      if (x86p_wasm_x87_compare_inline(l, insn, pc)) {
+        return;
+      }
       memory_bits_arguments(l, insn, pc);
       integer(l, insn->x87_pops);
       x86p_wasm_call_import(l, kX86pWasmImportX87CompareMemBits);
