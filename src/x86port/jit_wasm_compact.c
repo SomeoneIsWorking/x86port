@@ -107,6 +107,7 @@ int x86p_wasm_compact(X86pWasmArena *arena,
                       unsigned reason_len) {
   uint32_t eips[X86P_WASM_MAX_BODIES];
   X86pWasmChainUse chains[X86P_WASM_MAX_BODIES];
+  X86pWasmChainSibling siblings[X86P_WASM_MAX_BODIES];
   X86pWasmLeafUse leaves[X86P_WASM_MAX_BODIES];
   X86pJitChain *const chain = env ? env->chain : NULL;
   X86pJitBlock lowered[X86P_WASM_MAX_BODIES];
@@ -131,9 +132,14 @@ int x86p_wasm_compact(X86pWasmArena *arena,
     return 0;
   }
   for (i = 0; i < count; ++i) {
+    siblings[i] =
+        (X86pWasmChainSibling){blocks[i].guest, (uint32_t)(uintptr_t)blocks[i].entry, x86p_wasm_body_function(i)};
+  }
+  for (i = 0; i < count; ++i) {
     eips[i] = blocks[i].guest;
     /* A block published with no slot keeps none: reuse of zero slots. */
-    chains[i] = (X86pWasmChainUse){chain, blocks[i].chain_exits ? blocks[i].chain_first : 0, blocks[i].chain_exits};
+    chains[i] = (X86pWasmChainUse){
+        chain, blocks[i].chain_exits ? blocks[i].chain_first : 0, blocks[i].chain_exits, siblings, count};
     /* The same resolver, and the site the block was published with: a
        relowering claims none. */
     leaves[i] = (X86pWasmLeafUse){env ? env->leaf : NULL, env ? env->leaf_user : NULL, NULL, 1, blocks[i].leaf_site};
@@ -204,6 +210,9 @@ int x86p_wasm_compact(X86pWasmArena *arena,
      free of anything that can be entered. */
   for (i = 0; i < count; ++i) {
     x86p_wasm_arena_release(arena, blocks[i].token);
+  }
+  for (i = 0; i < count; ++i) {
+    out->direct_exits += lowered[i].chain_exits_direct;
   }
   out->token = token;
   out->bytes = bytes;

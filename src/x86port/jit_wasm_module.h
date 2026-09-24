@@ -207,6 +207,10 @@ typedef enum X86pWasmLocal64 {
  */
 const char *x86p_wasm_body_name(unsigned index);
 
+/* The function index of the `index`th body inside its own module, which a
+   body calls a sibling by (jit_wasm_chain.h). */
+uint32_t x86p_wasm_body_function(unsigned index);
+
 typedef struct X86pWasmModule {
   X86pWasmEmit e;
   X86pWasmSize code_section;

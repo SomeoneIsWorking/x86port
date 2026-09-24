@@ -34,6 +34,17 @@
  * is flushed. The engine sizes its slot table by this cap; an exit past it
  * returns to the dispatcher and is counted as unslotted.
  *
+ * SIBLING CALLS SKIP THE TRAMPOLINE. The trampoline is a call into another
+ * instance and an indirect call out of it, on every transfer: about 4% of the
+ * browser's guest-worker samples. A block relowered into a shared module
+ * (jit_wasm_compact.h) knows the other blocks lowered with it, so an exit to
+ * one of their addresses compares its slot's host with that block's entry and,
+ * when they match, tail-calls the body in its own module. The match proves
+ * the call is the one the table would have made: a module owns the entries of
+ * its blocks until it is released as a whole, so while the calling body
+ * exists no other block can be entered through that entry. Any other host --
+ * a retranslation, a block in another module -- goes through the trampoline.
+ *
  * WHY A RELOWERED BLOCK REUSES ITS SLOTS. The storage relowers published
  * blocks into one shared module (jit_wasm_compact.h) and keeps their table
  * entries, so the links that name those entries stay right. Claiming fresh
@@ -58,6 +69,17 @@ extern "C" {
    included, with room to spare. */
 #define X86P_WASM_CHAIN_EXIT_BYTES 320u
 
+/*
+ * A block lowered into the same module as the exit being emitted: its guest
+ * address, the table entry it is entered through, and its function index in
+ * that module.
+ */
+typedef struct X86pWasmChainSibling {
+  uint32_t guest;
+  uint32_t entry;
+  uint32_t function;
+} X86pWasmChainSibling;
+
 /* Where a block's exits find their slots. */
 typedef struct X86pWasmChainUse {
   X86pJitChain *chain; /* NULL: every exit returns to the dispatcher */
@@ -65,6 +87,11 @@ typedef struct X86pWasmChainUse {
      `reuse_count` published slots from here in order instead of claiming. */
   int64_t reuse_first;
   unsigned reuse_count;
+  /* The blocks sharing this module, the block itself included, or NULL. An
+     exit to one of their addresses whose slot names that block's entry calls
+     it directly (SIBLING CALLS, above). */
+  const X86pWasmChainSibling *siblings;
+  unsigned sibling_count;
 } X86pWasmChainUse;
 
 typedef struct X86pWasmChainExits {
@@ -77,6 +104,8 @@ typedef struct X86pWasmChainExits {
      than X86P_WASM_CHAIN_EXIT_BYTES of them, or 0. */
   size_t bytes;
   size_t oversized;
+  /* Exits that call a sibling directly when their slot names it. */
+  unsigned direct;
 } X86pWasmChainExits;
 
 /* `use` may be NULL, for a block that does not chain. */

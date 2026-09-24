@@ -277,6 +277,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   out->code_bytes_used = x86p_jit_storage_used(e->storage);
   out->compactions = x86p_jit_storage_compactions(e->storage);
   out->compaction_refusals = x86p_jit_storage_compaction_refusals(e->storage);
+  out->chain_exits_direct = x86p_jit_storage_direct_exits(e->storage);
   out->compaction_pending = x86p_jit_storage_compaction_pending(e->storage);
   out->compaction_stopped = (uint64_t)(x86p_jit_storage_compaction_stopped(e->storage) != 0);
   out->code_bytes_limit = (uint64_t)x86p_jit_storage_capacity(e->storage);

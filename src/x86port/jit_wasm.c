@@ -71,7 +71,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
                                          unsigned reason_len) {
   const X86pJitBoundaryFn boundary = env ? env->boundary : NULL;
   void *const boundary_user = env ? env->boundary_user : NULL;
-  const X86pWasmChainUse chain = {env ? env->chain : NULL, -1, 0u};
+  const X86pWasmChainUse chain = {env ? env->chain : NULL, -1, 0u, NULL, 0u};
   const X86pWasmLeafUse leaf = {
       env ? env->leaf : NULL, env ? env->leaf_user : NULL, env ? env->leaf_sites : NULL, 0, NULL};
   X86pWasmModule module;

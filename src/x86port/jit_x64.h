@@ -277,6 +277,10 @@ typedef struct X86pJitBlock {
      was claimed (jit_chain.h). */
   unsigned chain_exits;
   unsigned chain_exits_unslotted;
+  /* Chained exits that call a block of their own module directly when their
+     slot names it (jit_wasm_chain.h, SIBLING CALLS); zero outside a shared
+     wasm module. */
+  unsigned chain_exits_direct;
   /* The first of those slots; the rest follow it. Meaningful only when
      chain_exits is not zero, and set only by a backend that relowers a
      published block (jit_wasm_chain.h). */

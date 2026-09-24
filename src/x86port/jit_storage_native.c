@@ -92,6 +92,12 @@ unsigned x86p_jit_storage_compactions(const X86pJitStorage *storage) {
   return 0u;
 }
 
+uint64_t x86p_jit_storage_direct_exits(const X86pJitStorage *storage) {
+  /* Machine code jumps straight to a linked block already. */
+  (void)storage;
+  return 0u;
+}
+
 unsigned x86p_jit_storage_compaction_refusals(const X86pJitStorage *storage) {
   (void)storage;
   return 0u;

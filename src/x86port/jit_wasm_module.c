@@ -75,12 +75,16 @@ static void write_functions(X86pWasmModule *m) {
   x86p_wasm_size_end(&m->e, section);
 }
 
+uint32_t x86p_wasm_body_function(unsigned index) {
+  return (uint32_t)kX86pWasmImportCount + index;
+}
+
 static void write_exports(X86pWasmModule *m) {
   X86pWasmSize section = x86p_wasm_section_begin(&m->e, kWasmSectionExport);
   unsigned i;
   x86p_wasm_u32(&m->e, m->promised);
   for (i = 0; i < m->promised; i++) {
-    x86p_wasm_export_func(&m->e, kBodyNames[i], (uint32_t)kX86pWasmImportCount + i);
+    x86p_wasm_export_func(&m->e, kBodyNames[i], x86p_wasm_body_function(i));
   }
   x86p_wasm_size_end(&m->e, section);
 }

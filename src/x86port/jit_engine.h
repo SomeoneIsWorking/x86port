@@ -183,6 +183,9 @@ typedef struct X86pJitEngineStats {
    */
   uint64_t compactions;
   uint64_t compaction_refusals;
+  /* Exits of those rebuilt blocks that tail-call a block of their own module
+     directly when their slot names it, instead of through the trampoline. */
+  uint64_t chain_exits_direct;
   /* Blocks waiting for a batch to fill, and 1 per engine that has stopped
      compacting for good, so a compaction count that stops rising can be told
      apart from batches that stopped filling. */
