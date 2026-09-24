@@ -9,9 +9,11 @@
  */
 #include "x87.h"
 #include "x87_double_arith.h"
+#include "x87_double_fn.h"
 #include "x87_ext80_widen.h"
 
 #include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -125,11 +127,76 @@ static void test_unit_switch(void) {
   check(sum_minus_one(&f) == 0x1p-60L, "extended arithmetic is observably different");
 }
 
+/* The unit's stack as it stands, for a refusal that must leave it alone. */
+static int stack_unchanged(const X86pX87 *before, const X86pX87 *after) {
+  return memcmp(before->reg, after->reg, sizeof before->reg) == 0 &&
+         memcmp(before->tag, after->tag, sizeof before->tag) == 0 && before->top == after->top &&
+         before->status == after->status;
+}
+
+static void refuses_fn(X86pX87 *f, X86pX87Fn fn, const char *what) {
+  X86pX87 before = *f;
+  check(!x86p_x87_double_fn(f, fn) && stack_unchanged(&before, f), what);
+}
+
+/* x87_double_fn.h: the transcendental forms in binary64. */
+static void test_functions(void) {
+  X86pX87 f;
+  long double top = 0.0L;
+  long double next = 0.0L;
+  x86p_x87_reset(&f);
+  if (!x86p_x87_set_double_arith(&f, 1)) {
+    refuses_fn(&f, kX86pX87FnSqrt, "a host without the mode answers no function");
+    return;
+  }
+
+  x86p_x87_push(&f, 2.0L);
+  check(x86p_x87_apply_fn(&f, kX86pX87FnSqrt) && x86p_x87_pop(&f, &top) && top == (long double)sqrt(2.0),
+        "FSQRT answers the binary64 root");
+  x86p_x87_set_double_arith(&f, 0);
+  x86p_x87_push(&f, 2.0L);
+  check(x86p_x87_apply_fn(&f, kX86pX87FnSqrt) && x86p_x87_pop(&f, &top) && top != (long double)sqrt(2.0),
+        "extended FSQRT is observably different");
+  x86p_x87_set_double_arith(&f, 1);
+
+  f.status |= X86P_X87_C2;
+  x86p_x87_push(&f, 0.5L);
+  check(x86p_x87_apply_fn(&f, kX86pX87FnSinCos) && !(f.status & X86P_X87_C2) && x86p_x87_pop(&f, &top) &&
+            x86p_x87_pop(&f, &next) && top == (long double)cos(0.5) && next == (long double)sin(0.5),
+        "FSINCOS leaves the cosine on top of the sine and clears C2");
+
+  x86p_x87_push(&f, 1.0L);
+  x86p_x87_push(&f, -1.0L);
+  check(x86p_x87_apply_fn(&f, kX86pX87FnPatan) && x86p_x87_pop(&f, &top) && top == (long double)atan2(1.0, -1.0) &&
+            f.tag[f.top] == (uint8_t)kX86pX87TagEmpty,
+        "FPATAN takes the quadrant from both operands and pops");
+
+  x86p_x87_push(&f, 0x1p64L);
+  refuses_fn(&f, kX86pX87FnSin, "an argument beyond the reduction range");
+  x86p_x87_pop(&f, &top);
+  x86p_x87_push(&f, -4.0L);
+  refuses_fn(&f, kX86pX87FnSqrt, "the root of a negative");
+  x86p_x87_pop(&f, &top);
+  refuses_fn(&f, kX86pX87FnCos, "an empty register");
+  x86p_x87_push(&f, 1.0L);
+  refuses_fn(&f, kX86pX87FnPatan, "FPATAN with ST1 empty");
+  for (int i = 0; i < 7; i++) {
+    x86p_x87_push(&f, 1.0L);
+  }
+  refuses_fn(&f, kX86pX87FnSinCos, "FSINCOS with no register to push into");
+  refuses_fn(&f, kX86pX87FnXtract, "a function this mode does not compute");
+  x86p_x87_reset(&f);
+  f.control = (uint16_t)((f.control & ~X86P_X87_PC_MASK) | X86P_X87_PC_SINGLE);
+  x86p_x87_push(&f, 2.0L);
+  refuses_fn(&f, kX86pX87FnSqrt, "single-precision control");
+}
+
 int main(void) {
   test_answers();
   test_operand_rounding();
   test_refusals();
   test_unit_switch();
+  test_functions();
   if (failures) {
     printf("test_x87_double_arith: %d failure(s)\n", failures);
     return 1;

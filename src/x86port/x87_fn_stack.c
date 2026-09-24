@@ -1,4 +1,5 @@
 #include "x87.h"
+#include "x87_double_fn.h"
 #include "x87_transcendental.h"
 
 int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
@@ -11,6 +12,9 @@ int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn) {
   int two_operand = (fn == kX86pX87FnPatan || fn == kX86pX87FnYl2x || fn == kX86pX87FnYl2xp1 || fn == kX86pX87FnScale ||
                      fn == kX86pX87FnPrem || fn == kX86pX87FnPrem1);
 
+  if (f->double_arith && x86p_x87_double_fn(f, fn)) {
+    return 1;
+  }
   if (!x86p_x87_get(f, 0, &a)) {
     /* x86p_x87_get has already set the stack-fault and invalid-operation
        flags; the instruction produces no result, exactly as the other arms
