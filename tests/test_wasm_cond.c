@@ -36,20 +36,37 @@ static WasmTest suite;
    normalise cannot pass by accident. */
 enum { kHighJunk = 0xDEAD0000u };
 
+/*
+ * The flag-writing instructions, reg to reg or on EAX. INC and DEC preserve
+ * CF, so each appears after STC and after CLC: a derivation that read CF from
+ * the result instead of the carry it kept would agree with one of the two.
+ */
 typedef struct Form {
   const char *name;
-  uint8_t bytes[3]; /* the flag-writing instruction: CMP or TEST, reg to reg */
+  uint8_t bytes[3];
   unsigned size;
   unsigned width;
+  unsigned insns; /* instructions in `bytes` */
 } Form;
 
 static const Form kForms[] = {
-    {"cmp al, bl", {0x38, 0xD8}, 2u, 1u},
-    {"cmp ax, bx", {0x66, 0x39, 0xD8}, 3u, 2u},
-    {"cmp eax, ebx", {0x39, 0xD8}, 2u, 4u},
-    {"test al, bl", {0x84, 0xD8}, 2u, 1u},
-    {"test ax, bx", {0x66, 0x85, 0xD8}, 3u, 2u},
-    {"test eax, ebx", {0x85, 0xD8}, 2u, 4u},
+    {"cmp al, bl", {0x38, 0xD8}, 2u, 1u, 1u},
+    {"cmp ax, bx", {0x66, 0x39, 0xD8}, 3u, 2u, 1u},
+    {"cmp eax, ebx", {0x39, 0xD8}, 2u, 4u, 1u},
+    {"test al, bl", {0x84, 0xD8}, 2u, 1u, 1u},
+    {"test ax, bx", {0x66, 0x85, 0xD8}, 3u, 2u, 1u},
+    {"test eax, ebx", {0x85, 0xD8}, 2u, 4u, 1u},
+    {"add al, bl", {0x00, 0xD8}, 2u, 1u, 1u},
+    {"add ax, bx", {0x66, 0x01, 0xD8}, 3u, 2u, 1u},
+    {"add eax, ebx", {0x01, 0xD8}, 2u, 4u, 1u},
+    {"stc; inc al", {0xF9, 0xFE, 0xC0}, 3u, 1u, 2u},
+    {"clc; inc ax", {0xF8, 0x66, 0x40}, 3u, 2u, 2u},
+    {"stc; inc eax", {0xF9, 0x40}, 2u, 4u, 2u},
+    {"clc; inc eax", {0xF8, 0x40}, 2u, 4u, 2u},
+    {"clc; dec al", {0xF8, 0xFE, 0xC8}, 3u, 1u, 2u},
+    {"stc; dec ax", {0xF9, 0x66, 0x48}, 3u, 2u, 2u},
+    {"stc; dec eax", {0xF9, 0x48}, 2u, 4u, 2u},
+    {"clc; dec eax", {0xF8, 0x48}, 2u, 4u, 2u},
 };
 
 static const uint32_t kOperands[][2] = {
@@ -105,7 +122,7 @@ static void every_condition_after_every_form(void) {
                  x86p_cond_name((X86pCond)cc),
                  kOperands[v][0],
                  kOperands[v][1]);
-        wasm_test_case_insns(&suite, name, code, kForms[f].size + 3u, cpu, 0, 2u);
+        wasm_test_case_insns(&suite, name, code, kForms[f].size + 3u, cpu, 0, kForms[f].insns + 1u);
       }
     }
   }
@@ -134,7 +151,7 @@ static void every_condition_as_a_branch(void) {
                  x86p_cond_name((X86pCond)cc),
                  kOperands[v][0],
                  kOperands[v][1]);
-        wasm_test_case_insns(&suite, name, code, kForms[f].size + 2u, cpu, 1, 2u);
+        wasm_test_case_insns(&suite, name, code, kForms[f].size + 2u, cpu, 1, kForms[f].insns + 1u);
       }
     }
   }
@@ -184,9 +201,22 @@ static void the_inline_path_is_the_one_being_tested(void) {
   /* SHL by CL then SETcc: a count of zero would write no flags, so the shift
      records no kind at translation time. */
   static const uint8_t after_shl_cl[] = {0xD3, 0xE0, 0x0F, 0x9C, 0xC1};
+  /* ADD, INC and DEC then SETcc: derivable kinds of their own since #168. */
+  static const uint8_t after_add[] = {0x01, 0xD8, 0x0F, 0x9C, 0xC1};
+  static const uint8_t after_inc[] = {0x40, 0x0F, 0x92, 0xC1};
+  static const uint8_t after_dec[] = {0x48, 0x0F, 0x9F, 0xC1};
   X86pJitBlock block;
 
   suite.current = "counters";
+  if (lower_counts(after_add, sizeof after_add, &block)) {
+    wasm_test_check(&suite, block.cond_inline == 1u && block.cond_helper_calls == 0u, "ADD+SETL was not inline");
+  }
+  if (lower_counts(after_inc, sizeof after_inc, &block)) {
+    wasm_test_check(&suite, block.cond_inline == 1u && block.cond_helper_calls == 0u, "INC+SETB was not inline");
+  }
+  if (lower_counts(after_dec, sizeof after_dec, &block)) {
+    wasm_test_check(&suite, block.cond_inline == 1u && block.cond_helper_calls == 0u, "DEC+SETG was not inline");
+  }
   if (lower_counts(after_cmp, sizeof after_cmp, &block)) {
     wasm_test_check(&suite, block.conds == 1u, "CMP+SETcc did not count one condition");
     wasm_test_check(&suite, block.cond_inline == 1u, "CMP+SETcc was not lowered inline");
@@ -212,8 +242,15 @@ static void the_inline_path_is_the_one_being_tested(void) {
   wasm_test_check(&suite, !x86p_wasm_cond_is_inline(-1, kX86pCondZ), "an unknown predecessor claimed an inline form");
   wasm_test_check(&suite,
                   x86p_wasm_cond_is_inline((int)kX86pFlagsSub, kX86pCondZ) &&
-                      x86p_wasm_cond_is_inline((int)kX86pFlagsLogic, kX86pCondZ),
-                  "the two derivable kinds were not reported as derivable");
+                      x86p_wasm_cond_is_inline((int)kX86pFlagsLogic, kX86pCondZ) &&
+                      x86p_wasm_cond_is_inline((int)kX86pFlagsAdd, kX86pCondZ) &&
+                      x86p_wasm_cond_is_inline((int)kX86pFlagsInc, kX86pCondZ) &&
+                      x86p_wasm_cond_is_inline((int)kX86pFlagsDec, kX86pCondZ),
+                  "the five derivable kinds were not reported as derivable");
+  wasm_test_check(&suite,
+                  !x86p_wasm_cond_is_inline((int)kX86pFlagsExplicit, kX86pCondZ) &&
+                      !x86p_wasm_cond_is_inline((int)kX86pFlagsShl, kX86pCondZ),
+                  "a kind with no inline derivation claimed one");
   wasm_test_check(&suite,
                   !x86p_wasm_cond_is_inline((int)kX86pFlagsSub, (X86pCond)kX86pCondCount),
                   "a condition number off the end claimed an inline form");
