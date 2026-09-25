@@ -2,6 +2,7 @@
 #include "bit_ops.h"
 #include "flags.h"
 #include "jit_arm64_internal.h"
+#include "multiply.h"
 #include <stddef.h>
 
 static int alu_writes_dest(uint8_t op) {
@@ -65,23 +66,6 @@ void emit_cpu_transfer(BlockCtx *c, uint8_t op) {
   emit_call(c->e, (void *)fn);
 }
 
-static void jit_mul32(X86pCpu *cpu, uint32_t operand, uint32_t signed_multiply, uint32_t width) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  if (signed_multiply) {
-    x86p_alu_imul(x86p_reg_read(cpu, kX86pEax, (int)width), operand, (int)width, &low, &high, &cpu->flags);
-  } else {
-    x86p_alu_mul(x86p_reg_read(cpu, kX86pEax, (int)width), operand, (int)width, &low, &high, &cpu->flags);
-  }
-  if (width == 1) {
-    x86p_reg_write(cpu, kX86pEax, 2, low | (high << 8));
-  } else {
-    x86p_reg_write(cpu, kX86pEax, (int)width, low);
-    x86p_reg_write(cpu, kX86pEdx, (int)width, high);
-  }
-}
-
 void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *operand = &insn->operand[0];
   const int width = operand->size;
@@ -95,7 +79,7 @@ void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
   x86p_a64_emit_mov_w_imm32(c->e, kA64X2, insn->op == kX86pInsnImul);
   x86p_a64_emit_mov_w_imm32(c->e, kA64X3, (uint32_t)width);
-  emit_call(c->e, (void *)&jit_mul32);
+  emit_call(c->e, (void *)&x86p_multiply_accumulator);
 }
 
 int double_shift_is_emittable(const X86pInsn *insn) {

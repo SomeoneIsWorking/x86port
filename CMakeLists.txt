@@ -175,6 +175,7 @@ add_library(x86port_runtime STATIC
   src/x86port/decode.c
   src/x86port/flags.c
   src/x86port/alu.c
+  src/x86port/multiply.c
   src/x86port/cpu.c
   src/x86port/memory.c
   src/x86port/memory_sparse.c

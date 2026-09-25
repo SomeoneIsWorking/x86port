@@ -11,6 +11,7 @@
 #include "jit_x64_internal.h"
 #include "jit_x64_x87.h"
 #include "jit_x64_x87_inline.h"
+#include "multiply.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -305,8 +306,9 @@ static int can_emit(const X86pInsn *insn) {
       return mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
     }
     return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
-           operand_is_reg32(&insn->operand[0]) &&
-           (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]));
+           (insn->operand[0].size == 2 || insn->operand[0].size == 4) && insn->operand[0].kind == kX86pOperandReg &&
+           mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) && !operand_is_imm(&insn->operand[1]) &&
+           mov_operand_ok(&insn->operand[1], insn->operand[0].size, 0);
   case kX86pInsnString:
     return x86p_string_is_supported((X86pStringOp)insn->str, (X86pRepKind)insn->rep, insn->str_width);
   case kX86pInsnAluUnary:
@@ -603,41 +605,30 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
   note_divide_fault(c, failed);
 }
 
-/* The shipping emitter calls the canonical widening-multiply semantics after
-   capturing the explicit operand. Capturing first is essential for MUL EAX
-   and MUL EDX: both implicit destination registers are overwritten. */
-static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  x86p_alu_imul(left, right, 4, &low, &high, &cpu->flags);
-  cpu->reg[destination] = low;
-}
-
-static void emit_imul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+/* IMUL r, r/m[, imm] at 16 or 32 bits. The r/m operand is read before the
+   register one because preparing a memory operand uses the scratch registers
+   a register load would otherwise have filled. */
+static void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *destination = &insn->operand[0];
   const X86pOperand *source = &insn->operand[1];
+  const int width = destination->size;
+  const X86pHostReg source_arg = insn->operands == 2 ? X86P_JIT_HOST_ARG2 : X86P_JIT_HOST_ARG1;
 
-  if (insn->operands == 2) {
-    if (source->kind == kX86pOperandMem) {
-      emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG3, HOSTPTR_REG, 0);
-    } else {
-      gpr_load(c, X86P_JIT_HOST_ARG3, source->reg, 4);
-    }
-    gpr_load(c, X86P_JIT_HOST_ARG2, destination->reg, 4);
+  if (source->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, source, insn_eip, width);
+    emit_load_w(c->e, source_arg, HOSTPTR_REG, 0, width);
   } else {
-    if (source->kind == kX86pOperandMem) {
-      emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_emit_load32(c->e, X86P_JIT_HOST_ARG2, HOSTPTR_REG, 0);
-    } else {
-      gpr_load(c, X86P_JIT_HOST_ARG2, source->reg, 4);
-    }
-    x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, insn->operand[2].imm);
+    gpr_load(c, source_arg, source->reg, width);
+  }
+  if (insn->operands == 2) {
+    gpr_load(c, X86P_JIT_HOST_ARG1, destination->reg, width);
+  } else {
+    x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, insn->operand[2].imm);
   }
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
-  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, destination->reg);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_imul32);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, (uint32_t)destination->reg);
+  x86p_jit_abi_emit_arg32_imm(c->e, X86P_JIT_HOST_ABI, 4u, (uint32_t)width);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_imul_to_register);
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 
@@ -1104,7 +1095,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       if (insn.operands == 1) {
         emit_mul32(&ctx, &insn, pc);
       } else {
-        emit_imul32(&ctx, &insn, pc);
+        emit_imul_to_register(&ctx, &insn, pc);
       }
       /* The semantic owner materialises CF/OF into explicit flags. */
       last_kind = -1;

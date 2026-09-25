@@ -11,6 +11,7 @@
 #include "jit_wasm_memory.h"
 #include "jit_wasm_simd.h"
 #include "jit_wasm_x87.h"
+#include "multiply.h"
 #include "x87.h"
 #include <stddef.h>
 
@@ -28,7 +29,7 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportMemOk] = {"mem_ok", (X86pWasmImportFn)x86p_wasm_mem_ok, 4, 1},
     [kX86pWasmImportMemLoad] = {"mem_load", (X86pWasmImportFn)x86p_wasm_mem_load, 3, 1},
     [kX86pWasmImportMemStore] = {"mem_store", (X86pWasmImportFn)x86p_wasm_mem_store, 4, 0},
-    [kX86pWasmImportMultiply] = {"multiply", (X86pWasmImportFn)x86p_wasm_multiply, 6, 1},
+    [kX86pWasmImportMultiply] = {"multiply", (X86pWasmImportFn)x86p_multiply, 6, 1},
     [kX86pWasmImportDivide] = {"divide", (X86pWasmImportFn)x86p_wasm_divide, 4, 1},
     [kX86pWasmImportString] = {"string", (X86pWasmImportFn)x86p_wasm_string, 5, 1},
     [kX86pWasmImportLoop] = {"loop", (X86pWasmImportFn)x86p_cpu_loop, 3, 1},

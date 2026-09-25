@@ -140,7 +140,9 @@ product refusal without entering the test-oracle dispatcher. Focused
 differentials cover all SETcc conditions and byte destinations, LEAVE ordering,
 CDQ sign edges, MUL r/m32 widening and flag behavior, unsigned and signed DIV
 r/m32 faults, two- and three-operand
-IMUL result and flag behavior, REP string progress and termination, XCHG r/m32
+IMUL result and flag behavior at 16 and 32 bits (the 16-bit forms preserve the
+destination's upper word; `multiply.{h,c}` is every backend's one register-file
+owner for MUL/IMUL), REP string progress and termination, XCHG r/m32
 ordering, all seven x87 constant loads including stack overflow, and memory-form
 FCOM/FCOMP status, NaN, pop, empty-stack, and fault behavior. FNSTSW AX is
 differentially covered across all TOP values and preserves upper EAX, integer

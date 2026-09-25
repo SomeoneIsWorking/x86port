@@ -572,6 +572,96 @@ static void test_imul32_register_memory_edges_and_fault(Fixture *fixture) {
   compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
 }
 
+/* The 16-bit two- and three-operand forms write only the low word of their
+   destination: ECX's upper half must survive `imul cx, cx, 5`. */
+static void test_imul16_forms_preserve_the_upper_word(Fixture *fixture) {
+  static const struct {
+    uint32_t left;
+    uint32_t right;
+  } cases[] = {
+      {0xABCD0000u, 0u},
+      {0xABCD0001u, 0xFFFFu},
+      {0x12344000u, 2u},
+      {0x12347FFFu, 0x7FFFu},
+      {0x5A5A8000u, 0xFFFFu},
+      {0xFFFF8000u, 1u},
+      {0x00001234u, 0x0100u},
+      {0xDEADFFFFu, 0xFFFFu},
+  };
+  X86pCpu initial;
+  unsigned index;
+
+  for (index = 0u; index < sizeof cases / sizeof cases[0]; index++) {
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0x66u;
+    fixture->guest[1] = 0x0Fu;
+    fixture->guest[2] = 0xAFu;
+    fixture->guest[3] = 0xC8u; /* IMUL CX, AX */
+    append_stopper(fixture->guest + 4u);
+    initial = explicit_cpu(index & 31u);
+    initial.reg[kX86pEcx] = cases[index].left;
+    initial.reg[kX86pEax] = 0xC3C30000u | cases[index].right;
+    compare_one_success(fixture, initial, 4u, 0);
+
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0x66u;
+    fixture->guest[1] = 0x0Fu;
+    fixture->guest[2] = 0xAFu;
+    fixture->guest[3] = 0x4Du;
+    fixture->guest[4] = 0x0Cu; /* IMUL CX, word [EBP+0x0C] */
+    append_stopper(fixture->guest + 5u);
+    put_u32(fixture->guest + kDataOffset, 0x77770000u | cases[index].right);
+    initial = explicit_cpu((31u - index) & 31u);
+    initial.reg[kX86pEcx] = cases[index].left;
+    initial.reg[kX86pEbp] = kGuestBase + kDataOffset - 0x0Cu;
+    compare_one_success(fixture, initial, 5u, 0);
+
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0x66u;
+    fixture->guest[1] = 0x6Bu;
+    fixture->guest[2] = 0xC9u;
+    fixture->guest[3] = 0x05u; /* IMUL CX, CX, 5 -- the form XMen2.exe reaches */
+    append_stopper(fixture->guest + 4u);
+    initial = explicit_cpu((index * 7u) & 31u);
+    initial.reg[kX86pEcx] = cases[index].left;
+    compare_one_success(fixture, initial, 4u, 0);
+  }
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0x66u;
+  fixture->guest[1] = 0x6Bu;
+  fixture->guest[2] = 0xD8u;
+  fixture->guest[3] = 0xFFu; /* IMUL BX, AX, -1: imm8 sign extension at 16 bits. */
+  append_stopper(fixture->guest + 4u);
+  initial = explicit_cpu(9u);
+  initial.reg[kX86pEax] = 0x12348000u;
+  initial.reg[kX86pEbx] = 0xFEDC0000u;
+  compare_one_success(fixture, initial, 4u, 0);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0x66u;
+  fixture->guest[1] = 0x69u;
+  fixture->guest[2] = 0xD8u;
+  fixture->guest[3] = 0x00u;
+  fixture->guest[4] = 0x80u; /* IMUL BX, AX, 0x8000 */
+  append_stopper(fixture->guest + 5u);
+  initial = explicit_cpu(17u);
+  initial.reg[kX86pEax] = 0x00000003u;
+  initial.reg[kX86pEbx] = 0x0BAD0000u;
+  compare_one_success(fixture, initial, 5u, 0);
+
+  memset(fixture->guest, 0x90, sizeof fixture->guest);
+  fixture->guest[0] = 0x66u;
+  fixture->guest[1] = 0x0Fu;
+  fixture->guest[2] = 0xAFu;
+  fixture->guest[3] = 0x4Du;
+  fixture->guest[4] = 0x0Cu;
+  append_stopper(fixture->guest + 5u);
+  initial = explicit_cpu(23u);
+  initial.reg[kX86pEbp] = kGuestBase + kGuestSize - 0x0Du;
+  compare_expected_exit(fixture, initial, kX86pStepMemoryFault, kX86pJitExitMemoryFault);
+}
+
 static void test_imul32_three_operand_forms(Fixture *fixture) {
   X86pCpu initial;
 
@@ -967,6 +1057,7 @@ int main(void) {
   test_idiv32_success_and_faults(&fixture);
   test_imul32_register_memory_edges_and_fault(&fixture);
   test_imul32_three_operand_forms(&fixture);
+  test_imul16_forms_preserve_the_upper_word(&fixture);
   test_rep_cmpsb_termination_direction_and_fault_progress(&fixture);
   test_xchg32_register_memory_alias_and_fault(&fixture);
   test_x87_constant_loads_and_full_stack(&fixture);

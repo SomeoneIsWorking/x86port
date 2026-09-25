@@ -3,6 +3,7 @@
  * lazy-flag updates, carry preservation, and arithmetic-fault registration. */
 #include "jit_arm64_integer.h"
 #include "alu.h"
+#include "multiply.h"
 
 /* "cmp DST, [base+disp]" has no single AArch64 instruction: load the operand
    into the encoder's other scratch (X8) and compare. Only ever the second of
@@ -240,38 +241,29 @@ void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int signed
   note_divide_fault(c, failed);
 }
 
-static void jit_imul32(X86pCpu *cpu, uint32_t destination, uint32_t left, uint32_t right) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  x86p_alu_imul(left, right, 4, &low, &high, &cpu->flags);
-  cpu->reg[destination] = low;
-}
-
-void emit_imul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+/* IMUL r, r/m[, imm] at 16 or 32 bits; see jit_x64.c's emit_imul_to_register
+   for why the r/m operand is read first. */
+void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *destination = &insn->operand[0];
   const X86pOperand *source = &insn->operand[1];
+  const int width = destination->size;
+  const X86pA64Reg source_arg = insn->operands == 2 ? kA64X2 : kA64X1;
 
-  if (insn->operands == 2) {
-    if (source->kind == kX86pOperandMem) {
-      emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_a64_emit_load32(c->e, kA64X3, HOSTPTR_REG, 0);
-    } else {
-      x86p_a64_emit_load32(c->e, kA64X3, CPU_REG, reg_off(source->reg));
-    }
-    x86p_a64_emit_load32(c->e, kA64X2, CPU_REG, reg_off(destination->reg));
+  if (source->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, source, insn_eip, width);
+    emit_load_w(c->e, source_arg, HOSTPTR_REG, 0, width);
   } else {
-    if (source->kind == kX86pOperandMem) {
-      emit_mem_prepare_w(c, source, insn_eip, 4);
-      x86p_a64_emit_load32(c->e, kA64X2, HOSTPTR_REG, 0);
-    } else {
-      x86p_a64_emit_load32(c->e, kA64X2, CPU_REG, reg_off(source->reg));
-    }
-    x86p_a64_emit_mov_w_imm32(c->e, kA64X3, insn->operand[2].imm);
+    emit_load_w(c->e, source_arg, CPU_REG, reg_off_w(source->reg, width), width);
+  }
+  if (insn->operands == 2) {
+    emit_load_w(c->e, kA64X1, CPU_REG, reg_off_w(destination->reg, width), width);
+  } else {
+    x86p_a64_emit_mov_w_imm32(c->e, kA64X2, insn->operand[2].imm);
   }
   x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
-  x86p_a64_emit_mov_w_imm32(c->e, kA64X1, destination->reg);
-  emit_call(c->e, (void *)&jit_imul32);
+  x86p_a64_emit_mov_w_imm32(c->e, kA64X3, (uint32_t)destination->reg);
+  x86p_a64_emit_mov_w_imm32(c->e, kA64X4, (uint32_t)width);
+  emit_call(c->e, (void *)&x86p_imul_to_register);
 }
 
 /* INC, DEC, NEG and NOT -- see jit_x64.c's emit_alu_unary_inline for the CF
