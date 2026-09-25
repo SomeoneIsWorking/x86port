@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: cf04f93c618293cb1e2b72afc19569675eb7efb4
+          ref: b93421a06831bb55cfccd5549acd06616c3c13ad
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: cf04f93c618293cb1e2b72afc19569675eb7efb4
+          ref: b93421a06831bb55cfccd5549acd06616c3c13ad
           path: jit-common
           fetch-depth: 0
           persist-credentials: false
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SomeoneIsWorking/jit-common
-          ref: cf04f93c618293cb1e2b72afc19569675eb7efb4
+          ref: b93421a06831bb55cfccd5549acd06616c3c13ad
           path: jit-common
           fetch-depth: 0
           persist-credentials: false

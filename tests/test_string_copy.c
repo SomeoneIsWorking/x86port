@@ -141,6 +141,31 @@ static void admission(void) {
   for (unsigned i = 0; i < sizeof data; i++) {
     CHECK(data[i] == unit[0]);
   }
+  /* Counts that are not a power of two end mid-doubling; the bytes past the
+     fill are untouched. */
+  memset(data, 0x55, sizeof data);
+  CHECK(x86p_mem_fill(&mem, mem.lo, unit, 2u, 7u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == (i < 14u ? unit[i % 2u] : 0x55));
+  }
+  memset(data, 0x55, sizeof data);
+  CHECK(x86p_mem_fill(&mem, mem.lo, unit, 4u, 5u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == (i < 20u ? unit[i % 4u] : 0x55));
+  }
+  /* A unit of one repeated byte, and one differing only in its last byte. */
+  static const uint8_t zero[4] = {0, 0, 0, 0};
+  static const uint8_t last_differs[4] = {7, 7, 7, 9};
+  memset(data, 0x55, sizeof data);
+  CHECK(x86p_mem_fill(&mem, mem.lo, zero, 4u, 3u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == (i < 12u ? 0u : 0x55));
+  }
+  memset(data, 0x55, sizeof data);
+  CHECK(x86p_mem_fill(&mem, mem.lo, last_differs, 4u, 3u));
+  for (unsigned i = 0; i < sizeof data; i++) {
+    CHECK(data[i] == (i < 12u ? last_differs[i % 4u] : 0x55));
+  }
   memcpy(saved, data, sizeof data);
   CHECK(!x86p_mem_fill(NULL, mem.lo, unit, 4u, 8u));
   CHECK(!x86p_mem_fill(&mem, mem.lo, NULL, 4u, 8u));
