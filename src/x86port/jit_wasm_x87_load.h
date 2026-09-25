@@ -11,7 +11,7 @@
  * replaced the softfloat conversion it was still 8.4% of the browser's guest
  * worker, the largest single function in it. What remained was not the
  * arithmetic. It was the crossing: a translated block lives in its own
- * WebAssembly module, so reaching x86p_wasm_x87_load_bits is a cross-module
+ * WebAssembly module, so reaching x86p_jit_x87_load_bits is a cross-module
  * call, and the guest performs one per FLD.
  *
  * ONLY THE ORDINARY CASE IS EMITTED: a normal, or a zero, which was the

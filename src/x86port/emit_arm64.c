@@ -382,6 +382,13 @@ void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   bitfield(e, 2u /* UBFM */, dst, dst, count & 31u, 31u);
 }
 
+void x86p_a64_emit_lsr_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count) {
+  /* LSR Xd, Xn, #s == UBFM Xd, Xn, #s, #63: sf and N set for 64 bits. */
+  uint32_t word = (1u << 31) | (2u << 29) | (0x26u << 23) | (1u << 22) | (((uint32_t)count & 0x3Fu) << 16) |
+                  (0x3Fu << 10) | ((uint32_t)src << 5) | (uint32_t)dst;
+  put32(e, word);
+}
+
 void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b) {
   uint32_t word = (0u << 31) | (1u << 30) | (1u << 29) | (0x0Bu << 24) | ((uint32_t)b << 16) | ((uint32_t)a << 5) | 31u;
   put32(e, word);

@@ -4,7 +4,7 @@
  * WHY. After the load and store forms were emitted inline, the comparison was
  * the largest x87 form still crossing out of its translated module every time:
  * 28.5 million FCOMs of a float operand in 90 seconds of the Dead Zone, each a
- * call into x86p_wasm_x87_compare_mem_bits, which widened the operand to the
+ * call into x86p_jit_x87_compare_mem_bits, which widened the operand to the
  * host's binary128 long double and ordered the two in softfloat.
  *
  * WHAT IS EMITTED. Two values that are each a normal or a zero, with the

@@ -5,7 +5,7 @@
  * measured reason: after the load side was emitted inline the STORE side was
  * the larger half of the browser's x87 operand plumbing --
  * x86p_x87_operand_bytes_from_reg at 4.28% of the guest worker and
- * x86p_wasm_x87_store_at at 3.60%, against the load path's 2.52%. Every FST
+ * x86p_jit_x87_store_at at 3.60%, against the load path's 2.52%. Every FST
  * crossed out of its translated module to reach a softfloat conversion.
  *
  * IT IS NOT THE MIRROR IMAGE OF THE LOAD, because this direction ROUNDS. What

@@ -184,6 +184,8 @@ void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* lsr w(dst), w(dst), #count */
 void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
+/* dst = src >> count, 64-bit logical. */
+void x86p_a64_emit_lsr_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count);
 
 /* cmp w(a), w(b) -- SUBS with the result discarded; sets NZCV. */
 void x86p_a64_emit_cmp_w_w(X86pA64Emit *e, X86pA64Reg a, X86pA64Reg b);
