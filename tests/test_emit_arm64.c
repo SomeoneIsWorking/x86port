@@ -369,6 +369,11 @@ static void test_shl_sar_w_imm(void) {
   CHECK(fbits(w, 15, 10) == 31u);
   CHECK(fbits(w, 9, 5) == (uint32_t)kA64X2);
   CHECK(fbits(w, 4, 0) == (uint32_t)kA64X2);
+
+  /* lsr x2, x0, #32 == UBFM x2, x0, #32, #63 -- 0xD360FC02 */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_lsr_x_imm(&e, kA64X2, kA64X0, 32);
+  CHECK(last_word(&e) == 0xD360FC02u);
 }
 
 static void test_cmp_and_tst(void) {

@@ -1,32 +1,31 @@
 /*
  * jit_arm64_x87.c -- native x87 emission for the AArch64 JIT backend.
  *
- * The shared predicates admit native ext80 or software ext80 arithmetic with
- * lossless binary128 storage, plus the separately approved Darwin binary64
- * limitation. Emitted calls use the same value/stack helpers as the oracle.
+ * Loads, stores, arithmetic, compares and copies call jit_x87_helpers.h, which
+ * stays in the register file's storage type from guest memory to guest
+ * memory. The `long double` forms in x87.h are software binary128 on Linux and
+ * Android AArch64, and calling through them widened and re-encoded every value
+ * on every instruction: on an Adreno 722 phone that round trip was about 40%
+ * of the game thread. Constants, the status word, FNCLEX and the x87_fn table
+ * need no value crossing and keep their own owners.
  *
- * AAPCS64 assigns long double to V0 independently of integer arguments: Q0
- * carries Linux/Android binary128, while D0 carries Darwin binary64. Conversion
- * helpers return that same register. Pointer-result helpers use a 16-byte
- * aligned scratch slot and a Q0 load, preserving all binary128 bits; Darwin
- * callees consume only its low 64 bits. GP argument setup never touches V0.
+ * Operand bits reach the helpers as two 32-bit halves (lo in X1, hi in X2),
+ * the same ABI the WebAssembly backend calls them with.
  *
  * ORDERING VERSUS emit_mem_prepare_w: identical constraint to jit_x64_x87.c.
  * A bounds check must never run while a scratch slot is open, because its
- * fault stub assumes SP is at the post-prologue depth. Every call site below
- * either has no memory operand while the slot is open, or closes the slot
- * first (emit_x87_store_mem).
+ * fault stub assumes SP is at the post-prologue depth. emit_x87_store_mem
+ * closes its slot before the check.
  */
 #include "jit_arm64_x87.h"
 
 #include "cpu.h"
 #include "emit_arm64.h"
+#include "jit_x87_helpers.h"
 #include "x87.h"
 
 #include <stddef.h>
 #include <stdint.h>
-
-_Static_assert(sizeof(long double) <= 16, "x87 helper scratch must hold the host value");
 
 /* The X86pX87 sub-struct, and where it lives in X86pCpu. */
 static int32_t x87_off(void) {
@@ -75,16 +74,12 @@ static void x87_store_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip,
   }
 }
 
-/* x86p_x87_from_f32(w0) / x86p_x87_from_f64(x0) -- the exact bit-pattern to
-   `long double` conversion x87.h already owns; see the file comment for why
-   this replaces x64's hardware `fld` widen. Leaves the result in V0. */
-static void x87_from_bits(X86pA64Emit *e, int w, int integer) {
-  if (integer) {
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
-    x87_call(e, (const void *)&x86p_x87_integer_value);
-    return;
-  }
-  x87_call(e, (w == 4) ? (const void *)&x86p_x87_from_f32 : (const void *)&x86p_x87_from_f64);
+/* The raw operand bits the preceding x87_load_bits left in X0, as the
+   helpers' (f, lo, hi) prefix: X1 = low half, X2 = high half, X0 = f. */
+static void x87_bits_args(X86pA64Emit *e) {
+  x86p_a64_emit_mov_x_x(e, kA64X1, kA64X0);
+  x86p_a64_emit_lsr_x_imm(e, kA64X2, kA64X0, 32u);
+  x87_lea_self(e);
 }
 
 void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
@@ -115,10 +110,9 @@ void emit_x87_clear_exceptions(BlockCtx *c) {
 }
 
 /* ---- emission --------------------------------------------------------------
- * FLD -- push a float onto the x87 stack. See x87.h and jit_x64_x87.c for why
- * x86p_x87_push owns overflow/tag/TOP, and why FLD ST(i) reads with
- * x86p_x87_get before pushing (a push would renumber the register being
- * read) and pushes nothing when that register was empty. */
+ * FLD -- push a float onto the x87 stack. The helpers own overflow, tags and
+ * TOP. FLD ST(i) reads the register before pushing (a push would renumber
+ * it) and pushes nothing when that register was empty. */
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o = &insn->operand[0];
@@ -126,183 +120,111 @@ void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (o->kind == kX86pOperandMem) {
     const int w = o->size; /* 4 or 8 -- can_emit gate */
     x87_load_bits(c, o, insn_eip, w);
-    if (insn->x87 == kX86pX87InsnLoadInt) {
-      x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
-      x87_call(e, (const void *)&x86p_x87_integer_value);
-    } else {
-      x87_from_bits(e, w, 0);
-    }
-    x87_lea_self(e); /* X0 = &cpu->x87; V0 survives (GP-only in between) */
-    x87_call(e, (const void *)&x86p_x87_push);
+    x87_bits_args(e);
+    x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)w);
+    x86p_a64_emit_mov_w_imm32(e, kA64X4, insn->x87 == kX86pX87InsnLoadInt ? 1u : 0u);
+    x86p_a64_emit_mov_w_imm32(e, kA64X5, 0u);
+    x87_call(e, (const void *)&x86p_jit_x87_load_bits);
     return;
   }
 
-  /* FLD ST(i): x86p_x87_get(&cpu->x87, i, &slot); push only when it succeeded. */
-  x86p_a64_emit_sub_sp_imm(e, 16u);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)o->reg);
-  x86p_a64_emit_lea64(e, kA64X2, kA64Sp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
-  {
-    X86pA64EmitSite skip = x86p_a64_emit_bcc(e, kA64CondEq); /* source register was empty */
-    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0);                  /* V0 = the slot's value */
-    x87_lea_self(e);
-    x87_call(e, (const void *)&x86p_x87_push);
-    x86p_a64_emit_bind(e, skip);
-  }
-  x86p_a64_emit_add_sp_imm(e, 16u);
+  x86p_a64_emit_mov_w_imm32(e, kA64X2, 0u);
+  x86p_a64_emit_mov_w_imm32(e, kA64X3, 1u); /* push */
+  x86p_a64_emit_mov_w_imm32(e, kA64X4, 0u);
+  x87_call(e, (const void *)&x86p_jit_x87_copy);
 }
 
 /*
- * FADD / FSUB / FMUL / FDIV (+R, +P). The source is converted to `long
- * double` in V0 -- from memory bits via x86p_x87_from_f32/f64, or from a
- * stack register via x86p_x87_get -- and x86p_x87_arith runs the real op
- * under the guest control word. A named source register that is empty is a
- * stack fault arith_operands turns into a whole no-op there too: this jumps
- * straight past the arith call and the pops.
+ * FADD / FSUB / FMUL / FDIV (+R, +P). A memory source accumulates into ST(0);
+ * a register form names both. A named source register that is empty is a
+ * stack fault the helper turns into a whole no-op, pops included.
  */
 void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
   const int two_op = (insn->operands == 2);
-  const int dst = two_op ? o0->reg : 0; /* mem and short reg form accumulate into ST(0) */
-  X86pA64EmitSite skip;
-  int have_skip = 0;
-  int i;
 
   if (o0->kind == kX86pOperandMem) {
     x87_load_bits(c, o0, insn_eip, o0->size);
-    x87_from_bits(e, o0->size, insn->x87_mem_int); /* V0 = src */
-  } else {
-    x86p_a64_emit_sub_sp_imm(e, 16u);
-    x87_lea_self(e);
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
-    x86p_a64_emit_lea64(e, kA64X2, kA64Sp, 0);
-    x87_call(e, (const void *)&x86p_x87_get);
-    x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
-    skip = x86p_a64_emit_bcc(e, kA64CondEq); /* empty source register */
-    have_skip = 1;
-    x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = src */
+    x87_bits_args(e);
+    x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)o0->size);
+    x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_mem_int);
+    x86p_a64_emit_mov_w_imm32(e, kA64X5, (uint32_t)insn->x87_op);
+    x86p_a64_emit_mov_w_imm32(e, kA64X6, (uint32_t)insn->x87_reverse);
+    x86p_a64_emit_mov_w_imm32(e, kA64X7, (uint32_t)insn->x87_pops);
+    x87_call(e, (const void *)&x86p_jit_x87_arith_mem_bits);
+    return;
   }
-
-  /* x86p_x87_arith(f, op, dst, src=V0, reverse): GP args and the one FP arg
-     are allocated from independent register files under AAPCS64, so setting
-     X0..X3 here does not disturb V0. */
   x87_lea_self(e);
-  x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)insn->x87_op);
-  x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)dst);
-  x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)insn->x87_reverse);
-  x87_call(e, (const void *)&x86p_x87_arith);
-
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
-
-  if (have_skip) {
-    x86p_a64_emit_bind(e, skip);
-    x86p_a64_emit_add_sp_imm(e, 16u); /* balances the sub in the register-source branch, on BOTH paths */
-  }
+  x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)(two_op ? o0->reg : 0));
+  x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
+  x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)insn->x87_op);
+  x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_reverse);
+  x86p_a64_emit_mov_w_imm32(e, kA64X5, (uint32_t)insn->x87_pops);
+  x87_call(e, (const void *)&x86p_jit_x87_arith_reg);
 }
 
-/*
- * FCOM / FCOMP m32/m64. x86p_x87_compare remains the sole owner of C0/C2/C3,
- * NaN and empty-ST(0) status semantics; FCOMP then pops through the same
- * stack owner as the interpreter. Neither changes integer EFLAGS.
- */
+/* FCOM / FCOMP m32/m64. x86p_x87_compare, behind the helper, remains the sole
+   owner of C0/C2/C3 and the NaN and empty-ST(0) status. Neither changes
+   integer EFLAGS. */
 void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
-  int i;
 
   x87_load_bits(c, o0, insn_eip, o0->size);
-  x87_from_bits(e, o0->size, insn->x87_mem_int); /* V0 = other */
-  x87_lea_self(e);
-  x87_call(e, (const void *)&x86p_x87_compare);
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
+  x87_bits_args(e);
+  x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)o0->size);
+  x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_mem_int);
+  x86p_a64_emit_mov_w_imm32(e, kA64X5, (uint32_t)insn->x87_pops);
+  x87_call(e, (const void *)&x86p_jit_x87_compare_mem_bits);
 }
 
-/*
- * FST ST(i) / FSTP ST(i): read ST(0), copy it into ST(i), pop when the P
- * form. Both slots are the same width so nothing rounds. An empty ST(0) is a
- * stack fault the interpreter turns into a no-op.
- */
+/* FST ST(i) / FSTP ST(i): ST(0) into ST(i), then the pops. Both slots are the
+   same width so nothing rounds; an empty ST(0) is a no-op. */
 void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   X86pA64Emit *e = c->e;
-  const X86pOperand *o0 = &insn->operand[0];
-  X86pA64EmitSite skip;
-  int i;
-
-  x86p_a64_emit_sub_sp_imm(e, 16u);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-  x86p_a64_emit_lea64(e, kA64X2, kA64Sp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
-  skip = x86p_a64_emit_bcc(e, kA64CondEq); /* ST(0) empty */
-
-  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = value */
-  x87_lea_self(e);
-  x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)o0->reg);
-  x87_call(e, (const void *)&x86p_x87_set);
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
-  x86p_a64_emit_bind(e, skip);
-  x86p_a64_emit_add_sp_imm(e, 16u);
+  x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)insn->operand[0].reg);
+  x86p_a64_emit_mov_w_imm32(e, kA64X3, 0u);
+  x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_pops);
+  x87_call(e, (const void *)&x86p_jit_x87_copy);
 }
 
 /*
- * FST m32/m64 / FSTP m32/m64.
+ * FST/FSTP m32/m64 and FIST/FISTP m16/m32/m64.
  *
- * ORDER MATTERS, identically to jit_x64_x87.c: the interpreter reads ST(0)
- * and, only if it is not empty, narrows and writes memory, so an empty
- * ST(0) never faults on a bad address. This emits x86p_x87_get, then --
- * if it succeeded -- x86p_x87_to_f32/f64 (which rounds by the guest control
- * word), THEN closes the scratch slot, THEN the bounds check, so the shared
- * fault stub always observes the post-prologue SP. The narrowed bits survive
- * the slot's closing and the address computation in CARRY_REG: x87 emission
- * never touches it (that role only matters to integer ALU carry-in, and x87
- * never runs alongside one), so it is the one role register the address
- * path (EA_REG/HOSTPTR_REG/ADDR_TMP/FAULTPC_REG) cannot disturb, unlike X8/X9
- * which the encoder's own large-immediate fallbacks may use internally
- * during that same call.
+ * ORDER MATTERS, identically to the interpreter: ST(0) is converted -- which
+ * raises the conversion's status flags -- and only if it was not empty is the
+ * address checked and memory written, so an empty ST(0) never faults on a bad
+ * address. The converted bytes land in a scratch slot and move to CARRY_REG
+ * before the slot closes: x87 emission never touches that role, so it is the
+ * one role register the address path (EA_REG/HOSTPTR_REG/ADDR_TMP/FAULTPC_REG)
+ * cannot disturb, unlike X8/X9 which the encoder's large-immediate fallbacks
+ * may use during that same call. Bytes past `w` in the slot are stale and
+ * never stored.
  */
 void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
-  const int w = o0->size; /* 4 or 8 -- gate */
-  X86pA64EmitSite empty;
+  const int w = o0->size; /* 2, 4 or 8 -- gate */
+  X86pA64EmitSite skip;
   X86pA64EmitSite done;
   int i;
 
   x86p_a64_emit_sub_sp_imm(e, 16u);
   x87_lea_self(e);
-  x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-  x86p_a64_emit_lea64(e, kA64X2, kA64Sp, 0);
-  x87_call(e, (const void *)&x86p_x87_get);
-  x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
-  empty = x86p_a64_emit_bcc(e, kA64CondEq); /* ST(0) empty -> no store, no pop, no fault */
+  x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
+  x86p_a64_emit_mov_w_imm32(e, kA64X2, insn->x87 == kX86pX87InsnStoreInt ? 1u : 0u);
+  x86p_a64_emit_lea64(e, kA64X3, kA64Sp, 0);
+  x87_call(e, (const void *)&x86p_jit_x87_store_bytes);
+  x86p_a64_emit_cmp_w_imm(e, kA64X0, 1u);
+  skip = x86p_a64_emit_bcc(e, kA64CondNe); /* ST(0) empty: no store, no pop, no fault */
 
-  x86p_a64_emit_load_q(e, 0u, kA64Sp, 0); /* V0 = value */
-  x87_lea_self(e);
-  x87_call(e,
-           insn->x87 == kX86pX87InsnStoreInt
-               ? (w == 2   ? (const void *)&x86p_x87_to_i16
-                  : w == 4 ? (const void *)&x86p_x87_to_i32
-                           : (const void *)&x86p_x87_to_i64)
-               : (w == 4 ? (const void *)&x86p_x87_to_f32 : (const void *)&x86p_x87_to_f64));
-  x86p_a64_emit_mov_x_x(e, CARRY_REG, kA64X0); /* narrowed bits (all 64), parked past sp restore */
+  x86p_a64_emit_load64(e, CARRY_REG, kA64Sp, 0);
   x86p_a64_emit_add_sp_imm(e, 16u);
-
   x87_store_bits(c, o0, insn_eip, w, CARRY_REG);
   for (i = 0; i < (int)insn->x87_pops; i++) {
     x87_lea_self(e);
@@ -311,7 +233,7 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
   done = x86p_a64_emit_b(e);
 
-  x86p_a64_emit_bind(e, empty);
+  x86p_a64_emit_bind(e, skip);
   x86p_a64_emit_add_sp_imm(e, 16u);
   x86p_a64_emit_bind(e, done);
 }

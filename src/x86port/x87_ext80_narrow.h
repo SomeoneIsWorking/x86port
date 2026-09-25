@@ -11,7 +11,7 @@
  *
  * WHY IT EXISTS. The store side is the larger half of the browser's x87
  * operand plumbing: x86p_x87_operand_bytes_from_reg at 4.28% of the guest
- * worker and x86p_wasm_x87_store_at at 3.60%, against the load side's 2.52%
+ * worker and x86p_jit_x87_store_at at 3.60%, against the load side's 2.52%
  * after it was emitted inline. Every FST crosses out of its translated module
  * to reach a softfloat conversion whose rounding decisions, for the values a
  * game stores, are eleven or forty dropped bits and a tie test.

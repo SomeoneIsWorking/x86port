@@ -11,6 +11,7 @@
 #include "jit_wasm_memory.h"
 #include "jit_wasm_simd.h"
 #include "jit_wasm_x87.h"
+#include "jit_x87_helpers.h"
 #include "multiply.h"
 #include "x87.h"
 #include <stddef.h>
@@ -46,19 +47,16 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportLahf] = {"cpu_lahf", (X86pWasmImportFn)x86p_cpu_lahf, 1, 0},
     [kX86pWasmImportCpuid] = {"cpu_cpuid", (X86pWasmImportFn)x86p_cpu_cpuid, 1, 0},
     [kX86pWasmImportRdtsc] = {"cpu_rdtsc", (X86pWasmImportFn)x86p_cpu_rdtsc, 1, 0},
-    [kX86pWasmImportX87LoadBits] = {"wasm_x87_load_bits", (X86pWasmImportFn)x86p_wasm_x87_load_bits, 6, 1},
-    [kX86pWasmImportX87Store] = {"wasm_x87_store", (X86pWasmImportFn)x86p_wasm_x87_store, 6, 1},
-    [kX86pWasmImportX87StoreAt] = {"wasm_x87_store_at", (X86pWasmImportFn)x86p_wasm_x87_store_at, 6, 1},
-    [kX86pWasmImportX87ArithMemBits] = {"wasm_x87_arith_mem_bits",
-                                        (X86pWasmImportFn)x86p_wasm_x87_arith_mem_bits,
-                                        8,
-                                        1},
-    [kX86pWasmImportX87ArithReg] = {"wasm_x87_arith_reg", (X86pWasmImportFn)x86p_wasm_x87_arith_reg, 6, 1},
+    [kX86pWasmImportX87LoadBits] = {"wasm_x87_load_bits", (X86pWasmImportFn)x86p_jit_x87_load_bits, 6, 1},
+    [kX86pWasmImportX87Store] = {"wasm_x87_store", (X86pWasmImportFn)x86p_jit_x87_store, 6, 1},
+    [kX86pWasmImportX87StoreAt] = {"wasm_x87_store_at", (X86pWasmImportFn)x86p_jit_x87_store_at, 6, 1},
+    [kX86pWasmImportX87ArithMemBits] = {"wasm_x87_arith_mem_bits", (X86pWasmImportFn)x86p_jit_x87_arith_mem_bits, 8, 1},
+    [kX86pWasmImportX87ArithReg] = {"wasm_x87_arith_reg", (X86pWasmImportFn)x86p_jit_x87_arith_reg, 6, 1},
     [kX86pWasmImportX87CompareMemBits] = {"wasm_x87_compare_mem_bits",
-                                          (X86pWasmImportFn)x86p_wasm_x87_compare_mem_bits,
+                                          (X86pWasmImportFn)x86p_jit_x87_compare_mem_bits,
                                           6,
                                           1},
-    [kX86pWasmImportX87Copy] = {"wasm_x87_copy", (X86pWasmImportFn)x86p_wasm_x87_copy, 5, 1},
+    [kX86pWasmImportX87Copy] = {"wasm_x87_copy", (X86pWasmImportFn)x86p_jit_x87_copy, 5, 1},
     [kX86pWasmImportX87Constant] = {"x87_push_constant", (X86pWasmImportFn)x86p_x87_push_constant, 2, 1},
     [kX86pWasmImportX87Status] = {"x87_status", (X86pWasmImportFn)x86p_x87_status, 1, 1},
     [kX86pWasmImportX87Clear] = {"x87_clear_exceptions", (X86pWasmImportFn)x86p_x87_clear_exceptions, 1, 0},

@@ -285,7 +285,7 @@ static void memory_forms(void) {
  * widening runs, and over the stack depths that decide whether it may run at
  * all.
  *
- * The backend emits the ordinary case itself and calls x86p_wasm_x87_load_bits
+ * The backend emits the ordinary case itself and calls x86p_jit_x87_load_bits
  * for the rest (jit_wasm_x87_load.h says why). So there are now two
  * implementations of one conversion, and the values below are exactly the ones
  * that tell them apart: the zeroes and subnormals whose significand has no
