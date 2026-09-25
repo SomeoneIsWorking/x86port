@@ -220,6 +220,16 @@ int x86p_mem_copy_disjoint(const X86pMem *m, uint32_t dst, uint32_t src, uint32_
   return 1;
 }
 
+/* Whether every byte of a `w`-byte fill unit is the same. */
+static int unit_repeats_one_byte(const uint8_t *unit, uint32_t w) {
+  for (uint32_t i = 1u; i < w; ++i) {
+    if (unit[i] != unit[0]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 int x86p_mem_fill(const X86pMem *m, uint32_t addr, const uint8_t *unit, uint32_t w, uint32_t count) {
   uint8_t *destination = NULL;
   uint64_t bytes = (uint64_t)w * count;
@@ -231,12 +241,19 @@ int x86p_mem_fill(const X86pMem *m, uint32_t addr, const uint8_t *unit, uint32_t
   if (!m || m->sparse || g_write_observer || !x86p_mem_resolve(m, addr, (uint32_t)bytes, &destination)) {
     return 0;
   }
-  if (w == 1u) {
+  /* A unit of one repeated byte -- every byte fill and every zeroing STOSD --
+     is a memset. Any other unit is written once and then doubled from what is
+     already written: a per-element memcpy of a runtime width is a libc call
+     per element, which a 4 MB STOSD pays a million times. */
+  if (unit_repeats_one_byte(unit, w)) {
     memset(destination, unit[0], (size_t)bytes);
     return 1;
   }
-  for (uint32_t i = 0; i < count; ++i) {
-    memcpy(destination + (size_t)i * w, unit, w);
+  memcpy(destination, unit, w);
+  for (size_t filled = w; filled < bytes;) {
+    const size_t chunk = filled < bytes - filled ? filled : (size_t)(bytes - filled);
+    memcpy(destination + filled, destination, chunk);
+    filled += chunk;
   }
   return 1;
 }
