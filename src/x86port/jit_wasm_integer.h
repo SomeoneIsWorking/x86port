@@ -7,8 +7,6 @@
 struct X86pWasmLower;
 
 /* Narrow ABI adapters for the shared integer semantic owners. */
-uint32_t x86p_wasm_multiply(
-    X86pCpu *cpu, uint32_t left, uint32_t right, uint32_t width, uint32_t signed_multiply, uint32_t implicit);
 int x86p_wasm_divide(X86pCpu *cpu, uint32_t divisor, uint32_t width, uint32_t signed_divide);
 int x86p_wasm_string(X86pCpu *cpu, const X86pMem *mem, uint32_t operation, uint32_t repeat, uint32_t width);
 uint32_t x86p_wasm_get_flags(X86pCpu *cpu);

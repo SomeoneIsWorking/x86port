@@ -4,6 +4,7 @@
 #include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
 #include "jit_x64_x87_inline.h"
+#include "multiply.h"
 #include <stddef.h>
 
 /* Record the kind word of the tuple just stored. The only inline writer of
@@ -514,23 +515,6 @@ void emit_cpu_transfer(BlockCtx *c, uint8_t op) {
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 
-static void jit_mul32(X86pCpu *cpu, uint32_t operand, uint32_t signed_multiply, uint32_t width) {
-  uint32_t low = 0u;
-  uint32_t high = 0u;
-
-  if (signed_multiply) {
-    x86p_alu_imul(x86p_reg_read(cpu, kX86pEax, (int)width), operand, (int)width, &low, &high, &cpu->flags);
-  } else {
-    x86p_alu_mul(x86p_reg_read(cpu, kX86pEax, (int)width), operand, (int)width, &low, &high, &cpu->flags);
-  }
-  if (width == 1) {
-    x86p_reg_write(cpu, kX86pEax, 2, low | (high << 8));
-  } else {
-    x86p_reg_write(cpu, kX86pEax, (int)width, low);
-    x86p_reg_write(cpu, kX86pEdx, (int)width, high);
-  }
-}
-
 void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const X86pOperand *operand = &insn->operand[0];
   const int width = operand->size;
@@ -544,7 +528,7 @@ void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, insn->op == kX86pInsnImul);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, (uint32_t)width);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_mul32);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_multiply_accumulator);
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 

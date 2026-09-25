@@ -250,8 +250,9 @@ static int can_emit(const X86pInsn *insn) {
       return mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1);
     }
     return (insn->operands == 2 || (insn->operands == 3 && operand_is_imm(&insn->operand[2]))) &&
-           operand_is_reg32(&insn->operand[0]) &&
-           (operand_is_reg32(&insn->operand[1]) || operand_is_mem32(&insn->operand[1]));
+           (insn->operand[0].size == 2 || insn->operand[0].size == 4) && insn->operand[0].kind == kX86pOperandReg &&
+           mov_operand_ok(&insn->operand[0], insn->operand[0].size, 1) && !operand_is_imm(&insn->operand[1]) &&
+           mov_operand_ok(&insn->operand[1], insn->operand[0].size, 0);
   case kX86pInsnString:
     return x86p_string_is_supported((X86pStringOp)insn->str, (X86pRepKind)insn->rep, insn->str_width);
   case kX86pInsnAluUnary:
@@ -947,7 +948,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       if (insn.operands == 1) {
         emit_mul32(&ctx, &insn, pc);
       } else {
-        emit_imul32(&ctx, &insn, pc);
+        emit_imul_to_register(&ctx, &insn, pc);
       }
       last_kind = -1;
       last_w = -1;
