@@ -47,14 +47,6 @@ static int32_t field(size_t offset) {
 
 /* ---- refusals ------------------------------------------------------------- */
 
-static void refuse(BlockCtx *c, X87Slow *s, X86pA64EmitSite site) {
-  if (s->refusal_count < sizeof s->refusals / sizeof s->refusals[0]) {
-    s->refusals[s->refusal_count++] = site;
-    return;
-  }
-  c->e->overflow = 1;
-}
-
 void x87_slow_begin(BlockCtx *c, X87Slow *s) {
   unsigned i;
   if (!s->fast) {
@@ -97,6 +89,15 @@ void emit_x87_pops(BlockCtx *c, unsigned pops) {
 }
 
 #if X86P_X87_BINARY128
+
+/* A guard that failed: its branch joins the helper sequence. */
+static void refuse(BlockCtx *c, X87Slow *s, X86pA64EmitSite site) {
+  if (s->refusal_count < sizeof s->refusals / sizeof s->refusals[0]) {
+    s->refusals[s->refusal_count++] = site;
+    return;
+  }
+  c->e->overflow = 1;
+}
 
 _Static_assert(sizeof(X86pX87Reg) == 16 && offsetof(X86pX87Reg, signif) == 0 && offsetof(X86pX87Reg, sign_exp) == 8,
                "a slot is the significand, then sign and exponent, at a sixteen-byte stride");
