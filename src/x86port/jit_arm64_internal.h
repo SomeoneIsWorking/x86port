@@ -115,6 +115,16 @@ typedef struct BlockCtx {
   size_t site_call_leaf;
   size_t site_reload;
   size_t site_ordinary;
+  /* The x87 inline paths' two shared routines (jit_arm64_x87_inline.c): the
+     BL sites that call each, bound when the tail emits it. An arithmetic or
+     register compare narrows two registers, so a block makes at most two
+     narrowing calls per instruction and one widening call. */
+  X86pA64EmitSite x87_narrow_calls[MAX_INSNS * 2];
+  unsigned x87_narrow_count;
+  X86pA64EmitSite x87_widen_calls[MAX_INSNS];
+  unsigned x87_widen_count;
+  /* Tail bytes reserved beyond X86P_JIT_EPILOGUE_BYTES, for those routines. */
+  size_t tail_reserve;
 } BlockCtx;
 
 /*

@@ -32,6 +32,7 @@
 #include "jit_arm64_integer.h"
 #include "jit_arm64_internal.h"
 #include "jit_arm64_x87.h"
+#include "jit_arm64_x87_inline.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -811,7 +812,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     if (count >= MAX_INSNS) {
       break;
     }
-    if (e.len + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
+    if (e.len + WORST_CASE_INSN_BYTES + EPILOGUE_BYTES + ctx.tail_reserve > code_cap) {
       break;
     }
 
@@ -916,7 +917,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
-      int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+      int dead = flag_write_is_dead(
+          mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       if (k >= 0 && !dead) {
         last_kind = k;
@@ -1023,7 +1025,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        int dead = flag_write_is_dead(mem, pc + insn.length, eip, boundary, boundary_user, count, e.len, code_cap);
+        int dead = flag_write_is_dead(
+            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         if (!dead) {
           last_kind = (int)kind;
@@ -1086,7 +1089,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   }
 
   emit_tail_routines(&ctx);
-  if (!within_bound(e.len - tail_start, EPILOGUE_BYTES, "the tail of the block", eip, reason, reason_len)) {
+  emit_x87_routines(&ctx);
+  if (!within_bound(
+          e.len - tail_start, EPILOGUE_BYTES + ctx.tail_reserve, "the tail of the block", eip, reason, reason_len)) {
     return kX86pJitOutOfSpace;
   }
 

@@ -489,6 +489,143 @@ void x86p_a64_emit_mov_q_q(X86pA64Emit *e, unsigned vdst, unsigned vsrc) {
   put32(e, word);
 }
 
+/* ---- scalar double arithmetic -------------------------------------------------
+ * FP data-processing, type=01 (double). Base words from the ARM ARM encoding
+ * tables, checked against `fadd d0,d0,d0` = 0x1E602800, `fcmp d0,d0` =
+ * 0x1E602000, `fmov d0,x0` = 0x9E670000 and `ucvtf d0,x0` = 0x9E630000. */
+
+void x86p_a64_emit_fop_d(X86pA64Emit *e, X86pA64FpOp op, unsigned dst, unsigned a, unsigned b) {
+  /* opcode bits 15:12: FMUL 0000, FDIV 0001, FADD 0010, FSUB 0011. */
+  const uint32_t opcode = op == kA64FMul ? 0u : op == kA64FDiv ? 1u : op == kA64FAdd ? 2u : 3u;
+  put32(e, 0x1E600800u | (opcode << 12) | ((b & 31u) << 16) | ((a & 31u) << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fneg_d(X86pA64Emit *e, unsigned dst, unsigned src) {
+  put32(e, 0x1E614000u | ((src & 31u) << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fcmp_d(X86pA64Emit *e, unsigned a, unsigned b) {
+  put32(e, 0x1E602000u | ((b & 31u) << 16) | ((a & 31u) << 5));
+}
+
+void x86p_a64_emit_fmov_d_x(X86pA64Emit *e, unsigned dst, X86pA64Reg src) {
+  put32(e, 0x9E670000u | ((uint32_t)src << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fmov_x_d(X86pA64Emit *e, X86pA64Reg dst, unsigned src) {
+  put32(e, 0x9E660000u | ((src & 31u) << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_fmov_d_d(X86pA64Emit *e, unsigned dst, unsigned src) {
+  put32(e, 0x1E604000u | ((src & 31u) << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fmov_d_zero(X86pA64Emit *e, unsigned dst) {
+  /* FMOV Dd, XZR: register 31 in a general-register source is XZR here. */
+  put32(e, 0x9E670000u | (31u << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fmov_s_w(X86pA64Emit *e, unsigned dst, X86pA64Reg src) {
+  put32(e, 0x1E270000u | ((uint32_t)src << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fmov_w_s(X86pA64Emit *e, X86pA64Reg dst, unsigned src) {
+  put32(e, 0x1E260000u | ((src & 31u) << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_fcvt_d_s(X86pA64Emit *e, unsigned dst, unsigned src) {
+  put32(e, 0x1E22C000u | ((src & 31u) << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_fcvt_s_d(X86pA64Emit *e, unsigned dst, unsigned src) {
+  put32(e, 0x1E624000u | ((src & 31u) << 5) | (dst & 31u));
+}
+
+void x86p_a64_emit_ucvtf_d_x(X86pA64Emit *e, unsigned dst, X86pA64Reg src) {
+  put32(e, 0x9E630000u | ((uint32_t)src << 5) | (dst & 31u));
+}
+
+/* ---- bit fields ------------------------------------------------------------------
+ * UBFM Wd (0x53000000) and UBFM Xd (sf=1, N=1: 0xD3400000), which UBFX and LSL
+ * alias. A field that does not fit the register overflows the emitter rather
+ * than encoding a different field. */
+
+static void ubfm(X86pA64Emit *e, int sf, X86pA64Reg dst, X86pA64Reg src, unsigned immr, unsigned imms) {
+  const uint32_t base = sf ? 0xD3400000u : 0x53000000u;
+  put32(e, base | (immr << 16) | (imms << 10) | ((uint32_t)src << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_ubfx_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width) {
+  if (width == 0 || lsb + width > 32u) {
+    e->overflow = 1;
+    return;
+  }
+  ubfm(e, 0, dst, src, lsb, lsb + width - 1u);
+}
+
+void x86p_a64_emit_ubfx_x(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width) {
+  if (width == 0 || lsb + width > 64u) {
+    e->overflow = 1;
+    return;
+  }
+  ubfm(e, 1, dst, src, lsb, lsb + width - 1u);
+}
+
+void x86p_a64_emit_lsl_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned count) {
+  if (count == 0 || count > 63u) {
+    e->overflow = 1;
+    return;
+  }
+  ubfm(e, 1, dst, src, 64u - count, 63u - count);
+}
+
+void x86p_a64_emit_lsl_w_w_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned count) {
+  if (count == 0 || count > 31u) {
+    e->overflow = 1;
+    return;
+  }
+  ubfm(e, 0, dst, src, 32u - count, 31u - count);
+}
+
+/* ADD (0x0B000000) and ORR (0x2A000000) shifted register, LSL, sf in bit 31. */
+static void alu_lsl(X86pA64Emit *e, int sf, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift) {
+  uint32_t base;
+  if ((op != kA64Add && op != kA64Orr) || shift > (sf ? 63u : 31u)) {
+    e->overflow = 1;
+    return;
+  }
+  base = op == kA64Add ? 0x0B000000u : 0x2A000000u;
+  put32(e, ((uint32_t)sf << 31) | base | ((uint32_t)b << 16) | (shift << 10) | ((uint32_t)a << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_alu_x_x_lsl(
+    X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift) {
+  alu_lsl(e, 1, op, dst, a, b, shift);
+}
+
+void x86p_a64_emit_alu_w_w_lsl(
+    X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift) {
+  alu_lsl(e, 0, op, dst, a, b, shift);
+}
+
+void x86p_a64_emit_orr_x_bit(X86pA64Emit *e, X86pA64Reg dst, unsigned bit) {
+  /* ORR (immediate), 64-bit element: N=1, imms=0 is a run of one set bit,
+     rotated right by immr -- so bit `b` is immr = (64 - b) mod 64. */
+  if (bit > 63u) {
+    e->overflow = 1;
+    return;
+  }
+  put32(e, 0xB2400000u | (((64u - bit) & 63u) << 16) | ((uint32_t)dst << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_load_q_at(X86pA64Emit *e, unsigned vreg, X86pA64Reg base) {
+  put32(e, 0x3DC00000u | ((uint32_t)base << 5) | (vreg & 31u));
+}
+
+void x86p_a64_emit_store_q_at(X86pA64Emit *e, X86pA64Reg base, unsigned vreg) {
+  put32(e, 0x3D800000u | ((uint32_t)base << 5) | (vreg & 31u));
+}
+
 /* ---- forward branches -------------------------------------------------------- */
 
 X86pA64EmitSite x86p_a64_emit_bcc(X86pA64Emit *e, X86pA64Cond cc) {
@@ -510,6 +647,47 @@ X86pA64EmitSite x86p_a64_emit_b(X86pA64Emit *e) {
   return site;
 }
 
+static X86pA64EmitSite unbound(X86pA64Emit *e, uint32_t word) {
+  X86pA64EmitSite site;
+  site.at = e->len;
+  put32(e, word);
+  site.end = e->len;
+  e->sites_made++;
+  return site;
+}
+
+/* CBZ/CBNZ: sf|011010|op|imm19|Rt -- imm19 at bits 23:5, as B.cond's. */
+X86pA64EmitSite x86p_a64_emit_cbz_w(X86pA64Emit *e, X86pA64Reg reg) {
+  return unbound(e, 0x34000000u | (uint32_t)reg);
+}
+X86pA64EmitSite x86p_a64_emit_cbnz_w(X86pA64Emit *e, X86pA64Reg reg) {
+  return unbound(e, 0x35000000u | (uint32_t)reg);
+}
+X86pA64EmitSite x86p_a64_emit_cbz_x(X86pA64Emit *e, X86pA64Reg reg) {
+  return unbound(e, 0xB4000000u | (uint32_t)reg);
+}
+X86pA64EmitSite x86p_a64_emit_cbnz_x(X86pA64Emit *e, X86pA64Reg reg) {
+  return unbound(e, 0xB5000000u | (uint32_t)reg);
+}
+
+/* TBZ/TBNZ: b5|011011|op|b40|imm14|Rt. */
+static X86pA64EmitSite test_bit(X86pA64Emit *e, uint32_t base, X86pA64Reg reg, unsigned bit) {
+  if (bit > 63u) {
+    e->overflow = 1;
+  }
+  return unbound(e, base | (((bit >> 5) & 1u) << 31) | ((bit & 31u) << 19) | (uint32_t)reg);
+}
+X86pA64EmitSite x86p_a64_emit_tbz(X86pA64Emit *e, X86pA64Reg reg, unsigned bit) {
+  return test_bit(e, 0x36000000u, reg, bit);
+}
+X86pA64EmitSite x86p_a64_emit_tbnz(X86pA64Emit *e, X86pA64Reg reg, unsigned bit) {
+  return test_bit(e, 0x37000000u, reg, bit);
+}
+
+X86pA64EmitSite x86p_a64_emit_bl(X86pA64Emit *e) {
+  return unbound(e, 0x94000000u);
+}
+
 void x86p_a64_emit_bind(X86pA64Emit *e, X86pA64EmitSite site) {
   x86p_a64_emit_bind_to(e, site, e->len);
 }
@@ -527,16 +705,25 @@ void x86p_a64_emit_bind_to(X86pA64Emit *e, X86pA64EmitSite site, size_t target) 
     e->overflow = 1;
     return;
   }
-  if ((word & 0xFC000000u) == 0x14000000u) {
-    /* B: imm26, +-128MB. */
+  if ((word & 0x7C000000u) == 0x14000000u) {
+    /* B and BL: imm26, +-128MB; bit 31 tells them apart and is kept. */
     int64_t off = delta / 4;
     if (off < -(1 << 25) || off >= (1 << 25)) {
       e->overflow = 1;
       return;
     }
-    word = 0x14000000u | ((uint32_t)off & 0x03FFFFFFu);
+    word = (word & 0xFC000000u) | ((uint32_t)off & 0x03FFFFFFu);
+  } else if ((word & 0x7E000000u) == 0x36000000u) {
+    /* TBZ/TBNZ: imm14, +-32KB, at bits 18:5; the bit number and Rt kept. */
+    int64_t off = delta / 4;
+    if (off < -(1 << 13) || off >= (1 << 13)) {
+      e->overflow = 1;
+      return;
+    }
+    word = (word & 0xFFF8001Fu) | (((uint32_t)off & 0x3FFFu) << 5);
   } else {
-    /* B.cond: imm19, +-1MB, at bits 23:5, condition kept in bits 3:0. */
+    /* B.cond, CBZ and CBNZ: imm19, +-1MB, at bits 23:5; the condition or Rt
+       in bits 4:0 and the opcode above are kept. */
     int64_t off = delta / 4;
     if (off < -(1 << 18) || off >= (1 << 18)) {
       e->overflow = 1;

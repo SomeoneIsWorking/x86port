@@ -220,6 +220,57 @@ void x86p_a64_emit_store_q(X86pA64Emit *e, X86pA64Reg base, int32_t disp, unsign
 /* mov v(dst).16b, v(src).16b -- move a 128-bit value between V registers. */
 void x86p_a64_emit_mov_q_q(X86pA64Emit *e, unsigned vdst, unsigned vsrc);
 
+/* ---- scalar double arithmetic (the x87 inline paths) ------------------------ */
+
+/* The four binary64 operations, d(dst) = d(a) <op> d(b), in the host's
+   current FPCR rounding mode (round-to-nearest-even; nothing here changes it). */
+typedef enum X86pA64FpOp { kA64FAdd = 0, kA64FSub = 1, kA64FMul = 2, kA64FDiv = 3 } X86pA64FpOp;
+void x86p_a64_emit_fop_d(X86pA64Emit *e, X86pA64FpOp op, unsigned dst, unsigned a, unsigned b);
+/* fneg d(dst), d(src) -- flips the sign bit only. */
+void x86p_a64_emit_fneg_d(X86pA64Emit *e, unsigned dst, unsigned src);
+/* fcmp d(a), d(b) -- NZCV from an ordered compare: EQ equal, MI less than. */
+void x86p_a64_emit_fcmp_d(X86pA64Emit *e, unsigned a, unsigned b);
+/* fmov d(dst), x(src) / fmov x(dst), d(src) -- the 64 bits, unconverted. */
+void x86p_a64_emit_fmov_d_x(X86pA64Emit *e, unsigned dst, X86pA64Reg src);
+void x86p_a64_emit_fmov_x_d(X86pA64Emit *e, X86pA64Reg dst, unsigned src);
+/* fmov d(dst), d(src) -- a register copy. */
+void x86p_a64_emit_fmov_d_d(X86pA64Emit *e, unsigned dst, unsigned src);
+/* fmov d(dst), xzr -- +0.0. */
+void x86p_a64_emit_fmov_d_zero(X86pA64Emit *e, unsigned dst);
+/* fmov s(dst), w(src) / fmov w(dst), s(src) -- the 32 bits, unconverted. */
+void x86p_a64_emit_fmov_s_w(X86pA64Emit *e, unsigned dst, X86pA64Reg src);
+void x86p_a64_emit_fmov_w_s(X86pA64Emit *e, X86pA64Reg dst, unsigned src);
+/* fcvt d(dst), s(src) (exact) and fcvt s(dst), d(src) (rounds per FPCR). */
+void x86p_a64_emit_fcvt_d_s(X86pA64Emit *e, unsigned dst, unsigned src);
+void x86p_a64_emit_fcvt_s_d(X86pA64Emit *e, unsigned dst, unsigned src);
+/* ucvtf d(dst), x(src) -- the unsigned 64-bit integer, rounded per FPCR. */
+void x86p_a64_emit_ucvtf_d_x(X86pA64Emit *e, unsigned dst, X86pA64Reg src);
+
+/* ---- bit fields ---------------------------------------------------------------- */
+
+/* ubfx w(dst), w(src), #lsb, #width / the 64-bit form: the field, zero-extended. */
+void x86p_a64_emit_ubfx_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width);
+void x86p_a64_emit_ubfx_x(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width);
+/* lsl x(dst), x(src), #count (count 1..63). */
+void x86p_a64_emit_lsl_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned count);
+/* lsl w(dst), w(src), #count (count 1..31), source and destination apart. */
+void x86p_a64_emit_lsl_w_w_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned count);
+/* <add|orr> x(dst), x(a), x(b), lsl #shift and the 32-bit forms. Only kA64Add
+   and kA64Orr are accepted; anything else overflows the emitter. */
+void x86p_a64_emit_alu_x_x_lsl(
+    X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift);
+void x86p_a64_emit_alu_w_w_lsl(
+    X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift);
+/* orr x(dst), x(dst), #(1 << bit) -- one set bit, bit 0..63. */
+void x86p_a64_emit_orr_x_bit(X86pA64Emit *e, X86pA64Reg dst, unsigned bit);
+
+/* ---- loads and stores of the 128-bit x87 slot ------------------------------------ */
+
+/* ldr q(t), [x(base)] / str q(t), [x(base)] with no displacement, for a slot
+   whose address was computed into a register. */
+void x86p_a64_emit_load_q_at(X86pA64Emit *e, unsigned vreg, X86pA64Reg base);
+void x86p_a64_emit_store_q_at(X86pA64Emit *e, X86pA64Reg base, unsigned vreg);
+
 /* ---- forward branches ------------------------------------------------------ */
 
 typedef struct X86pA64EmitSite {
@@ -231,6 +282,19 @@ typedef struct X86pA64EmitSite {
 X86pA64EmitSite x86p_a64_emit_bcc(X86pA64Emit *e, X86pA64Cond cc);
 /* b <unbound> */
 X86pA64EmitSite x86p_a64_emit_b(X86pA64Emit *e);
+/* cbz/cbnz w(reg) and x(reg) <unbound>: to the site when the register is (not)
+   zero. */
+X86pA64EmitSite x86p_a64_emit_cbz_w(X86pA64Emit *e, X86pA64Reg reg);
+X86pA64EmitSite x86p_a64_emit_cbnz_w(X86pA64Emit *e, X86pA64Reg reg);
+X86pA64EmitSite x86p_a64_emit_cbz_x(X86pA64Emit *e, X86pA64Reg reg);
+X86pA64EmitSite x86p_a64_emit_cbnz_x(X86pA64Emit *e, X86pA64Reg reg);
+/* tbz/tbnz x(reg), #bit <unbound> (bit 0..63): to the site when the bit is
+   clear (tbz) or set (tbnz). Reach is +-32KB. */
+X86pA64EmitSite x86p_a64_emit_tbz(X86pA64Emit *e, X86pA64Reg reg, unsigned bit);
+X86pA64EmitSite x86p_a64_emit_tbnz(X86pA64Emit *e, X86pA64Reg reg, unsigned bit);
+/* bl <unbound> -- a direct call to code in the same buffer: a routine the
+   block emits once and its instructions share. LR is overwritten. */
+X86pA64EmitSite x86p_a64_emit_bl(X86pA64Emit *e);
 void x86p_a64_emit_bind(X86pA64Emit *e, X86pA64EmitSite site);
 /* Bind `site` to the code at offset `target` (<= the current length), which
    may lie before it: a backward branch. */

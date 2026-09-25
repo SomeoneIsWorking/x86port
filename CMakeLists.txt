@@ -105,7 +105,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
     src/x86port/jit_arm64_branch.c
     src/x86port/jit_arm64_simd.c
     src/x86port/jit_arm64_x87_register.c
-    src/x86port/jit_arm64_x87.c)
+    src/x86port/jit_arm64_x87.c
+    src/x86port/jit_arm64_x87_inline.c)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
   set(X86P_JIT_BACKEND_SOURCES
     src/x86port/jit_x64.c
@@ -346,6 +347,11 @@ if(NOT WIN32)
   target_link_libraries(x86p_jit_bench PRIVATE x86port_runtime x86port_test_oracle)
   x86p_strict_target(x86p_jit_bench)
   target_compile_options(x86p_jit_bench PRIVATE ${X86P_OPTIMIZE_FLAG})
+
+  add_executable(x86p_jit_x87_bench tools/jit_x87_bench.c)
+  target_link_libraries(x86p_jit_x87_bench PRIVATE x86port_runtime x86port_test_oracle)
+  x86p_strict_target(x86p_jit_x87_bench)
+  target_compile_options(x86p_jit_x87_bench PRIVATE ${X86P_OPTIMIZE_FLAG})
 endif()
 
 enable_testing()

@@ -654,6 +654,200 @@ static void test_load_store_mov_q(void) {
 
 /* ---- the negative: overflow is reported, not truncated ------------------ */
 
+/* ---- the x87 inline paths' instructions, against an assembler ---------------
+ * These words are llvm-mc's (`llvm-mc --triple=aarch64 -show-encoding`), an
+ * assembler written independently of both this file and emit_arm64.c. */
+
+typedef void (*EmitOne)(X86pA64Emit *e);
+
+static void emit_fadd(X86pA64Emit *e) {
+  x86p_a64_emit_fop_d(e, kA64FAdd, 0, 1, 2);
+}
+static void emit_fsub(X86pA64Emit *e) {
+  x86p_a64_emit_fop_d(e, kA64FSub, 3, 4, 5);
+}
+static void emit_fmul(X86pA64Emit *e) {
+  x86p_a64_emit_fop_d(e, kA64FMul, 6, 7, 8);
+}
+static void emit_fdiv(X86pA64Emit *e) {
+  x86p_a64_emit_fop_d(e, kA64FDiv, 1, 0, 1);
+}
+static void emit_fneg(X86pA64Emit *e) {
+  x86p_a64_emit_fneg_d(e, 0, 0);
+}
+static void emit_fcmp(X86pA64Emit *e) {
+  x86p_a64_emit_fcmp_d(e, 0, 1);
+}
+static void emit_fmov_d_x(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_d_x(e, 2, kA64X0);
+}
+static void emit_fmov_x_d(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_x_d(e, kA64X1, 0);
+}
+static void emit_fmov_d_d(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_d_d(e, 1, 0);
+}
+static void emit_fmov_zero(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_d_zero(e, 0);
+}
+static void emit_fmov_s_w(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_s_w(e, 1, kA64X6);
+}
+static void emit_fmov_w_s(X86pA64Emit *e) {
+  x86p_a64_emit_fmov_w_s(e, kA64X0, 0);
+}
+static void emit_fcvt_d_s(X86pA64Emit *e) {
+  x86p_a64_emit_fcvt_d_s(e, 1, 1);
+}
+static void emit_fcvt_s_d(X86pA64Emit *e) {
+  x86p_a64_emit_fcvt_s_d(e, 0, 0);
+}
+static void emit_ucvtf(X86pA64Emit *e) {
+  x86p_a64_emit_ucvtf_d_x(e, 0, kA64X1);
+}
+static void emit_ubfx_w(X86pA64Emit *e) {
+  x86p_a64_emit_ubfx_w(e, kA64X0, kA64X2, 8, 4);
+}
+static void emit_ubfx_x(X86pA64Emit *e) {
+  x86p_a64_emit_ubfx_x(e, kA64X0, kA64X1, 52, 11);
+}
+static void emit_lsl_x(X86pA64Emit *e) {
+  x86p_a64_emit_lsl_x_imm(e, kA64X0, kA64X0, 52);
+}
+static void emit_lsl_w(X86pA64Emit *e) {
+  x86p_a64_emit_lsl_w_w_imm(e, kA64X1, kA64X0, 1);
+}
+static void emit_add_lsl(X86pA64Emit *e) {
+  x86p_a64_emit_alu_x_x_lsl(e, kA64Add, kA64X3, kA64X4, kA64X7, 4);
+}
+static void emit_orr_lsl(X86pA64Emit *e) {
+  x86p_a64_emit_alu_w_w_lsl(e, kA64Orr, kA64X0, kA64X0, kA64X1, 15);
+}
+static void emit_orr_bit63(X86pA64Emit *e) {
+  x86p_a64_emit_orr_x_bit(e, kA64X2, 63);
+}
+static void emit_orr_bit0(X86pA64Emit *e) {
+  x86p_a64_emit_orr_x_bit(e, kA64X2, 0);
+}
+static void emit_ldr_q_at(X86pA64Emit *e) {
+  x86p_a64_emit_load_q_at(e, 0, kA64X3);
+}
+static void emit_str_q_at(X86pA64Emit *e) {
+  x86p_a64_emit_store_q_at(e, kA64X7, 1);
+}
+
+typedef struct AssembledForm {
+  const char *text;
+  EmitOne emit;
+  uint32_t word;
+} AssembledForm;
+
+static const AssembledForm kForms[] = {
+    {"fadd d0, d1, d2", emit_fadd, 0x1E622820u},
+    {"fsub d3, d4, d5", emit_fsub, 0x1E653883u},
+    {"fmul d6, d7, d8", emit_fmul, 0x1E6808E6u},
+    {"fdiv d1, d0, d1", emit_fdiv, 0x1E611801u},
+    {"fneg d0, d0", emit_fneg, 0x1E614000u},
+    {"fcmp d0, d1", emit_fcmp, 0x1E612000u},
+    {"fmov d2, x0", emit_fmov_d_x, 0x9E670002u},
+    {"fmov x1, d0", emit_fmov_x_d, 0x9E660001u},
+    {"fmov d1, d0", emit_fmov_d_d, 0x1E604001u},
+    {"fmov d0, xzr", emit_fmov_zero, 0x9E6703E0u},
+    {"fmov s1, w6", emit_fmov_s_w, 0x1E2700C1u},
+    {"fmov w0, s0", emit_fmov_w_s, 0x1E260000u},
+    {"fcvt d1, s1", emit_fcvt_d_s, 0x1E22C021u},
+    {"fcvt s0, d0", emit_fcvt_s_d, 0x1E624000u},
+    {"ucvtf d0, x1", emit_ucvtf, 0x9E630020u},
+    {"ubfx w0, w2, #8, #4", emit_ubfx_w, 0x53082C40u},
+    {"ubfx x0, x1, #52, #11", emit_ubfx_x, 0xD374F820u},
+    {"lsl x0, x0, #52", emit_lsl_x, 0xD34C2C00u},
+    {"lsl w1, w0, #1", emit_lsl_w, 0x531F7801u},
+    {"add x3, x4, x7, lsl #4", emit_add_lsl, 0x8B071083u},
+    {"orr w0, w0, w1, lsl #15", emit_orr_lsl, 0x2A013C00u},
+    {"orr x2, x2, #0x8000000000000000", emit_orr_bit63, 0xB2410042u},
+    {"orr x2, x2, #0x1", emit_orr_bit0, 0xB2400042u},
+    {"ldr q0, [x3]", emit_ldr_q_at, 0x3DC00060u},
+    {"str q1, [x7]", emit_str_q_at, 0x3D8000E1u},
+};
+
+static void test_x87_inline_forms_match_the_assembler(void) {
+  size_t i;
+  for (i = 0; i < sizeof kForms / sizeof kForms[0]; i++) {
+    uint8_t buf[8];
+    X86pA64Emit e;
+    uint32_t w;
+    x86p_a64_emit_init(&e, buf, sizeof buf);
+    kForms[i].emit(&e);
+    w = last_word(&e);
+    g_checks++;
+    if (e.len != 4 || w != kForms[i].word) {
+      g_failed++;
+      printf("    FAIL %s: emitted %08X, the assembler says %08X\n", kForms[i].text, w, kForms[i].word);
+    }
+  }
+}
+
+/* Every new branch form bound forward over the same distance, against the
+   assembler's words for `<branch> ..., b` placed 0x24 bytes into a buffer. */
+static const uint32_t kBranchWant[] = {
+    0x34000120u, /* cbz w0, +0x24 */
+    0x35000105u, /* cbnz w5, +0x20 */
+    0xB40000E1u, /* cbz x1, +0x1c */
+    0xB50000C2u, /* cbnz x2, +0x18 */
+    0xB6F800A1u, /* tbz x1, #63, +0x14 */
+    0x37780082u, /* tbnz w2, #15, +0x10 */
+    0x36000060u, /* tbz w0, #0, +0xc */
+    0x94000002u, /* bl +0x8 */
+};
+
+/* Room for a branch past the reach of TBZ. */
+static uint8_t g_far[40000];
+
+static void test_new_branch_forms_bind(void) {
+  uint8_t buf[64];
+  X86pA64Emit e;
+  X86pA64EmitSite sites[8];
+  size_t i;
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  sites[0] = x86p_a64_emit_cbz_w(&e, kA64X0);
+  sites[1] = x86p_a64_emit_cbnz_w(&e, kA64X5);
+  sites[2] = x86p_a64_emit_cbz_x(&e, kA64X1);
+  sites[3] = x86p_a64_emit_cbnz_x(&e, kA64X2);
+  sites[4] = x86p_a64_emit_tbz(&e, kA64X1, 63);
+  sites[5] = x86p_a64_emit_tbnz(&e, kA64X2, 15);
+  sites[6] = x86p_a64_emit_tbz(&e, kA64X0, 0);
+  sites[7] = x86p_a64_emit_bl(&e);
+  x86p_a64_emit_ret(&e); /* the assembler's nop: any word, it is not checked */
+  for (i = 0; i < 8; i++) {
+    x86p_a64_emit_bind(&e, sites[i]);
+  }
+  CHECK(x86p_a64_emit_ok(&e));
+  CHECK(x86p_a64_emit_sites_bound(&e));
+  for (i = 0; i < 8; i++) {
+    uint32_t w;
+    memcpy(&w, buf + 4 * i, 4);
+    g_decoded++;
+    g_checks++;
+    if (w != kBranchWant[i]) {
+      g_failed++;
+      printf("    FAIL branch %zu: bound to %08X, the assembler says %08X\n", i, w, kBranchWant[i]);
+    }
+  }
+  /* A TBZ reaches 32KB; one bound further overflows rather than wrapping. */
+  {
+    X86pA64EmitSite far;
+    unsigned n;
+    x86p_a64_emit_init(&e, g_far, sizeof g_far);
+    far = x86p_a64_emit_tbz(&e, kA64X0, 3);
+    for (n = 0; n < 33000u / 4u; n++) {
+      x86p_a64_emit_ret(&e);
+    }
+    CHECK(x86p_a64_emit_ok(&e) && e.len > 32768u);
+    x86p_a64_emit_bind(&e, far);
+    CHECK(!x86p_a64_emit_ok(&e));
+  }
+}
+
 static void test_overflow_is_sticky_and_never_writes_past_the_end(void) {
   uint8_t buf[8];
   uint8_t guard[8];
@@ -707,6 +901,8 @@ int main(void) {
   RUN(test_push_pop_pair_and_sp_adjust);
   RUN(test_ret_and_blr);
   RUN(test_load_store_mov_q);
+  RUN(test_x87_inline_forms_match_the_assembler);
+  RUN(test_new_branch_forms_bind);
   RUN(test_overflow_is_sticky_and_never_writes_past_the_end);
 
   printf("\n%d check(s), %d failure(s) in %d test(s)\n", g_checks, g_failed, g_test_failed);

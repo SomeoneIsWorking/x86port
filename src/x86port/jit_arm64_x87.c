@@ -18,6 +18,7 @@
  * closes its slot before the check.
  */
 #include "jit_arm64_x87.h"
+#include "jit_arm64_x87_inline.h"
 
 #include "cpu.h"
 #include "emit_arm64.h"
@@ -49,15 +50,17 @@ static void x87_call(X86pA64Emit *e, const void *fn) {
   x86p_a64_emit_blr(e, kA64X9);
 }
 
-/* Read the raw bits at a bounds-checked guest float operand into W0/X0. */
+/* Read the raw bits at a bounds-checked guest float operand into
+   X87_BITS_REG, where both an inline fast path and the helper arguments read
+   them. */
 static void x87_load_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_mem_prepare_w(c, o, insn_eip, w);
   if (w == 2) {
-    x86p_a64_emit_load16_zx(c->e, kA64X0, HOSTPTR_REG, 0);
+    x86p_a64_emit_load16_zx(c->e, X87_BITS_REG, HOSTPTR_REG, 0);
   } else if (w == 4) {
-    x86p_a64_emit_load32(c->e, kA64X0, HOSTPTR_REG, 0);
+    x86p_a64_emit_load32(c->e, X87_BITS_REG, HOSTPTR_REG, 0);
   } else {
-    x86p_a64_emit_load64(c->e, kA64X0, HOSTPTR_REG, 0);
+    x86p_a64_emit_load64(c->e, X87_BITS_REG, HOSTPTR_REG, 0);
   }
 }
 
@@ -74,11 +77,11 @@ static void x87_store_bits(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip,
   }
 }
 
-/* The raw operand bits the preceding x87_load_bits left in X0, as the
-   helpers' (f, lo, hi) prefix: X1 = low half, X2 = high half, X0 = f. */
+/* The raw operand bits the preceding x87_load_bits left in X87_BITS_REG, as
+   the helpers' (f, lo, hi) prefix: X1 = low half, X2 = high half, X0 = f. */
 static void x87_bits_args(X86pA64Emit *e) {
-  x86p_a64_emit_mov_x_x(e, kA64X1, kA64X0);
-  x86p_a64_emit_lsr_x_imm(e, kA64X2, kA64X0, 32u);
+  x86p_a64_emit_mov_x_x(e, kA64X1, X87_BITS_REG);
+  x86p_a64_emit_lsr_x_imm(e, kA64X2, X87_BITS_REG, 32u);
   x87_lea_self(e);
 }
 
@@ -116,24 +119,31 @@ void emit_x87_clear_exceptions(BlockCtx *c) {
 void emit_x87_load(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o = &insn->operand[0];
+  X87Slow slow = {0};
 
   if (o->kind == kX86pOperandMem) {
-    const int w = o->size; /* 4 or 8 -- can_emit gate */
+    const int w = o->size; /* 2, 4 or 8 -- can_emit gate */
     x87_load_bits(c, o, insn_eip, w);
+    emit_x87_inline_load(c, insn, &slow);
+    x87_slow_begin(c, &slow);
     x87_bits_args(e);
     x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)w);
     x86p_a64_emit_mov_w_imm32(e, kA64X4, insn->x87 == kX86pX87InsnLoadInt ? 1u : 0u);
     x86p_a64_emit_mov_w_imm32(e, kA64X5, 0u);
     x87_call(e, (const void *)&x86p_jit_x87_load_bits);
+    x87_slow_end(c, &slow);
     return;
   }
 
+  emit_x87_inline_copy(c, insn, &slow);
+  x87_slow_begin(c, &slow);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)o->reg);
   x86p_a64_emit_mov_w_imm32(e, kA64X2, 0u);
   x86p_a64_emit_mov_w_imm32(e, kA64X3, 1u); /* push */
   x86p_a64_emit_mov_w_imm32(e, kA64X4, 0u);
   x87_call(e, (const void *)&x86p_jit_x87_copy);
+  x87_slow_end(c, &slow);
 }
 
 /*
@@ -145,9 +155,12 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
   const int two_op = (insn->operands == 2);
+  X87Slow slow = {0};
 
   if (o0->kind == kX86pOperandMem) {
     x87_load_bits(c, o0, insn_eip, o0->size);
+    emit_x87_inline_arith(c, insn, &slow);
+    x87_slow_begin(c, &slow);
     x87_bits_args(e);
     x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)o0->size);
     x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_mem_int);
@@ -155,8 +168,11 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x86p_a64_emit_mov_w_imm32(e, kA64X6, (uint32_t)insn->x87_reverse);
     x86p_a64_emit_mov_w_imm32(e, kA64X7, (uint32_t)insn->x87_pops);
     x87_call(e, (const void *)&x86p_jit_x87_arith_mem_bits);
+    x87_slow_end(c, &slow);
     return;
   }
+  emit_x87_inline_arith(c, insn, &slow);
+  x87_slow_begin(c, &slow);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)(two_op ? o0->reg : 0));
   x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)(two_op ? insn->operand[1].reg : o0->reg));
@@ -164,6 +180,7 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_reverse);
   x86p_a64_emit_mov_w_imm32(e, kA64X5, (uint32_t)insn->x87_pops);
   x87_call(e, (const void *)&x86p_jit_x87_arith_reg);
+  x87_slow_end(c, &slow);
 }
 
 /* FCOM / FCOMP m32/m64. x86p_x87_compare, behind the helper, remains the sole
@@ -172,25 +189,33 @@ void emit_x87_arith(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 void emit_x87_compare_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
   const X86pOperand *o0 = &insn->operand[0];
+  X87Slow slow = {0};
 
   x87_load_bits(c, o0, insn_eip, o0->size);
+  emit_x87_inline_compare_mem(c, insn, &slow);
+  x87_slow_begin(c, &slow);
   x87_bits_args(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X3, (uint32_t)o0->size);
   x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_mem_int);
   x86p_a64_emit_mov_w_imm32(e, kA64X5, (uint32_t)insn->x87_pops);
   x87_call(e, (const void *)&x86p_jit_x87_compare_mem_bits);
+  x87_slow_end(c, &slow);
 }
 
 /* FST ST(i) / FSTP ST(i): ST(0) into ST(i), then the pops. Both slots are the
    same width so nothing rounds; an empty ST(0) is a no-op. */
 void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
   X86pA64Emit *e = c->e;
+  X87Slow slow = {0};
+  emit_x87_inline_copy(c, insn, &slow);
+  x87_slow_begin(c, &slow);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
   x86p_a64_emit_mov_w_imm32(e, kA64X2, (uint32_t)insn->operand[0].reg);
   x86p_a64_emit_mov_w_imm32(e, kA64X3, 0u);
   x86p_a64_emit_mov_w_imm32(e, kA64X4, (uint32_t)insn->x87_pops);
   x87_call(e, (const void *)&x86p_jit_x87_copy);
+  x87_slow_end(c, &slow);
 }
 
 /*
@@ -205,6 +230,10 @@ void emit_x87_store_reg(BlockCtx *c, const X86pInsn *insn) {
  * cannot disturb, unlike X8/X9 which the encoder's large-immediate fallbacks
  * may use during that same call. Bytes past `w` in the slot are stale and
  * never stored.
+ *
+ * An inline fast path (jit_arm64_x87_inline.h) that answers leaves its bits in
+ * CARRY_REG too and joins at the address check, so both share its one fault
+ * site and the pops.
  */
 void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   X86pA64Emit *e = c->e;
@@ -212,8 +241,10 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   const int w = o0->size; /* 2, 4 or 8 -- gate */
   X86pA64EmitSite skip;
   X86pA64EmitSite done;
-  int i;
+  X87Slow slow = {0};
 
+  emit_x87_inline_store(c, insn, &slow);
+  x87_slow_begin(c, &slow);
   x86p_a64_emit_sub_sp_imm(e, 16u);
   x87_lea_self(e);
   x86p_a64_emit_mov_w_imm32(e, kA64X1, (uint32_t)w);
@@ -225,12 +256,10 @@ void emit_x87_store_mem(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 
   x86p_a64_emit_load64(e, CARRY_REG, kA64Sp, 0);
   x86p_a64_emit_add_sp_imm(e, 16u);
+  x87_slow_end(c, &slow);
   x87_store_bits(c, o0, insn_eip, w, CARRY_REG);
-  for (i = 0; i < (int)insn->x87_pops; i++) {
-    x87_lea_self(e);
-    x86p_a64_emit_mov_w_imm32(e, kA64X1, 0u);
-    x87_call(e, (const void *)&x86p_x87_pop);
-  }
+  /* ST(0) was occupied on both paths to here. */
+  emit_x87_pops(c, insn->x87_pops);
   done = x86p_a64_emit_b(e);
 
   x86p_a64_emit_bind(e, skip);

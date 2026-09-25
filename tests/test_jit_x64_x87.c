@@ -30,6 +30,10 @@
 
 static int g_checks;
 static int g_failed;
+/* Whether both engines run the consumer's binary64 arithmetic mode
+   (x87_double_arith.h). Every table runs both ways: the ARM64 backend's
+   inline arithmetic exists only in that mode. */
+static int g_double_arith;
 
 #define DATA_OFF 0x800u
 #define DATA_BYTES 0x100u
@@ -140,6 +144,8 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
   seed(&cj);
   memset(&census_i, 0, sizeof census_i);
   memset(&census_j, 0, sizeof census_j);
+  x86p_x87_set_double_arith(&ci.x87, g_double_arith);
+  x86p_x87_set_double_arith(&cj.x87, g_double_arith);
   if (k->census) {
     x86p_x87_set_op_census(&ci.x87, &census_i);
     x86p_x87_set_op_census(&cj.x87, &census_j);
@@ -209,6 +215,8 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FLDCW(d) 0xD9, 0x6B, (d)              /* D9 /5 */
 #define FADD_M32(d) 0xD8, 0x43, (d)           /* D8 /0 */
 #define FMUL_M64(d) 0xDC, 0x4B, (d)           /* DC /1 */
+#define FMUL_M32(d) 0xD8, 0x4B, (d)           /* D8 /1 */
+#define FADD_M64(d) 0xDC, 0x43, (d)           /* DC /0 */
 #define FDIV_M32(d) 0xD8, 0x73, (d)           /* D8 /6 */
 #define FDIVR_M32(d) 0xD8, 0x7B, (d)          /* D8 /7 */
 #define FDIV_M64(d) 0xDC, 0x73, (d)           /* DC /6 */
@@ -671,6 +679,179 @@ static const Case kCases[] = {
      1},
 };
 
+#define F64_HI_ONE 0x3FF00000u
+#define F64_HI_INF 0x7FF00000u
+#define F64_HI_QNAN 0x7FF80000u
+#define F32_SMALLEST_NORMAL 0x00800000u
+#define F32_TENTH 0x3DCCCCCDu
+
+/*
+ * The ARM64 inline forms' guards (jit_arm64_x87_inline.h), each on both sides:
+ * a value its fast path answers next to one it must refuse to the helper.
+ */
+static const Case kInlineEdgeCases[] = {
+    /* Operands the binary64 mode refuses. */
+    {"arithmetic with an infinite, a NaN and a subnormal m64",
+     CODE(FLD_M32(0),
+          FMUL_M64(8),
+          FSTP_M64(32),
+          FLD_M32(0),
+          FADD_M64(16),
+          FSTP_M64(40),
+          FLD_M32(0),
+          FMUL_M64(24),
+          FSTP_M64(48)),
+     9,
+     {F32_THREE, 0, 0, F64_HI_INF, 0, F64_HI_QNAN, 1u, 0},
+     0},
+    {"arithmetic with an infinite, a NaN and a subnormal m32",
+     CODE(FLD_M32(0),
+          FMUL_M32(4),
+          FSTP_M64(32),
+          FLD_M32(0),
+          FADD_M32(8),
+          FSTP_M64(40),
+          FLD_M32(0),
+          FMUL_M32(12),
+          FSTP_M64(48),
+          FLD_M32(0),
+          FMUL_M32(16),
+          FSTP_M32(56)),
+     12,
+     {F32_THREE, F32_INF, F32_QNAN, F32_DENORMAL, F32_SMALLEST_NORMAL},
+     0},
+    /* A register value with 64 significant bits (a third, from the helper's
+       integer division) is narrowed: its compare needs exactness and refuses. */
+    {"compare and store of a value binary64 cannot hold",
+     CODE(FILD_M32(0),
+          FIDIV_M32(4),
+          FLD_ST(0),
+          FCOM_M32(8),
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FCOMP_ST(1),
+          FNSTSW_AX,
+          MOV_M_EAX(36),
+          FST_M32(40),
+          FSTP_M64(44)),
+     11,
+     {1u, 3u, F32_TENTH},
+     0},
+    /* Ordered compares both ways and equal, memory and register. */
+    {"compare results",
+     CODE(FLD_M32(0),
+          FCOM_M32(4),
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FCOM_M32(0),
+          FNSTSW_AX,
+          MOV_M_EAX(36),
+          FLD_M32(4),
+          FCOM_ST(1),
+          FNSTSW_AX,
+          MOV_M_EAX(40),
+          FCOMPP,
+          FNSTSW_AX,
+          MOV_M_EAX(44)),
+     14,
+     {F32_THREE, F32_TENTH},
+     0},
+    /* Results outside binary64's normal range keep the helper. */
+    {"a product that overflows binary64 and one that underflows",
+     CODE(FLD_M64(0), FMUL_M64(0), FSTP_M64(32), FLD_M64(8), FMUL_M64(8), FSTP_M64(40)),
+     6,
+     {0, 0x7FE00000u, 0, 0x00200000u},
+     0},
+    /* Rounding to binary32 at an exact tie of the binary64 value. */
+    {"stores that round at a binary32 tie",
+     CODE(FLD_M64(0), FST_M32(32), FLD_M64(8), FST_M32(36), FLD_M64(16), FSTP_M32(40), FSTP_M32(44), FSTP_M32(48)),
+     8,
+     /* 1 + 2^-24 (a tie, even below), 1 + 3*2^-24 (a tie, even above), and
+        binary32's largest normal. */
+     {0x10000000u, F64_HI_ONE, 0x30000000u, F64_HI_ONE, 0xE0000000u, 0x47EFFFFFu},
+     0},
+    /* 2^60 + 2^36 + 1 is just above a binary32 tie. Rounded to binary64
+       first it lands ON the tie and would then round down: the store must
+       refuse it, the one value a two-step rounding gets wrong. */
+    {"a store just above a binary32 tie",
+     CODE(FILD_M64(0), FST_M32(32), FCHS, FSTP_M32(36)),
+     4,
+     {0x00000001u, 0x10000010u},
+     0},
+    {"stores past binary32's largest normal",
+     CODE(FLD_M64(0), FSTP_M32(32), FLD_M64(8), FSTP_M32(36)),
+     4,
+     {0xF8000000u, 0x47EFFFFFu, 0, 0x7FE00000u},
+     0},
+    /* Two thirds rounds up to nearest and down toward zero, at both widths. */
+    {"stores under a truncating control word",
+     CODE(FLDCW(16), FLD_M32(0), FDIV_M32(4), FST_M32(8), FSTP_M64(24)),
+     5,
+     {0x40000000u, F32_THREE, 0, 0, CW_TRUNCATE},
+     0},
+    /* (2^62 + 2^39 + 1) * 2^-189 is 2^-127 + 2^-150 + 2^-189: just above a
+       tie between two binary32 subnormals, where the rounding position is
+       above the tie test's. Through binary64 it lands on the tie. */
+    {"a store just above a binary32 subnormal tie",
+     CODE(FILD_M64(0), FMUL_M64(8), FSTP_M32(32)),
+     3,
+     {0x00000001u, 0x40000080u, 0, 0x34200000u},
+     0},
+    {"a store below binary32's normal range",
+     CODE(FLD_M64(0), FSTP_M32(32), FLD_M64(8), FSTP_M32(36)),
+     4,
+     {0, 0x38000000u, 0, 0x37F00000u},
+     0},
+    /* Push and pop edges: FLD ST(i) onto a full stack, FST to an empty
+       register, FXCH with an empty register, FCHS/FABS of an empty stack. */
+    {"register moves at the stack's edges",
+     CODE(FCHS,
+          FABS,
+          FXCH_ST(1),
+          FLD_M32(0),
+          FXCH_ST(3),
+          FST_ST(5),
+          FSTP_ST(2),
+          FLD_M32(0),
+          FLD_ST(0),
+          FXCH_ST(1),
+          FCHS,
+          FABS,
+          FSTP_M32(32)),
+     13,
+     {F32_THREE},
+     0},
+    {"a full stack pushed from a register",
+     CODE(FLD_M32(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(0),
+          FLD_ST(3),
+          FXCH_ST(7),
+          FSTP_M32(32)),
+     11,
+     {F32_THREE},
+     0},
+    /* Exchange and sign of values the helper's long double round trip may
+       change: they keep the helper. */
+    {"exchange and sign of an infinity and a NaN",
+     CODE(FLD_M32(0), FLD_M32(4), FXCH_ST(1), FCHS, FXCH_ST(1), FABS, FSTP_M32(32), FSTP_M32(36)),
+     8,
+     {F32_INF, F32_SNAN},
+     0},
+    /* Precision control: double mode applies under PC=double (0x027F) and
+       extended, not single. */
+    {"double precision control word",
+     CODE(FLDCW(16), FLD_M32(0), FDIV_M32(4), FADD_M32(4), FSTP_M64(24)),
+     5,
+     {F32_ONE, F32_THREE, 0, 0, 0x027Fu},
+     0},
+};
+
 /* Blocks that end at their own branch, whose exit leaves through the chained
    exit path rather than the block end. */
 static const Case kBranchCases[] = {
@@ -686,7 +867,7 @@ static void run_table(const Case *cases, size_t count, void *code, X86pJitExit o
   for (i = 0; i < count; i++) {
     int before = g_failed;
     run_case(&cases[i], code, ok_exit);
-    printf("%s %s\n", g_failed == before ? "PASS" : "FAIL", cases[i].name);
+    printf("%s %s%s\n", g_failed == before ? "PASS" : "FAIL", cases[i].name, g_double_arith ? " (binary64 mode)" : "");
   }
 }
 
@@ -708,12 +889,20 @@ int main(void) {
   if (!code) {
     return 1;
   }
-  run_table(kCases, sizeof kCases / sizeof kCases[0], code, kX86pJitExitUnsupported);
-  run_table(kBranchCases, sizeof kBranchCases / sizeof kBranchCases[0], code, kX86pJitExitBlockEnd);
+  for (g_double_arith = 0; g_double_arith < 2; g_double_arith++) {
+    if (g_double_arith && !x86p_x87_double_arith_available()) {
+      printf("binary64 mode: not available on this host, its pass skipped\n");
+      break;
+    }
+    run_table(kCases, sizeof kCases / sizeof kCases[0], code, kX86pJitExitUnsupported);
+    run_table(kInlineEdgeCases, sizeof kInlineEdgeCases / sizeof kInlineEdgeCases[0], code, kX86pJitExitUnsupported);
+    run_table(kBranchCases, sizeof kBranchCases / sizeof kBranchCases[0], code, kX86pJitExitBlockEnd);
+  }
   jit_x64_harness_code_free(code, 65536);
   printf("\n%d check(s), %d failure(s) over %zu x87 edge case(s)\n",
          g_checks,
          g_failed,
-         sizeof kCases / sizeof kCases[0] + sizeof kBranchCases / sizeof kBranchCases[0]);
+         sizeof kCases / sizeof kCases[0] + sizeof kInlineEdgeCases / sizeof kInlineEdgeCases[0] +
+             sizeof kBranchCases / sizeof kBranchCases[0]);
   return g_failed ? 1 : 0;
 }
