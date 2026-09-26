@@ -131,11 +131,12 @@ const char *x86p_jit_status_name(X86pJitStatus s);
    writes two values back, and its helper sequence). */
 #define X86P_JIT_EPILOGUE_BYTES 640u
 /* The frame the block opens before its first instruction: at most eight
-   pushes, the stack adjustment and the CPU pointer move -- 19 bytes on Win64.
-   Enforced like the two bounds above. Leaving it out of the minimum let a
+   pushes, the stack adjustment and the CPU pointer move -- 19 bytes on Win64;
+   on ARM64 two register pairs, the CPU pointer move and the four-instruction
+   load of the mapping's base, 32 bytes. Enforced like the two bounds above. Leaving it out of the minimum let a
    region with less than this to spare above the other two translate nothing
    and be refused as unsupported instead of flushed. */
-#define X86P_JIT_PROLOGUE_BYTES 24u
+#define X86P_JIT_PROLOGUE_BYTES 32u
 #define X86P_JIT_MIN_BLOCK_BYTES (X86P_JIT_PROLOGUE_BYTES + X86P_JIT_WORST_CASE_INSN_BYTES + X86P_JIT_EPILOGUE_BYTES)
 
 typedef struct X86pJitBlock {

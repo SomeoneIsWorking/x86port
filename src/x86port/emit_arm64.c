@@ -85,6 +85,14 @@ void x86p_a64_emit_mov_x_imm64(X86pA64Emit *e, X86pA64Reg dst, uint64_t imm) {
   }
 }
 
+void x86p_a64_emit_mov_x_imm64_fixed(X86pA64Emit *e, X86pA64Reg dst, uint64_t imm) {
+  unsigned i;
+  move_wide(e, 1, 2u, 0u, (uint16_t)(imm & 0xFFFFu), dst);
+  for (i = 1u; i < 4u; i++) {
+    move_wide(e, 1, 3u, i, (uint16_t)((imm >> (16u * i)) & 0xFFFFu), dst);
+  }
+}
+
 /* MOV (register) is the ORR-with-zero-register alias: logical (shifted
    register), opc=01 (ORR), N=0, shift=0, Rn=31 (XZR/WZR -- valid here since
    this position is never SP). */
@@ -380,6 +388,11 @@ void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
 void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   /* LSR Wd, Wn, #s == UBFM Wd, Wn, #s, #31. */
   bitfield(e, 2u /* UBFM */, dst, dst, count & 31u, 31u);
+}
+
+void x86p_a64_emit_add_x_w_uxtw(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, X86pA64Reg offset) {
+  /* ADD (extended register), 64-bit, option UXTW (010 in bits 15:13), no shift. */
+  put32(e, 0x8B204000u | ((uint32_t)offset << 16) | ((uint32_t)base << 5) | (uint32_t)dst);
 }
 
 void x86p_a64_emit_shift_w_w(X86pA64Emit *e, X86pA64Shift op, X86pA64Reg dst, X86pA64Reg src, X86pA64Reg count) {

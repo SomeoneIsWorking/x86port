@@ -9,23 +9,31 @@
 
 #include <stddef.h>
 
-void emit_prologue(X86pA64Emit *e) {
+/* Fixed length whatever `mem_base` is: x86p_jit_chain_entry_offset measures
+   it once for every block. */
+void emit_prologue(X86pA64Emit *e, uint64_t mem_base) {
   x86p_a64_emit_push_pair(e, CPU_REG, kA64Lr);
+  x86p_a64_emit_push_pair(e, MEM_BASE_REG, kA64X23);
   x86p_a64_emit_mov_x_x(e, CPU_REG, kA64X0);
+  x86p_a64_emit_mov_x_imm64_fixed(e, MEM_BASE_REG, mem_base);
+}
+
+void emit_frame_return(X86pA64Emit *e) {
+  x86p_a64_emit_pop_pair(e, MEM_BASE_REG, kA64X23);
+  x86p_a64_emit_pop_pair(e, CPU_REG, kA64Lr);
+  x86p_a64_emit_ret(e);
 }
 
 void emit_epilogue(X86pA64Emit *e, uint32_t next_eip, X86pJitExit exit) {
   x86p_a64_emit_store32_imm(e, CPU_REG, (int32_t)offsetof(X86pCpu, eip), next_eip);
   x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)exit);
-  x86p_a64_emit_pop_pair(e, CPU_REG, kA64Lr);
-  x86p_a64_emit_ret(e);
+  emit_frame_return(e);
 }
 
 void emit_epilogue_from(X86pA64Emit *e, X86pA64Reg eip_reg, X86pJitExit exit) {
   x86p_a64_emit_store32(e, CPU_REG, (int32_t)offsetof(X86pCpu, eip), eip_reg);
   x86p_a64_emit_mov_w_imm32(e, kA64X0, (uint32_t)exit);
-  x86p_a64_emit_pop_pair(e, CPU_REG, kA64Lr);
-  x86p_a64_emit_ret(e);
+  emit_frame_return(e);
 }
 
 /* Record a branch to the block's shared return (emit_chain_leave). An
@@ -303,10 +311,10 @@ uint64_t x86p_jit_chain_transfer_limit(void) {
 }
 
 size_t x86p_jit_chain_entry_offset(void) {
-  uint8_t prologue[16];
+  uint8_t prologue[32];
   X86pA64Emit e;
   x86p_a64_emit_init(&e, prologue, sizeof prologue);
-  emit_prologue(&e);
+  emit_prologue(&e, 0u);
   return e.len;
 }
 
