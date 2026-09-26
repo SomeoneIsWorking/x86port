@@ -343,12 +343,32 @@ void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int signed
 }
 
 /* IMUL r, r/m[, imm] at 16 or 32 bits; see jit_x64.c's emit_imul_to_register
-   for why the r/m operand is read first. */
-void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+   for why the r/m operand is read first. With its flags dead the product is
+   one MUL: the destination keeps only the low half, which does not depend on
+   signedness, and only the flags (CF and OF: whether it fit) need
+   x86p_imul_to_register. */
+void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int flags_dead) {
   const X86pOperand *destination = &insn->operand[0];
   const X86pOperand *source = &insn->operand[1];
   const int width = destination->size;
   const X86pA64Reg source_arg = insn->operands == 2 ? kA64X2 : kA64X1;
+
+  if (flags_dead) {
+    if (source->kind == kX86pOperandMem) {
+      emit_mem_prepare_w(c, source, insn_eip, width);
+      emit_load_w(c->e, kA64X1, HOSTPTR_REG, 0, width);
+    } else {
+      emit_load_w(c->e, kA64X1, CPU_REG, reg_off_w(source->reg, width), width);
+    }
+    if (insn->operands == 2) {
+      emit_load_w(c->e, kA64X2, CPU_REG, reg_off_w(destination->reg, width), width);
+    } else {
+      x86p_a64_emit_mov_w_imm32(c->e, kA64X2, insn->operand[2].imm);
+    }
+    x86p_a64_emit_mul_w(c->e, kA64X0, kA64X1, kA64X2);
+    emit_store_w(c->e, CPU_REG, reg_off_w(destination->reg, width), kA64X0, width);
+    return;
+  }
 
   if (source->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, source, insn_eip, width);

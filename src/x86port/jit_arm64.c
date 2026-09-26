@@ -33,6 +33,7 @@
 #include "jit_arm64_internal.h"
 #include "jit_arm64_x87.h"
 #include "jit_arm64_x87_inline.h"
+#include "jit_flag_liveness.h"
 #include "simd.h"
 #include "string_ops.h"
 #include "three_dnow.h"
@@ -406,88 +407,6 @@ static void emit_store_imm_w(X86pA64Emit *e, X86pA64Reg base, int32_t disp, uint
   } else {
     x86p_a64_emit_store32_imm(e, base, disp, imm);
   }
-}
-
-/* DEAD FLAG STORE ELIMINATION -- identical logic to jit_x64.c's
-   flag_write_is_dead: a pure decode-level scan with no host-register content
-   at all, so it is copied verbatim rather than re-derived. See jit_x64.c for
-   the full rationale and the safety argument for the carry-in. */
-static int flag_write_is_dead(const X86pMem *mem,
-                              uint32_t pc,
-                              uint32_t eip,
-                              X86pJitBoundaryFn boundary,
-                              void *boundary_user,
-                              uint32_t count,
-                              size_t code_len,
-                              size_t code_cap) {
-  int step;
-  for (step = 0; step < 8; step++) {
-    uint8_t bytes[X86P_MAX_INSN_LEN];
-    uint32_t avail = 0;
-    uint32_t i;
-    X86pInsn insn;
-
-    if (count + 1u + (uint32_t)step >= MAX_INSNS) {
-      return 0;
-    }
-    if (code_len + (size_t)(step + 2) * WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
-      return 0;
-    }
-
-    for (i = 0; i < (uint32_t)X86P_MAX_INSN_LEN; i++) {
-      uint32_t byte;
-      if (!x86p_mem_read(mem, pc + i, 1, &byte)) {
-        break;
-      }
-      bytes[i] = (uint8_t)byte;
-      avail++;
-    }
-    if (avail == 0 || !x86p_decode(bytes, avail, &insn)) {
-      return 0;
-    }
-    if (pc != eip && boundary && boundary(pc, boundary_user)) {
-      return 0;
-    }
-    if (!can_emit(&insn)) {
-      return 0;
-    }
-
-    if (insn.op == (uint8_t)kX86pInsnAlu) {
-      X86pA64Alu host;
-      X86pFlagKind kind;
-      int writes_dest;
-      if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest) && insn.operand[0].kind != kX86pOperandMem &&
-          insn.operand[1].kind != kX86pOperandMem) {
-        return 1;
-      }
-      if (x86p_alu_is_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
-          insn.operand[1].kind == kX86pOperandImm && (insn.operand[1].imm & 0x1Fu) != 0u) {
-        return 1; /* a nonzero constant count rewrites the whole tuple */
-      }
-      return 0; /* CL shift / rotate / ADC / SBB / memory ALU: may keep, read CF, or fault */
-    }
-    if (insn.op == (uint8_t)kX86pInsnAluUnary) {
-      if (insn.alu == (uint8_t)kX86pAluNeg && insn.operand[0].kind != kX86pOperandMem) {
-        return 1;
-      }
-      if (insn.alu == (uint8_t)kX86pAluNot && insn.operand[0].kind != kX86pOperandMem) {
-        pc += insn.length;
-        continue;
-      }
-      return 0;
-    }
-    if (insn.op == (uint8_t)kX86pInsnNop) {
-      pc += insn.length;
-      continue;
-    }
-    if (insn.op == (uint8_t)kX86pInsnMov && insn.operand[0].kind == kX86pOperandReg &&
-        insn.operand[1].kind != kX86pOperandMem) {
-      pc += insn.length;
-      continue;
-    }
-    return 0;
-  }
-  return 0;
 }
 
 /* PUSH / POP: the stack is ordinary guest memory, same fault path and same
@@ -924,6 +843,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     }
 
+    /* What the dead-flag scan needs, as the emit loop stands at this instruction. */
+    const X86pJitFlagScan flag_scan = {
+        mem, eip, boundary, boundary_user, count, MAX_INSNS, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap, can_emit};
+
     switch (insn.op) {
     case kX86pInsnNop:
       break;
@@ -952,8 +875,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
-      int dead = flag_write_is_dead(
-          mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
+      int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       if (k >= 0 && !dead) {
         last_kind = k;
@@ -985,7 +907,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       if (insn.operands == 1) {
         emit_mul32(&ctx, &insn, pc);
       } else {
-        emit_imul_to_register(&ctx, &insn, pc);
+        emit_imul_to_register(&ctx, &insn, pc, x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length));
       }
       last_kind = -1;
       last_w = -1;
@@ -1060,16 +982,14 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        int dead = flag_write_is_dead(
-            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
+        int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         if (!dead) {
           last_kind = (int)kind;
           last_w = insn.operand[0].size;
         }
       } else if (x86p_alu_is_shift(insn.alu)) {
-        int dead = flag_write_is_dead(
-            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
+        int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
         int k = emit_shift_inline(&ctx, &insn, dead, pc);
         if (k == SHIFT_FLAGS_UNKNOWN) {
           last_kind = -1;
