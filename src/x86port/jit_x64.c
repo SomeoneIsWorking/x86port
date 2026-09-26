@@ -497,11 +497,31 @@ static void emit_div32(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int
 /* IMUL r, r/m[, imm] at 16 or 32 bits. The r/m operand is read before the
    register one because preparing a memory operand uses the scratch registers
    a register load would otherwise have filled. */
-static void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
+static void emit_imul_to_register(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int flags_dead) {
   const X86pOperand *destination = &insn->operand[0];
   const X86pOperand *source = &insn->operand[1];
   const int width = destination->size;
   const X86pHostReg source_arg = insn->operands == 2 ? X86P_JIT_HOST_ARG2 : X86P_JIT_HOST_ARG1;
+
+  /* With its flags dead the product is one host IMUL, as on arm64: the
+     destination keeps only the low half, the same for either signedness and
+     however the operands were widened, and only CF/OF need the helper. */
+  if (flags_dead) {
+    if (source->kind == kX86pOperandMem) {
+      emit_mem_prepare_w(c, source, insn_eip, width);
+      emit_load_w(c->e, kX64Rax, HOSTPTR_REG, 0, width);
+    } else {
+      gpr_load(c, kX64Rax, source->reg, width);
+    }
+    if (insn->operands == 2) {
+      gpr_load(c, kX64Rdx, destination->reg, width);
+    } else {
+      x86p_emit_mov_r32_imm32(c->e, kX64Rdx, insn->operand[2].imm);
+    }
+    x86p_emit_imul_r64_r64(c->e, kX64Rax, kX64Rdx);
+    gpr_store(c, destination->reg, kX64Rax, width);
+    return;
+  }
 
   if (source->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, source, insn_eip, width);
@@ -987,7 +1007,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       if (insn.operands == 1) {
         emit_mul32(&ctx, &insn, pc);
       } else {
-        emit_imul_to_register(&ctx, &insn, pc);
+        emit_imul_to_register(&ctx, &insn, pc, x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length));
       }
       /* The semantic owner materialises CF/OF into explicit flags. */
       last_kind = -1;
