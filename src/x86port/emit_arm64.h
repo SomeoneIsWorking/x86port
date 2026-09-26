@@ -188,6 +188,9 @@ void x86p_a64_emit_lea64(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_
 /* <alu> w(dst), w(dst), w(src) -- 32-bit, flags NOT set (plain ADD/SUB/AND/
    ORR/EOR, never the S-suffixed form). */
 void x86p_a64_emit_alu_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src);
+/* mul w(dst), w(a), w(b) -- MADD with WZR: the low 32 bits of the product,
+   which are the same whether the operands are read signed or unsigned. */
+void x86p_a64_emit_mul_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b);
 /* <op> w(dst), w(a), w(b): the three-operand form, so a result need not be
    copied into place first. */
 void x86p_a64_emit_alu_w_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b);

@@ -31,6 +31,7 @@
  * the real thing.
  */
 #include "cpu.h"
+#include "cpu_compare.h"
 #include "decode.h"
 #include "exec.h"
 #include "jit_x64.h"
@@ -168,6 +169,12 @@ static int by_count(const void *a, const void *b) {
     return 1;
   }
   return (x->count > y->count) ? -1 : 0;
+}
+
+/* One diverging field, interpreter first. */
+static void print_diff(const char *field, const char *interp_text, const char *jit_text, void *user) {
+  (void)user;
+  printf("    %s: interp=%s jit=%s\n", field, interp_text, jit_text);
 }
 
 static int hexval(int c) {
@@ -535,16 +542,12 @@ int main(int argc, char **argv) {
         if (!bad) {
           (void)x86p_jit_enter(&blk, &cj);
           compared++;
-          /* The SIMD state too. Six per cent of translated instructions are
-             floating point or vector, and comparing only the integer file
-             would call a block that dropped every one of them identical. */
-          if (memcmp(ci.reg, cj.reg, sizeof ci.reg) != 0 || ci.eip != cj.eip || ci.flags.kind != cj.flags.kind ||
-              ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b || ci.flags.r != cj.flags.r ||
-              ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in ||
-              memcmp(ci.xmm, cj.xmm, sizeof ci.xmm) != 0 || ci.mxcsr != cj.mxcsr || ci.df != cj.df ||
-              memcmp(ci.seg, cj.seg, sizeof ci.seg) != 0 || ci.x87.top != cj.x87.top ||
-              memcmp(ci.x87.tag, cj.x87.tag, sizeof ci.x87.tag) != 0 ||
-              memcmp(ci.x87.reg, cj.x87.reg, sizeof ci.x87.reg) != 0) {
+          /* The one authority on "architecturally identical" (cpu_compare.h),
+             SIMD and x87 state included, not a field list of this tool's own:
+             that list compared the carry_in cache where no instruction can
+             read it, which reported hundreds of blocks that agree on every
+             observable bit and buried any real divergence among them. */
+          if (x86p_cpu_diff(&ci, &cj, NULL, NULL) != 0u) {
             diverged++;
             if (diverged <= 5) {
               unsigned q;
@@ -553,34 +556,7 @@ int main(int argc, char **argv) {
               /* WHICH field, and over WHICH instructions. An address alone
                  says a block disagreed and leaves the reader to rediscover
                  everything the tool already knew. */
-              for (q = 0; q < 8u; q++) {
-                if (ci.reg[q] != cj.reg[q]) {
-                  printf("    r%u: interp=%08X jit=%08X\n", q, ci.reg[q], cj.reg[q]);
-                }
-              }
-              if (ci.eip != cj.eip) {
-                printf("    eip: interp=%08X jit=%08X\n", ci.eip, cj.eip);
-              }
-              if (ci.flags.kind != cj.flags.kind || ci.flags.a != cj.flags.a || ci.flags.b != cj.flags.b ||
-                  ci.flags.r != cj.flags.r || ci.flags.w != cj.flags.w || ci.flags.carry_in != cj.flags.carry_in) {
-                printf("    flags: interp kind=%d a=%08X b=%08X r=%08X w=%d cin=%u | jit kind=%d a=%08X b=%08X "
-                       "r=%08X w=%d cin=%u\n",
-                       (int)ci.flags.kind,
-                       ci.flags.a,
-                       ci.flags.b,
-                       ci.flags.r,
-                       ci.flags.w,
-                       (unsigned)ci.flags.carry_in,
-                       (int)cj.flags.kind,
-                       cj.flags.a,
-                       cj.flags.b,
-                       cj.flags.r,
-                       cj.flags.w,
-                       (unsigned)cj.flags.carry_in);
-              }
-              if (ci.x87.top != cj.x87.top) {
-                printf("    x87 top: interp=%u jit=%u\n", ci.x87.top, cj.x87.top);
-              }
+              (void)x86p_cpu_diff(&ci, &cj, print_diff, NULL);
               {
                 uint32_t pc2 = at;
                 for (q = 0; q < blk.insns; q++) {

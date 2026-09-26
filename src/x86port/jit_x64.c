@@ -6,6 +6,7 @@
 #include "decode.h"
 #include "emit_x64.h"
 #include "flags.h"
+#include "jit_flag_liveness.h"
 #include "jit_x64_cond.h"
 #include "jit_x64_gpr.h"
 #include "jit_x64_internal.h"
@@ -404,118 +405,6 @@ static int keeps_x87_mirror(const X86pInsn *insn) {
   default:
     return 0;
   }
-}
-
-/*
- * DEAD FLAG STORE ELIMINATION.
- *
- * Most guest arithmetic never has its flags read: `add / add / cmp / jl` writes
- * three flag tuples and only the last one matters. This scans forward from the
- * instruction AFTER `pc` and returns 1 when the tuple that instruction wrote is
- * provably overwritten before anything can observe it -- so its six stores (and
- * its carry-in computation) can be skipped entirely.
- *
- * It only says "dead" for a later full-width inlined ALU flag write (or NEG)
- * with register/immediate operands: that overwrites every EFLAGS bit and cannot
- * fault. It stops -- conservatively "not dead" -- at the first thing that could
- * read flags (Jcc, INC/DEC which preserve CF, ADC/SBB, a helper), could fault
- * mid-block and expose a stale tuple (any memory operand), or
- * ends the block (branch, ret, unsupported, interception point, unmapped).
- * Register moves and NOPs are transparent and scanned through.
- *
- * Safety of the carry-in: the block's LAST flag writer is never dead (the scan
- * from it hits the block boundary), so it always stores. If ITS predecessor was
- * elided, its carry_in is computed from an older kind -- but a wrong carry_in is
- * only observable for kind Inc/Dec, and the predecessor of an Inc/Dec is never
- * elided (this scan returns 0 at Inc/Dec). cpu_compare.c states the matching
- * rule for the differential.
- *
- * The killer must be an instruction this block will ACTUALLY EMIT: `count` and
- * the remaining code budget cut the scan short exactly where the emit loop
- * would stop, so a store is never dropped on the strength of a successor that
- * ends up in the next block instead.
- */
-static int flag_write_is_dead(const X86pMem *mem,
-                              uint32_t pc,
-                              uint32_t eip,
-                              X86pJitBoundaryFn boundary,
-                              void *boundary_user,
-                              uint32_t count,
-                              size_t code_len,
-                              size_t code_cap) {
-  int step;
-  for (step = 0; step < 8; step++) {
-    uint8_t bytes[X86P_MAX_INSN_LEN];
-    uint32_t avail = 0;
-    uint32_t i;
-    X86pInsn insn;
-
-    /* Would the emit loop still be running when it reached this instruction? */
-    if (count + 1u + (uint32_t)step >= MAX_INSNS) {
-      return 0;
-    }
-    if (code_len + (size_t)(step + 2) * WORST_CASE_INSN_BYTES + EPILOGUE_BYTES > code_cap) {
-      return 0;
-    }
-
-    for (i = 0; i < (uint32_t)X86P_MAX_INSN_LEN; i++) {
-      uint32_t byte;
-      if (!x86p_mem_read(mem, pc + i, 1, &byte)) {
-        break;
-      }
-      bytes[i] = (uint8_t)byte;
-      avail++;
-    }
-    if (avail == 0 || !x86p_decode(bytes, avail, &insn)) {
-      return 0;
-    }
-    if (pc != eip && boundary && boundary(pc, boundary_user)) {
-      return 0;
-    }
-    /* A later flag write is a valid killer only if the emit loop will reach
-       and translate it. Shape-only checks below are intentionally narrower
-       than the complete translation gate, so consulting them first could
-       discard flags on the strength of an instruction the block then refuses. */
-    if (!can_emit(&insn)) {
-      return 0;
-    }
-
-    if (insn.op == (uint8_t)kX86pInsnAlu) {
-      X86pHostAlu host;
-      X86pFlagKind kind;
-      int writes_dest;
-      if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest) && insn.operand[0].kind != kX86pOperandMem &&
-          insn.operand[1].kind != kX86pOperandMem) {
-        return 1;
-      }
-      if (x86p_alu_is_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
-          insn.operand[1].kind == kX86pOperandImm && (insn.operand[1].imm & 0x1Fu) != 0u) {
-        return 1; /* a nonzero constant count rewrites the whole tuple */
-      }
-      return 0; /* CL shift / rotate / ADC / SBB / memory ALU: may keep, read CF, or fault */
-    }
-    if (insn.op == (uint8_t)kX86pInsnAluUnary) {
-      if (insn.alu == (uint8_t)kX86pAluNeg && insn.operand[0].kind != kX86pOperandMem) {
-        return 1; /* NEG rewrites every flag */
-      }
-      if (insn.alu == (uint8_t)kX86pAluNot && insn.operand[0].kind != kX86pOperandMem) {
-        pc += insn.length; /* NOT writes no flags -- transparent */
-        continue;
-      }
-      return 0; /* INC / DEC preserve (read) CF; memory forms can fault */
-    }
-    if (insn.op == (uint8_t)kX86pInsnNop) {
-      pc += insn.length;
-      continue;
-    }
-    if (insn.op == (uint8_t)kX86pInsnMov && insn.operand[0].kind == kX86pOperandReg &&
-        insn.operand[1].kind != kX86pOperandMem) {
-      pc += insn.length; /* reg <- reg/imm : no flags, no fault */
-      continue;
-    }
-    return 0;
-  }
-  return 0;
 }
 
 /*
@@ -1030,6 +919,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     }
 
+    /* What the dead-flag scan needs, as the emit loop stands at this instruction. */
+    const X86pJitFlagScan flag_scan = {
+        mem, eip, boundary, boundary_user, count, MAX_INSNS, e.len + ctx.fault_tail_bytes, code_cap, can_emit};
+
     switch (insn.op) {
     case kX86pInsnNop:
       break;
@@ -1058,8 +951,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       x86p_x64_emit_setcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
-      int dead = flag_write_is_dead(
-          mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
+      int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
       int k = emit_alu_unary_inline(&ctx, &insn, last_kind, dead, pc);
       /* NOT records no flags, so the PREVIOUS instruction is still the
          predecessor for the next one's carry-in -- and so is an INC/DEC/NEG
@@ -1145,8 +1037,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       X86pFlagKind kind;
       int writes_dest;
       if (inline_alu_shape(insn.alu, &host, &kind, &writes_dest)) {
-        int dead = flag_write_is_dead(
-            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
+        int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         /* A dead tuple was not stored, so the predecessor for the next
            carry-in is still the last kind actually written to memory. */
@@ -1155,8 +1046,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_w = insn.operand[0].size;
         }
       } else if (x86p_alu_is_shift(insn.alu)) {
-        int dead = flag_write_is_dead(
-            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
+        int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
         int k = emit_shift_inline(&ctx, &insn, dead, pc);
         if (k == SHIFT_FLAGS_UNKNOWN) {
           last_kind = -1;

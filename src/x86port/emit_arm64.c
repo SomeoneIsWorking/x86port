@@ -314,6 +314,10 @@ void x86p_a64_emit_alu_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA6
 void x86p_a64_emit_alu_x_x(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src) {
   alu_shifted_reg(e, 1, op, dst, dst, src);
 }
+void x86p_a64_emit_mul_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b) {
+  /* MADD Wd, Wn, Wm, WZR -- base 0x1B000000, Ra = 31 in bits 14:10. */
+  put32(e, 0x1B000000u | ((uint32_t)b << 16) | (31u << 10) | ((uint32_t)a << 5) | (uint32_t)dst);
+}
 void x86p_a64_emit_alu_w_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b) {
   alu_shifted_reg(e, 0, op, dst, a, b);
 }
