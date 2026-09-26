@@ -262,29 +262,66 @@ static int kind_has_result_parity(int kind) {
   }
 }
 
-static void emit_result_parity(X86pA64Emit *e) {
-  x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_R);
-  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 4u);
+static void emit_result_parity(X86pA64Emit *e, int r_reg) {
+  X86pA64Reg r = kA64X0;
+  if (r_reg == X86P_A64_FLAG_IN_MEMORY) {
+    x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_R);
+  } else {
+    r = (X86pA64Reg)r_reg;
+  }
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, r, r, 4u);
   x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 2u);
   x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 1u);
   x86p_a64_emit_tst_w_bit0(e, kA64X0);
 }
 
-/* Load a flag operand and left-align it for the recorded width. */
-static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, uint8_t shift) {
+/* Put a flag operand in `reg`, left-aligned for the recorded width: from the
+   host register the writer left it in, or loaded from the CPU state. */
+static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, int held_in, uint8_t shift) {
+  if (held_in != X86P_A64_FLAG_IN_MEMORY) {
+    x86p_a64_emit_shl_w_w_imm(e, reg, (X86pA64Reg)held_in, shift);
+    return;
+  }
   x86p_a64_emit_load32(e, reg, CPU_REG, offset);
   if (shift) {
     x86p_a64_emit_shl_w_imm(e, reg, shift);
   }
 }
 
-int x86p_a64_emit_condition_flags(
-    X86pA64Emit *e, uint8_t cond, int last_kind, int last_w, X86pA64Cond *out_cc, int *out_constant) {
+/* a into X0 and b into X1, ordered so neither overwrites the other's source
+   first; a swapped pair (a in X1, b in X0) is reloaded from memory. */
+static void load_operands_aligned(X86pA64Emit *e, const X86pA64FlagRegs *regs, uint8_t shift) {
+  int a = regs->a;
+  const int b = regs->b;
+  if (a == (int)kA64X1 && b == (int)kA64X0) {
+    a = X86P_A64_FLAG_IN_MEMORY;
+  }
+  if (b == (int)kA64X0) {
+    load_aligned(e, kA64X1, FLAG_B, b, shift);
+    load_aligned(e, kA64X0, FLAG_A, a, shift);
+    return;
+  }
+  load_aligned(e, kA64X0, FLAG_A, a, shift);
+  load_aligned(e, kA64X1, FLAG_B, b, shift);
+}
+
+int x86p_a64_emit_condition_flags(X86pA64Emit *e,
+                                  uint8_t cond,
+                                  int last_kind,
+                                  int last_w,
+                                  const X86pA64FlagRegs *regs,
+                                  X86pA64Cond *out_cc,
+                                  int *out_constant) {
   X86pA64Cond cc = kA64CondAl;
   int constant = -1;
   uint8_t shift;
+  X86pA64FlagRegs in_memory;
 
   *out_constant = -1;
+  if (!regs) {
+    in_memory = x86p_a64_flags_in_memory();
+    regs = &in_memory;
+  }
 
   if (last_w != 1 && last_w != 2 && last_w != 4) {
     return 0;
@@ -293,7 +330,7 @@ int x86p_a64_emit_condition_flags(
     if (!kind_has_result_parity(last_kind)) {
       return 0;
     }
-    emit_result_parity(e);
+    emit_result_parity(e, regs->r);
     *out_cc = cond == (uint8_t)kX86pCondP ? kA64CondEq : kA64CondNe;
     return 1;
   }
@@ -303,16 +340,14 @@ int x86p_a64_emit_condition_flags(
     if (!cond_after_cmp_sub(cond, &cc)) {
       return 0;
     }
-    load_aligned(e, kA64X0, FLAG_A, shift);
-    load_aligned(e, kA64X1, FLAG_B, shift);
+    load_operands_aligned(e, regs, shift);
     x86p_a64_emit_cmp_w_w(e, kA64X0, kA64X1);
     break;
   case (int)kX86pFlagsAdd:
     if (!cond_after_cmn_add(cond, &cc)) {
       return 0;
     }
-    load_aligned(e, kA64X0, FLAG_A, shift);
-    load_aligned(e, kA64X1, FLAG_B, shift);
+    load_operands_aligned(e, regs, shift);
     x86p_a64_emit_cmn_w_w(e, kA64X0, kA64X1);
     break;
   case (int)kX86pFlagsLogic:
@@ -323,7 +358,7 @@ int x86p_a64_emit_condition_flags(
       *out_constant = constant;
       return 1;
     }
-    load_aligned(e, kA64X0, FLAG_R, shift);
+    load_aligned(e, kA64X0, FLAG_R, regs->r, shift);
     x86p_a64_emit_cmp_w_imm(e, kA64X0, 0u);
     break;
   case (int)kX86pFlagsInc:
@@ -334,7 +369,7 @@ int x86p_a64_emit_condition_flags(
     if (!cond_after_cmp_result(cond, &cc)) {
       return 0;
     }
-    load_aligned(e, kA64X0, FLAG_R, shift);
+    load_aligned(e, kA64X0, FLAG_R, regs->r, shift);
     x86p_a64_emit_cmp_w_imm(e, kA64X0, 0u);
     break;
   default:
@@ -349,7 +384,7 @@ int x86p_a64_emit_condition_flags(
 static void emit_condition_value(BlockCtx *c, uint8_t cond, int last_kind, int last_w) {
   X86pA64Cond cc;
   int constant;
-  if (x86p_a64_emit_condition_flags(c->e, cond, last_kind, last_w, &cc, &constant)) {
+  if (x86p_a64_emit_condition_flags(c->e, cond, last_kind, last_w, &c->flag_regs_in, &cc, &constant)) {
     c->cond_inline++;
     if (constant >= 0) {
       x86p_a64_emit_mov_w_imm32(c->e, kA64X0, (uint32_t)constant);
@@ -379,7 +414,7 @@ void emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fallthrough, 
    * A condition that is constant for the kind (CF and OF after a logic
    * operation) picks its successor here, at translation time.
    */
-  if (x86p_a64_emit_condition_flags(e, cond, last_kind, last_w, &cc, &constant)) {
+  if (x86p_a64_emit_condition_flags(e, cond, last_kind, last_w, &c->flag_regs_in, &cc, &constant)) {
     c->cond_inline++;
     if (constant >= 0) {
       emit_exit(c, constant ? target : fallthrough);

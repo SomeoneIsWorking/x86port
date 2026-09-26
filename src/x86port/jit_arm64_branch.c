@@ -243,7 +243,7 @@ static void emit_leaf_site(BlockCtx *c, X86pJitLeafSite *site, uint32_t return_e
   ordinary = x86p_a64_emit_bcc(e, kA64CondEq);
   x86p_a64_emit_store32(e, CPU_REG, eip_at, TARGET_REG);
 
-  c->site_call_leaf = e->len;
+  c->site_call_leaf = x86p_a64_emit_label(e);
   x86p_a64_emit_mov_x_x(e, kA64X0, CPU_REG);
   x86p_a64_emit_blr(e, kA64X3);
   x86p_a64_emit_tst_w_w(e, kA64X0, kA64X0);
@@ -251,10 +251,10 @@ static void emit_leaf_site(BlockCtx *c, X86pJitLeafSite *site, uint32_t return_e
   emit_exit(c, return_eip);
 
   x86p_a64_emit_bind(e, reload);
-  c->site_reload = e->len;
+  c->site_reload = x86p_a64_emit_label(e);
   x86p_a64_emit_load32(e, TARGET_REG, CPU_REG, eip_at);
   x86p_a64_emit_bind(e, ordinary);
-  c->site_ordinary = e->len;
+  c->site_ordinary = x86p_a64_emit_label(e);
   emit_exit_from(c, TARGET_REG);
   c->site_refill = site;
 }

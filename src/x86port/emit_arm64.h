@@ -113,6 +113,14 @@ typedef struct X86pA64Emit {
   int overflow;
   unsigned sites_made;
   unsigned sites_bound;
+  /* Store-to-load forwarding (x86p_a64_emit_load32): the word the last
+     32-bit STR wrote to [fwd_base + fwd_disp] is still in fwd_src while
+     nothing has been emitted since and no branch lands there. `fwd_at` is
+     `len` just after that store, or SIZE_MAX when there is none. */
+  size_t fwd_at;
+  int32_t fwd_disp;
+  X86pA64Reg fwd_base;
+  X86pA64Reg fwd_src;
 } X86pA64Emit;
 
 void x86p_a64_emit_init(X86pA64Emit *e, void *buf, size_t cap);
@@ -140,10 +148,15 @@ void x86p_a64_emit_mov_x_x(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src);
    64-bit register, as every AArch64 32-bit write does. */
 void x86p_a64_emit_mov_w_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src);
 
-/* ldr w(dst), [x(base), #disp] */
+/* ldr w(dst), [x(base), #disp]. Straight after a 32-bit store to the same
+   address it is a register move from the stored register instead, or
+   nothing when that is `dst` -- see X86pA64Emit's forwarding fields. */
 void x86p_a64_emit_load32(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_t disp);
 /* str w(src), [x(base), #disp] */
 void x86p_a64_emit_store32(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X86pA64Reg src);
+/* stp w(a), w(b), [x(base), #disp] -- two adjacent words in one store; a
+   displacement STP cannot encode falls back to two STRs. */
+void x86p_a64_emit_store_pair32(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X86pA64Reg a, X86pA64Reg b);
 /* ldr x(dst), [x(base), #disp] */
 void x86p_a64_emit_load64(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_t disp);
 /* str x(src), [x(base), #disp] */
@@ -175,6 +188,13 @@ void x86p_a64_emit_lea64(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_
 /* <alu> w(dst), w(dst), w(src) -- 32-bit, flags NOT set (plain ADD/SUB/AND/
    ORR/EOR, never the S-suffixed form). */
 void x86p_a64_emit_alu_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src);
+/* <op> w(dst), w(a), w(b): the three-operand form, so a result need not be
+   copied into place first. */
+void x86p_a64_emit_alu_w_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b);
+/* add/sub w(dst), w(src), #imm when one instruction can: imm12, imm12 << 12,
+   or the negation of either with the operation flipped. Returns 0 having
+   emitted nothing otherwise. */
+int x86p_a64_emit_add_sub_w_imm(X86pA64Emit *e, int is_sub, X86pA64Reg dst, X86pA64Reg src, uint32_t imm);
 /* <alu> w(dst), w(dst), #imm */
 void x86p_a64_emit_alu_w_imm(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, uint32_t imm);
 /* <alu> x(dst), x(dst), x(src) -- 64-bit, for host pointer arithmetic only. */
@@ -184,6 +204,9 @@ void x86p_a64_emit_alu_x_imm(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, uint
 
 /* lsl w(dst), w(dst), #count */
 void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
+/* lsl w(dst), w(src), #count; a count of 0 is a plain move, or nothing when
+   dst is src. */
+void x86p_a64_emit_shl_w_w_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count);
 /* asr w(dst), w(dst), #count -- arithmetic (sign-propagating) right shift. */
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* lsr w(dst), w(dst), #count */
@@ -259,6 +282,9 @@ void x86p_a64_emit_ucvtf_d_x(X86pA64Emit *e, unsigned dst, X86pA64Reg src);
 
 /* ---- bit fields ---------------------------------------------------------------- */
 
+/* bfi w(dst), w(src), #lsb, #width: src's low `width` bits replace dst's
+   bits lsb..lsb+width-1; the rest of dst is kept. */
+void x86p_a64_emit_bfi_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width);
 /* ubfx w(dst), w(src), #lsb, #width / the 64-bit form: the field, zero-extended. */
 void x86p_a64_emit_ubfx_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width);
 void x86p_a64_emit_ubfx_x(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width);
@@ -292,6 +318,12 @@ typedef struct X86pA64EmitSite {
   size_t at;  /* offset of the instruction whose immediate is unresolved */
   size_t end; /* == at + 4; kept for the same shape as X86pEmitSite */
 } X86pA64EmitSite;
+
+/* The current offset as a branch target that a LATER instruction will bind
+   to (x86p_a64_emit_bind_to). Every position a branch lands on must come
+   from here or from x86p_a64_emit_bind, because both end store-to-load
+   forwarding there: a path arriving by branch has not run the store. */
+size_t x86p_a64_emit_label(X86pA64Emit *e);
 
 /* b.cc <unbound> */
 X86pA64EmitSite x86p_a64_emit_bcc(X86pA64Emit *e, X86pA64Cond cc);

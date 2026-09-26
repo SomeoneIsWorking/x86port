@@ -336,6 +336,9 @@ int main(int argc, char **argv) {
   unsigned long skipped_undec = 0;   /* the bytes stopped decoding: data, not code */
   unsigned long skipped_tail = 0;    /* fewer than four bytes left to translate from */
   unsigned long blocks = 0;
+  /* Host code emitted for those blocks, prologue and tails included: the
+     static cost of the translation, which codegen work moves. */
+  unsigned long long host_bytes = 0;
   unsigned long diverged = 0;
   unsigned long compared = 0;
   unsigned i;
@@ -464,6 +467,7 @@ int main(int argc, char **argv) {
       blocks_here++;
       blocks++;
       insns_covered += blk.insns;
+      host_bytes += blk.host_bytes;
       conds += blk.conds;
       conds_inline += blk.cond_inline;
       conds_unknown += blk.cond_unknown_kind;
@@ -648,6 +652,9 @@ int main(int argc, char **argv) {
   }
   printf("  mean block length         %.2f guest instruction(s)\n",
          blocks ? (double)insns_covered / (double)blocks : 0.0);
+  printf("  host code                 %llu byte(s), %.1f per guest instruction\n",
+         host_bytes,
+         insns_covered ? (double)host_bytes / (double)insns_covered : 0.0);
   if (conds == 0u) {
     printf("  NO Jcc or SETcc was emitted, so the condition census is unmeasured\n");
   } else {
