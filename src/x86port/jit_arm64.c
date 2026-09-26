@@ -323,31 +323,47 @@ static void emit_effective_address(X86pA64Emit *e, const X86pOperand *o) {
 }
 
 /*
- * Bounds-check EA_REG and leave the host address in HOSTPTR_REG.
+ * A span covering the whole space from guest 0 with a guard above it needs no
+ * check for an access the guard is wide enough to catch -- jit_x64_mem.c's
+ * plan_is_guarded, the same rule: no address lies outside the span, and the
+ * only overrun lands on the guard, which the host VM faults as it faults every
+ * unmapped page inside the span.
+ */
+static int plan_is_guarded(const MemPlan *plan, int w) {
+  return plan->lo == 0u && plan->size == UINT32_MAX && (uint32_t)w <= plan->guard_above;
+}
+
+/* The register holding the offset into the mapping, EA - lo: the address
+   itself when lo is 0, which the 32-bit write that formed it zero-extended. */
+static X86pA64Reg plan_offset_reg(const MemPlan *plan) {
+  return plan->lo == 0u ? EA_REG : ADDR_TMP;
+}
+
+/*
+ * Bounds-check EA_REG, leaving the offset in plan_offset_reg.
  *
  * ONE unsigned compare covers both ends, exactly as jit_x64.c's -- CondHi
  * ("unsigned greater than", the AArch64 name for the same condition x64's
  * `ja` tests here) catches underflow and overflow together.
  */
 static X86pA64EmitSite emit_bounds_check(X86pA64Emit *e, const MemPlan *plan, uint32_t insn_eip, int w) {
+  const X86pA64Reg offset = plan_offset_reg(plan);
   x86p_a64_emit_mov_w_imm32(e, FAULTPC_REG, insn_eip);
-  x86p_a64_emit_mov_w_w(e, ADDR_TMP, EA_REG);
-  if (plan->lo != 0u) {
+  if (offset == ADDR_TMP) {
+    x86p_a64_emit_mov_w_w(e, ADDR_TMP, EA_REG);
     x86p_a64_emit_alu_w_imm(e, kA64Sub, ADDR_TMP, plan->lo);
   }
   if (plan->size < (uint32_t)w) {
     return x86p_a64_emit_b(e);
   }
-  x86p_a64_emit_cmp_w_imm(e, ADDR_TMP, plan->size - (uint32_t)w);
+  x86p_a64_emit_cmp_w_imm(e, offset, plan->size - (uint32_t)w);
   return x86p_a64_emit_bcc(e, kA64CondHi);
 }
 
-/* HOSTPTR_REG = host + (EA - lo). ADDR_TMP already holds the offset, and
-   writing a W register zero-extends into the full X register, so the 64-bit
-   add gets a clean offset. */
+/* HOSTPTR_REG = host + (EA - lo), from the base the prologue put in
+   MEM_BASE_REG and the offset zero-extended by the add itself. */
 static void emit_host_pointer(X86pA64Emit *e, const MemPlan *plan) {
-  x86p_a64_emit_mov_x_imm64(e, HOSTPTR_REG, plan->host);
-  x86p_a64_emit_alu_x_x(e, kA64Add, HOSTPTR_REG, ADDR_TMP);
+  x86p_a64_emit_add_x_w_uxtw(e, HOSTPTR_REG, MEM_BASE_REG, plan_offset_reg(plan));
 }
 
 /* ---- emitting -------------------------------------------------------------
@@ -363,7 +379,9 @@ static void note_fault(BlockCtx *c, X86pA64EmitSite site) {
 
 void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
   emit_effective_address(c->e, o);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
+  if (!plan_is_guarded(&c->plan, w)) {
+    note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
+  }
   emit_host_pointer(c->e, &c->plan);
 }
 
@@ -792,6 +810,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
+  ctx.plan.guard_above = mem->guard_above;
   ctx.chain = env ? env->chain : NULL;
   /* A leaf returns into the block through a chained exit. */
   if (ctx.chain && env->leaf) {
@@ -799,7 +818,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     ctx.leaf_user = env->leaf_user;
     ctx.leaf_sites = env->leaf_sites;
   }
-  emit_prologue(&e);
+  emit_prologue(&e, ctx.plan.host);
+  if (e.len > X86P_JIT_PROLOGUE_BYTES) {
+    say(reason, reason_len, "internal: the prologue emitted %zu bytes, past %u", e.len, X86P_JIT_PROLOGUE_BYTES);
+    return kX86pJitOutOfSpace;
+  }
   insn_start = e.len;
 
   for (;;) {
@@ -1088,8 +1111,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
     x86p_a64_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_a64_emit_mov_w_imm32(&e, kA64X0, (uint32_t)kX86pJitExitMemoryFault);
-    x86p_a64_emit_pop_pair(&e, CPU_REG, kA64Lr);
-    x86p_a64_emit_ret(&e);
+    emit_frame_return(&e);
   }
 
   if (ctx.ndivide_faults) {
@@ -1099,8 +1121,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     }
     x86p_a64_emit_store32(&e, CPU_REG, eip_off(), FAULTPC_REG);
     x86p_a64_emit_mov_w_imm32(&e, kA64X0, (uint32_t)kX86pJitExitDivideError);
-    x86p_a64_emit_pop_pair(&e, CPU_REG, kA64Lr);
-    x86p_a64_emit_ret(&e);
+    emit_frame_return(&e);
   }
 
   emit_tail_routines(&ctx);

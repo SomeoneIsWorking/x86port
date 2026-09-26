@@ -738,6 +738,9 @@ static void emit_lsrv(X86pA64Emit *e) {
 static void emit_asrv(X86pA64Emit *e) {
   x86p_a64_emit_shift_w_w(e, kA64Asr, kA64X2, kA64X3, kA64X4);
 }
+static void emit_add_uxtw(X86pA64Emit *e) {
+  x86p_a64_emit_add_x_w_uxtw(e, kA64X11, kA64X22, kA64X10);
+}
 static void emit_tst_bit0(X86pA64Emit *e) {
   x86p_a64_emit_tst_w_bit0(e, kA64X0);
 }
@@ -787,6 +790,7 @@ static const AssembledForm kForms[] = {
     {"eor w0, w0, w0, lsr #4", emit_eor_lsr4, 0x4A401000u},
     {"eor w1, w2, w3, lsr #1", emit_eor_lsr1, 0x4A430441u},
     {"tst w0, #0x1", emit_tst_bit0, 0x7200001Fu},
+    {"add x11, x22, w10, uxtw", emit_add_uxtw, 0x8B2A42CBu},
     {"lsl w0, w0, w1", emit_lslv, 0x1AC12000u},
     {"lsr w0, w0, w1", emit_lsrv, 0x1AC12400u},
     {"asr w2, w3, w4", emit_asrv, 0x1AC42862u},
@@ -807,6 +811,32 @@ static void test_x87_inline_forms_match_the_assembler(void) {
     if (e.len != 4 || w != kForms[i].word) {
       g_failed++;
       printf("    FAIL %s: emitted %08X, the assembler says %08X\n", kForms[i].text, w, kForms[i].word);
+    }
+  }
+}
+
+/* The fixed form writes all four halfwords even when three are zero -- the
+   case the ordinary form shortens to one instruction. */
+static void test_mov_x_imm64_fixed_is_always_four_words(void) {
+  static const uint32_t want[] = {0xD2824696u, 0xF2A00016u, 0xF2C00016u, 0xF2E00016u};
+  uint8_t buf[32];
+  X86pA64Emit e;
+  size_t i;
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_mov_x_imm64_fixed(&e, kA64X22, 0x1234u);
+  g_checks++;
+  if (e.len != sizeof want) {
+    g_failed++;
+    printf("    FAIL fixed imm64 emitted %zu byte(s), want %zu\n", e.len, sizeof want);
+    return;
+  }
+  for (i = 0; i < sizeof want / sizeof want[0]; i++) {
+    uint32_t w = (uint32_t)buf[4 * i] | ((uint32_t)buf[4 * i + 1] << 8) | ((uint32_t)buf[4 * i + 2] << 16) |
+                 ((uint32_t)buf[4 * i + 3] << 24);
+    g_checks++;
+    if (w != want[i]) {
+      g_failed++;
+      printf("    FAIL fixed imm64 word %zu: %08X, the assembler says %08X\n", i, w, want[i]);
     }
   }
 }
@@ -926,6 +956,7 @@ int main(void) {
   RUN(test_ret_and_blr);
   RUN(test_load_store_mov_q);
   RUN(test_x87_inline_forms_match_the_assembler);
+  RUN(test_mov_x_imm64_fixed_is_always_four_words);
   RUN(test_new_branch_forms_bind);
   RUN(test_overflow_is_sticky_and_never_writes_past_the_end);
 

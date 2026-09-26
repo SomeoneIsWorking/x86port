@@ -51,6 +51,17 @@
    return address push disturbs it. */
 #define TARGET_REG kA64X15
 
+/*
+ * The host address of the block's mapping (MemPlan.host), set once by the
+ * prologue and held for the whole dispatcher entry. Callee-saved, so every
+ * helper and leaf call keeps it; a chained transfer enters past the prologue
+ * into a block translated against the same mapping, so the value is already
+ * right. A guest access then forms its host address with one ADD instead of
+ * materialising the 64-bit base with up to four MOVZ/MOVK every time.
+ * X23 is saved with it only to keep the frame a pair; nothing uses it.
+ */
+#define MEM_BASE_REG kA64X22
+
 /* x8 and x9 are the ENCODER's own internal scratch (see emit_arm64.c's
    A64_SCRATCH and its store8_imm/store16_imm/store32_imm/cmp_w_imm
    fallbacks) -- never used here to carry a value across more than one
@@ -67,6 +78,7 @@ typedef struct MemPlan {
   uint64_t host;
   uint32_t lo;
   uint32_t size;
+  uint32_t guard_above; /* X86pMem.guard_above */
 } MemPlan;
 
 /*
@@ -197,7 +209,9 @@ static inline void emit_store_w(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X
 }
 /* Block entry and exits (jit_arm64_branch.c). A transfer enters a block past
    its prologue, so the prologue is emitted there too. */
-void emit_prologue(X86pA64Emit *e);
+void emit_prologue(X86pA64Emit *e, uint64_t mem_base);
+/* Leave the frame the prologue opened and return X0 to the dispatcher. */
+void emit_frame_return(X86pA64Emit *e);
 void emit_epilogue(X86pA64Emit *e, uint32_t next_eip, X86pJitExit exit);
 void emit_epilogue_from(X86pA64Emit *e, X86pA64Reg eip_reg, X86pJitExit exit);
 /* The exit to a guest EIP, chained through a slot when the block has them. */

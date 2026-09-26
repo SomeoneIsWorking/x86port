@@ -127,6 +127,10 @@ void x86p_a64_emit_mov_w_imm32(X86pA64Emit *e, X86pA64Reg dst, uint32_t imm);
    How the address of a helper function or a code-cache constant reaches the
    emitted code. */
 void x86p_a64_emit_mov_x_imm64(X86pA64Emit *e, X86pA64Reg dst, uint64_t imm);
+/* The same value in exactly four instructions (MOVZ and three MOVK) whatever
+   it is, for code whose length must not depend on it: a prologue that the
+   chain enters past. */
+void x86p_a64_emit_mov_x_imm64_fixed(X86pA64Emit *e, X86pA64Reg dst, uint64_t imm);
 
 /* mov x(dst), x(src) -- the full 64-bit register (ORR alias, XZR is never an
    operand here so mov-from-XZR is never how this encodes a zero). */
@@ -184,6 +188,9 @@ void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* lsr w(dst), w(dst), #count */
 void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
+/* add x(dst), x(base), w(offset), uxtw -- a 64-bit base plus a 32-bit
+   offset zero-extended: a guest offset into a host mapping, in one step. */
+void x86p_a64_emit_add_x_w_uxtw(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, X86pA64Reg offset);
 /* lsl/lsr/asr w(dst), w(src), w(count) -- LSLV/LSRV/ASRV: the count is taken
    modulo 32 by the hardware. */
 typedef enum X86pA64Shift { kA64Lsl = 0, kA64Lsr = 1, kA64Asr = 2 } X86pA64Shift;
