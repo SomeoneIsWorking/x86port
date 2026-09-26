@@ -128,17 +128,17 @@ long double x86p_x87_integer_value(uint64_t bits, unsigned width) {
   return x86p_x87_reg_to_long_double(x86p_x87_reg_from_integer_bits(bits, width));
 }
 
-int x86p_x87_reg_to_int(const X86pX87 *f, X86pX87Reg value, int width_bytes, int64_t *out) {
-  return f && x86p_ext80_to_int(f->control, ext80_of_reg(value), width_bytes, out);
+int x86p_x87_reg_to_int(uint16_t control, X86pX87Reg value, int width_bytes, int64_t *out) {
+  return x86p_ext80_to_int(control, ext80_of_reg(value), width_bytes, out);
 }
 
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out) {
-  return x86p_x87_reg_to_int(f, x86p_x87_reg_from_long_double(v), width_bytes, out);
+  return f && x86p_x87_reg_to_int(f->control, x86p_x87_reg_from_long_double(v), width_bytes, out);
 }
 
 uint64_t x86p_x87_reg_to_integer_bits(X86pX87 *f, X86pX87Reg value, int width) {
   int64_t result;
-  if (!x86p_x87_reg_to_int(f, value, width, &result)) {
+  if (!x86p_x87_reg_to_int(f->control, value, width, &result)) {
     f->status |= X86P_X87_IE;
     result = width == 2 ? INT16_MIN : width == 4 ? INT32_MIN : INT64_MIN;
   }
