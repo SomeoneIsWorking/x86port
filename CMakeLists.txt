@@ -507,6 +507,11 @@ target_link_libraries(test_x87_ext80_arith PRIVATE x86port)
 x86p_strict_target(test_x87_ext80_arith)
 add_test(NAME test_x87_ext80_arith COMMAND test_x87_ext80_arith)
 
+add_executable(test_x87_ext80_integer tests/test_x87_ext80_integer.c)
+target_link_libraries(test_x87_ext80_integer PRIVATE x86port)
+x86p_strict_target(test_x87_ext80_integer)
+add_test(NAME test_x87_ext80_integer COMMAND test_x87_ext80_integer)
+
 add_executable(test_x87_ext80_narrow tests/test_x87_ext80_narrow.cpp)
 target_link_libraries(test_x87_ext80_narrow PRIVATE x86port)
 x86p_strict_target(test_x87_ext80_narrow)

@@ -14,7 +14,7 @@ X86pX87MemoryStatus x86p_x87_reg_from_operand_bits(uint64_t bits, unsigned width
   if (!out || !bits_width_supported(width, integer)) {
     return kX86pX87MemoryUnsupported;
   }
-  *out = integer      ? x86p_x87_reg_from_long_double(x86p_x87_integer_value(bits, width))
+  *out = integer      ? x86p_x87_reg_from_integer_bits(bits, width)
          : width == 4 ? x86p_x87_reg_from_f32_bits((uint32_t)bits)
                       : x86p_x87_reg_from_f64_bits(bits);
   return kX86pX87MemoryOk;
@@ -62,12 +62,10 @@ x86p_x87_operand_bytes_from_reg(X86pX87 *f, X86pX87Reg value, unsigned width, in
     return kX86pX87MemoryOk;
   }
   if (integer) {
-    /* The integer conversions report their own invalid-operation results into
-       the status word, so they keep the long double entry points -- and that
-       reporting is why this is a separate step from the write: it happens even
-       when the write is about to be refused. */
-    const long double v = x86p_x87_reg_to_long_double(value);
-    bits = width == 2 ? x86p_x87_to_i16(f, v) : width == 4 ? x86p_x87_to_i32(f, v) : x86p_x87_to_i64(f, v);
+    /* The integer conversion reports its own invalid-operation result into the
+       status word, and that reporting is why this is a separate step from the
+       write: it happens even when the write is about to be refused. */
+    bits = x86p_x87_reg_to_integer_bits(f, value, (int)width);
   } else {
     bits = width == 4 ? x86p_x87_reg_to_f32_bits(f, value) : x86p_x87_reg_to_f64_bits(f, value);
   }

@@ -457,6 +457,12 @@ void x86p_x87_to_f80(long double v, uint8_t bytes[10]);
    truncate, unless the control word says truncate. Returns 0 when the value
    does not fit, which is a guest-visible invalid operation. */
 int x86p_x87_to_int(const X86pX87 *f, long double v, int width_bytes, int64_t *out);
+/* The same on the storage type, which is where FIST's operand already is. */
+int x86p_x87_reg_to_int(const X86pX87 *f, X86pX87Reg value, int width_bytes, int64_t *out);
+/* FIST's stored bits: the conversion, or the integer indefinite with IE set. */
+uint64_t x86p_x87_reg_to_integer_bits(X86pX87 *f, X86pX87Reg value, int width);
+/* FILD's register: a `width`-byte signed integer, exactly. */
+X86pX87Reg x86p_x87_reg_from_integer_bits(uint64_t bits, unsigned width);
 
 int x86p_x87_apply_fn(X86pX87 *f, X86pX87Fn fn);
 

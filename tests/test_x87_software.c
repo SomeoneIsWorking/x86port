@@ -189,16 +189,6 @@ static unsigned conversion_checks(unsigned *checks, unsigned *oracle_cases) {
     if (x86p_x87_software_narrow(f.control, 0x1.000001p0L, 0) != rounded_half[rc]) {
       failed++;
     }
-    int64_t integer = 77;
-    static const int expected[] = {2, 1, 2, 1};
-    (*checks)++;
-    if (!x86p_x87_software_integer(f.control, 1.75L, 8, &integer) || integer != expected[rc]) {
-      failed++;
-    }
-    (*checks)++;
-    if (x86p_x87_software_integer(f.control, 0x1p63L, 8, &integer) || integer != expected[rc]) {
-      failed++;
-    }
   }
   return failed;
 }

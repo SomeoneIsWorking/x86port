@@ -198,21 +198,6 @@ extern "C" X86pX87Reg x86p_x87_software_widen_f64(uint64_t bits) {
   return as_reg(f64_to_extF80(bits, &status));
 }
 #endif
-extern "C" int x86p_x87_software_integer(uint16_t control, long double value, int width, int64_t *out) {
-  if (!out || (width != 2 && width != 4 && width != 8)) {
-    return 0;
-  }
-  auto status = environment(control);
-  const auto x = widen(value);
-  const int64_t result = width == 2   ? extF80_to_i16(x, &status)
-                         : width == 4 ? extF80_to_i32(x, &status)
-                                      : extF80_to_i64(x, &status);
-  if (status.softfloat_exceptionFlags & softfloat_flag_invalid) {
-    return 0;
-  }
-  *out = result;
-  return 1;
-}
 extern "C" int x86p_x87_fn_software_control(X86pX87Fn fn,
                                             uint16_t control,
                                             long double a,
