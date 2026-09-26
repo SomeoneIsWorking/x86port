@@ -108,7 +108,10 @@ static long double sum_minus_one(X86pX87 *f) {
 }
 
 static void test_unit_switch(void) {
+  /* Zeroed first: reset keeps the host's double_arith choice, so it would
+     otherwise keep whatever the stack held. */
   X86pX87 f;
+  memset(&f, 0, sizeof f);
   x86p_x87_reset(&f);
   check(!f.double_arith, "a reset unit computes in extended");
   if (!x86p_x87_double_arith_available()) {
