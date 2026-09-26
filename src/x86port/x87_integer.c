@@ -96,7 +96,14 @@ int x86p_ext80_to_int(uint16_t control, X86pExt80 value, int width, int64_t *out
 static X86pExt80 ext80_of_reg(X86pX87Reg value) {
   uint8_t bytes[10];
   X86pExt80 out;
+#if !X86P_X87_BINARY128 && X86P_EXACT_LONG_DOUBLE
+  /* The register is a host 80-bit long double: its first ten bytes are the
+     fields. Read in place -- x86p_x87_reg_to_f80 is the same copy behind two
+     calls, and on the _ftol path those calls were two thirds of the cost. */
+  memcpy(bytes, &value, sizeof bytes);
+#else
   x86p_x87_reg_to_f80(value, bytes);
+#endif
   memcpy(&out.signif, bytes, 8);
   out.sign_exp = (uint16_t)((uint16_t)bytes[8] | ((uint16_t)bytes[9] << 8));
   return out;

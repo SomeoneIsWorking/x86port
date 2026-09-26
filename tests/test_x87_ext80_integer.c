@@ -258,9 +258,81 @@ static void test_against_the_hardware(void) {
 }
 #endif
 
+/* x86p_x87_reg_to_int converts a host long double directly where that is the
+   register format; the field decode is the reference it must equal, for every
+   class the generator makes (unnormals, NaNs, ties, out of range). */
+static X86pX87Reg register_of(X86pExt80 v) {
+  uint8_t bytes[10];
+  memcpy(bytes, &v.signif, 8);
+  bytes[8] = (uint8_t)(v.sign_exp & 0xFFu);
+  bytes[9] = (uint8_t)(v.sign_exp >> 8);
+  return x86p_x87_reg_from_f80(bytes);
+}
+
+static int register_agrees(uint16_t control, X86pExt80 v, int width, int lie) {
+  int64_t want = 0;
+  int64_t got = 0;
+  const int want_ok = x86p_ext80_to_int(control, v, width, &want);
+  const int got_ok = x86p_x87_reg_to_int(control, register_of(v), width, &got);
+  if (lie) {
+    got ^= 1;
+  }
+  return want_ok == got_ok && (!want_ok || want == got);
+}
+
+static uint64_t g_register_state = 0x2545F4914F6CDD1Du;
+static uint64_t register_next(void) {
+  g_register_state ^= g_register_state << 13;
+  g_register_state ^= g_register_state >> 7;
+  g_register_state ^= g_register_state << 17;
+  return g_register_state;
+}
+
+static void test_register_path(void) {
+  long long compared = 0;
+  const int widths[] = {2, 4, 8};
+  for (int i = 0; i < 400000; i++) {
+    const int unbiased = (int)(register_next() % 72u) - 4;
+    uint16_t exp = (uint16_t)(BIAS + unbiased);
+    uint64_t signif = register_next();
+    if ((i & 15) == 0) {
+      exp = 0;
+    } else if ((i & 63) == 1) {
+      exp = 0x7FFF;
+    }
+    if ((i & 7) != 3) {
+      signif |= ONE;
+    }
+    if ((i & 3) == 2) {
+      signif &= ~((UINT64_C(1) << (register_next() % 64u)) - 1u);
+      signif |= ONE;
+    }
+    const X86pExt80 v = ext80((uint16_t)(exp | ((register_next() & 1u) ? NEG : 0u)), signif);
+    for (unsigned m = 0; m < 4u; m++) {
+      for (unsigned w = 0; w < 3u; w++) {
+        g_checks++;
+        compared++;
+        if (!register_agrees(kModes[m], v, widths[w], 0)) {
+          printf("FAIL register path %04X %016" PRIX64 " RC %u width %d\n", v.sign_exp, v.signif, m, widths[w]);
+          if (++g_failures > 20) {
+            return;
+          }
+        }
+      }
+    }
+  }
+  g_checks++;
+  if (register_agrees(X86P_X87_RC_NEAREST, ext80(BIAS + 1, 0xC000000000000000u), 4, 1)) {
+    printf("FAIL the register comparison accepted a wrong answer\n");
+    g_failures++;
+  }
+  printf("compared %lld register conversion(s) with the field decode\n", compared);
+}
+
 int main(void) {
   test_table();
   test_from_int();
+  test_register_path();
 #if defined(__x86_64__) || defined(__i386__)
   test_against_the_hardware();
 #else
