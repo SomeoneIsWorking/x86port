@@ -3,3 +3,5 @@ scratch/
 __pycache__/
 *.pyc
 .venv/
+# qemu-user core dumps from ARM64 test runs
+qemu_*.core
