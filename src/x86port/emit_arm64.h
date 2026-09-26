@@ -184,6 +184,10 @@ void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* lsr w(dst), w(dst), #count */
 void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
+/* lsl/lsr/asr w(dst), w(src), w(count) -- LSLV/LSRV/ASRV: the count is taken
+   modulo 32 by the hardware. */
+typedef enum X86pA64Shift { kA64Lsl = 0, kA64Lsr = 1, kA64Asr = 2 } X86pA64Shift;
+void x86p_a64_emit_shift_w_w(X86pA64Emit *e, X86pA64Shift op, X86pA64Reg dst, X86pA64Reg src, X86pA64Reg count);
 /* dst = src >> count, 64-bit logical. */
 void x86p_a64_emit_lsr_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count);
 
@@ -261,6 +265,10 @@ void x86p_a64_emit_alu_x_x_lsl(
     X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift);
 void x86p_a64_emit_alu_w_w_lsl(
     X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift);
+/* eor w(dst), w(a), w(b), lsr #shift (shift 0..31). */
+void x86p_a64_emit_eor_w_w_lsr(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift);
+/* tst w(a), #1 -- ANDS WZR, Wa, #1: Z is set when bit 0 is clear. */
+void x86p_a64_emit_tst_w_bit0(X86pA64Emit *e, X86pA64Reg a);
 /* orr x(dst), x(dst), #(1 << bit) -- one set bit, bit 0..63. */
 void x86p_a64_emit_orr_x_bit(X86pA64Emit *e, X86pA64Reg dst, unsigned bit);
 

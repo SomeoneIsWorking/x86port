@@ -433,7 +433,11 @@ static int flag_write_is_dead(const X86pMem *mem,
           insn.operand[1].kind != kX86pOperandMem) {
         return 1;
       }
-      return 0;
+      if (x86p_alu_is_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
+          insn.operand[1].kind == kX86pOperandImm && (insn.operand[1].imm & 0x1Fu) != 0u) {
+        return 1; /* a nonzero constant count rewrites the whole tuple */
+      }
+      return 0; /* CL shift / rotate / ADC / SBB / memory ALU: may keep, read CF, or fault */
     }
     if (insn.op == (uint8_t)kX86pInsnAluUnary) {
       if (insn.alu == (uint8_t)kX86pAluNeg && insn.operand[0].kind != kX86pOperandMem) {
@@ -1030,6 +1034,17 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         emit_alu_inline(&ctx, &insn, host, kind, writes_dest, last_kind, dead, pc);
         if (!dead) {
           last_kind = (int)kind;
+          last_w = insn.operand[0].size;
+        }
+      } else if (x86p_alu_is_shift(insn.alu)) {
+        int dead = flag_write_is_dead(
+            mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + X86P_A64_X87_ROUTINE_BYTES, code_cap);
+        int k = emit_shift_inline(&ctx, &insn, dead, pc);
+        if (k == SHIFT_FLAGS_UNKNOWN) {
+          last_kind = -1;
+          last_w = -1;
+        } else if (k != SHIFT_FLAGS_UNCHANGED && !dead) {
+          last_kind = k;
           last_w = insn.operand[0].size;
         }
       } else {

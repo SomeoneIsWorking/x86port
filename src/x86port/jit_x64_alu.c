@@ -413,10 +413,6 @@ void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
 }
 
-int is_inline_shift(uint8_t alu) {
-  return alu == (uint8_t)kX86pAluShl || alu == (uint8_t)kX86pAluShr || alu == (uint8_t)kX86pAluSar;
-}
-
 /*
  * SHL, SHR and SAR on the host, recording the tuple x86p_alu records: the
  * masked operand, the masked count, the result and the kind. Every flag is

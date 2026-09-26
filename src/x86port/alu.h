@@ -119,6 +119,11 @@ void x86p_alu_imul(uint32_t a, uint32_t b, int w, uint32_t *lo, uint32_t *hi, X8
 int x86p_alu_div(uint32_t hi, uint32_t lo, uint32_t d, int w, uint32_t *quot, uint32_t *rem, X86pFlags *f);
 int x86p_alu_idiv(uint32_t hi, uint32_t lo, uint32_t d, int w, uint32_t *quot, uint32_t *rem, X86pFlags *f);
 
+/* SHL, SHR and SAR: the shifts whose flags are one lazy kind each
+   (kX86pFlagsShl/Shr/Sar), so a translator can record them without a call.
+   The rotates are not among them: they write CF and OF eagerly. */
+int x86p_alu_is_shift(uint8_t op);
+
 /* Names, for refusal messages and divergence reports. Never null, including for
    a value outside the enum. */
 const char *x86p_alu_name(X86pAluOp op);
