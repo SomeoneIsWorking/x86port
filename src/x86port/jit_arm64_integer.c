@@ -375,18 +375,21 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
     return -1;
   }
 
-  if (!flags_dead) {
+  /* NEG records the Sub kind, which never reads carry_in again
+     (x86p_flags_carry_in_is_live); only INC and DEC preserve CF through it. */
+  const int carry_live = insn->alu != (uint8_t)kX86pAluNeg;
+  if (!flags_dead && carry_live) {
     c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
   }
 
   if (is_mem) {
     emit_mem_prepare_w(c, o, insn_eip, w);
-    if (!flags_dead) {
+    if (!flags_dead && carry_live) {
       x86p_a64_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kA64X0, HOSTPTR_REG, 0, w);
   } else {
-    if (!flags_dead) {
+    if (!flags_dead && carry_live) {
       x86p_a64_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kA64X0, CPU_REG, reg_off_w(o->reg, w), w);
