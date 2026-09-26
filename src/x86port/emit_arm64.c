@@ -21,6 +21,10 @@ void x86p_a64_emit_init(X86pA64Emit *e, void *buf, size_t cap) {
   e->overflow = buf ? 0 : 1;
   e->sites_made = 0;
   e->sites_bound = 0;
+  e->fwd_at = SIZE_MAX;
+  e->fwd_disp = 0;
+  e->fwd_base = kA64X0;
+  e->fwd_src = kA64X0;
 }
 
 int x86p_a64_emit_ok(const X86pA64Emit *e) {
@@ -214,10 +218,31 @@ ldst_unsigned(X86pA64Emit *e, uint32_t base_word, X86pA64Reg rt, X86pA64Reg rn, 
 #define STRH_BASE 0x79000000u
 
 void x86p_a64_emit_load32(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_t disp) {
+  if (e->len == e->fwd_at && base == e->fwd_base && disp == e->fwd_disp) {
+    if (dst != e->fwd_src) {
+      x86p_a64_emit_mov_w_w(e, dst, e->fwd_src);
+    }
+    return;
+  }
   ldst_unsigned(e, LDR_W_BASE, dst, base, disp, 4);
 }
 void x86p_a64_emit_store32(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X86pA64Reg src) {
   ldst_unsigned(e, STR_W_BASE, src, base, disp, 4);
+  e->fwd_at = e->len;
+  e->fwd_disp = disp;
+  e->fwd_base = base;
+  e->fwd_src = src;
+}
+void x86p_a64_emit_store_pair32(X86pA64Emit *e, X86pA64Reg base, int32_t disp, X86pA64Reg a, X86pA64Reg b) {
+  /* STP Wa, Wb, [Xn, #disp] (signed offset) -- base 0x29000000, imm7 = disp/4. */
+  if (disp % 4 != 0 || disp < -256 || disp > 252) {
+    x86p_a64_emit_store32(e, base, disp, a);
+    x86p_a64_emit_store32(e, base, disp + 4, b);
+    return;
+  }
+  put32(e,
+        0x29000000u | (((uint32_t)(disp / 4) & 0x7Fu) << 15) | ((uint32_t)b << 10) | ((uint32_t)base << 5) |
+            (uint32_t)a);
 }
 void x86p_a64_emit_load64(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_t disp) {
   ldst_unsigned(e, LDR_X_BASE, dst, base, disp, 8);
@@ -257,39 +282,40 @@ void x86p_a64_emit_lea64(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg base, int32_
 
 /* ---- arithmetic ------------------------------------------------------------- */
 
-static void alu_shifted_reg(X86pA64Emit *e, int sf, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src) {
-  uint32_t word;
+/* <op> dst, a, b (shifted register, no shift): ADD/SUB have opcode 0x0B in
+   bits 28:24 with bit 30 selecting SUB; AND/ORR/EOR have 0x0A with the
+   logical opc in bits 30:29. */
+static void alu_shifted_reg(X86pA64Emit *e, int sf, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b) {
+  uint32_t head;
   switch (op) {
   case kA64Add:
-    word = ((uint32_t)sf << 31) | (0u << 30) | (0u << 29) | (0x0Bu << 24) | ((uint32_t)src << 16) |
-           ((uint32_t)dst << 5) | (uint32_t)dst;
+    head = (0u << 30) | (0x0Bu << 24);
     break;
   case kA64Sub:
-    word = ((uint32_t)sf << 31) | (1u << 30) | (0u << 29) | (0x0Bu << 24) | ((uint32_t)src << 16) |
-           ((uint32_t)dst << 5) | (uint32_t)dst;
+    head = (1u << 30) | (0x0Bu << 24);
     break;
   case kA64And:
-    word = ((uint32_t)sf << 31) | (0u << 29) | (0x0Au << 24) | ((uint32_t)src << 16) | ((uint32_t)dst << 5) |
-           (uint32_t)dst;
+    head = (0u << 29) | (0x0Au << 24);
     break;
   case kA64Orr:
-    word = ((uint32_t)sf << 31) | (1u << 29) | (0x0Au << 24) | ((uint32_t)src << 16) | ((uint32_t)dst << 5) |
-           (uint32_t)dst;
+    head = (1u << 29) | (0x0Au << 24);
     break;
   case kA64Eor:
   default:
-    word = ((uint32_t)sf << 31) | (2u << 29) | (0x0Au << 24) | ((uint32_t)src << 16) | ((uint32_t)dst << 5) |
-           (uint32_t)dst;
+    head = (2u << 29) | (0x0Au << 24);
     break;
   }
-  put32(e, word);
+  put32(e, ((uint32_t)sf << 31) | head | ((uint32_t)b << 16) | ((uint32_t)a << 5) | (uint32_t)dst);
 }
 
 void x86p_a64_emit_alu_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src) {
-  alu_shifted_reg(e, 0, op, dst, src);
+  alu_shifted_reg(e, 0, op, dst, dst, src);
 }
 void x86p_a64_emit_alu_x_x(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg src) {
-  alu_shifted_reg(e, 1, op, dst, src);
+  alu_shifted_reg(e, 1, op, dst, dst, src);
+}
+void x86p_a64_emit_alu_w_w_w(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b) {
+  alu_shifted_reg(e, 0, op, dst, a, b);
 }
 
 /* AND/ORR/EOR (immediate), restricted to the one shape this backend needs: a
@@ -318,14 +344,28 @@ static void logical_imm(X86pA64Emit *e, int sf, unsigned opc, X86pA64Reg dst, un
   put32(e, word);
 }
 
+int x86p_a64_emit_add_sub_w_imm(X86pA64Emit *e, int is_sub, X86pA64Reg dst, X86pA64Reg src, uint32_t imm) {
+  /* In 32 bits, adding imm is subtracting its negation: a small negative
+     displacement ([ebp-8]) is one SUB rather than a materialised constant. */
+  const uint32_t negated = 0u - imm;
+  if (imm > 0xFFFu && negated <= 0xFFFu) {
+    imm = negated;
+    is_sub = !is_sub;
+  }
+  if (imm <= 0xFFFu) {
+    add_sub_imm(e, 0, is_sub, dst, src, imm, 0);
+    return 1;
+  }
+  if ((imm & 0xFFFu) == 0 && (imm >> 12) <= 0xFFFu) {
+    add_sub_imm(e, 0, is_sub, dst, src, imm >> 12, 1);
+    return 1;
+  }
+  return 0;
+}
+
 void x86p_a64_emit_alu_w_imm(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, uint32_t imm) {
   if (op == kA64Add || op == kA64Sub) {
-    if (imm <= 0xFFFu) {
-      add_sub_imm(e, 0, op == kA64Sub, dst, dst, imm, 0);
-      return;
-    }
-    if ((imm & 0xFFFu) == 0 && (imm >> 12) <= 0xFFFu) {
-      add_sub_imm(e, 0, op == kA64Sub, dst, dst, imm >> 12, 1);
+    if (x86p_a64_emit_add_sub_w_imm(e, op == kA64Sub, dst, dst, imm)) {
       return;
     }
     x86p_a64_emit_mov_w_imm32(e, kA64X9, imm);
@@ -377,6 +417,17 @@ void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   /* LSL Wd, Wn, #s == UBFM Wd, Wn, #(-s mod 32), #(31-s). */
   unsigned s = count & 31u;
   bitfield(e, 2u /* UBFM */, dst, dst, (32u - s) & 31u, 31u - s);
+}
+
+void x86p_a64_emit_shl_w_w_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count) {
+  unsigned s = count & 31u;
+  if (s == 0u) {
+    if (dst != src) {
+      x86p_a64_emit_mov_w_w(e, dst, src);
+    }
+    return;
+  }
+  bitfield(e, 2u /* UBFM */, dst, src, (32u - s) & 31u, 31u - s);
 }
 
 void x86p_a64_emit_sar_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
@@ -573,6 +624,15 @@ static void ubfm(X86pA64Emit *e, int sf, X86pA64Reg dst, X86pA64Reg src, unsigne
   put32(e, base | (immr << 16) | (imms << 10) | ((uint32_t)src << 5) | (uint32_t)dst);
 }
 
+void x86p_a64_emit_bfi_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width) {
+  /* BFI == BFM Wd, Wn, #(-lsb mod 32), #(width-1). */
+  if (width == 0 || lsb + width > 32u) {
+    e->overflow = 1;
+    return;
+  }
+  bitfield(e, 1u /* BFM */, dst, src, (32u - lsb) & 31u, width - 1u);
+}
+
 void x86p_a64_emit_ubfx_w(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, unsigned lsb, unsigned width) {
   if (width == 0 || lsb + width > 32u) {
     e->overflow = 1;
@@ -724,9 +784,17 @@ void x86p_a64_emit_bind(X86pA64Emit *e, X86pA64EmitSite site) {
   x86p_a64_emit_bind_to(e, site, e->len);
 }
 
+size_t x86p_a64_emit_label(X86pA64Emit *e) {
+  e->fwd_at = SIZE_MAX;
+  return e->len;
+}
+
 void x86p_a64_emit_bind_to(X86pA64Emit *e, X86pA64EmitSite site, size_t target) {
   int64_t delta;
   uint32_t word;
+  if (target == e->fwd_at) {
+    e->fwd_at = SIZE_MAX;
+  }
   if (e->overflow || site.at + 4 > e->len || target > e->len) {
     e->overflow = 1;
     return;

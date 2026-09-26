@@ -92,15 +92,19 @@ void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
   x87_call(e, (const void *)&x86p_x87_push_constant);
 }
 
-/* FNSTSW AX. x86p_x87_status is the one owner that replaces any stale TOP
-   bits in the stored status field with the live stack pointer. A 16-bit
-   store into the guest EAX slot preserves its upper half exactly like
+/* FNSTSW AX: x86p_x87_status inline -- the stored word with the live TOP
+   inserted over bits 11..13, as that owner does. A 16-bit store into the
+   guest EAX slot preserves its upper half exactly like
    x86p_reg_write(..., width=2), and none of this touches the separate
-   integer EFLAGS model. */
+   integer EFLAGS model. It is MSVC's float compare (`fcomp; fnstsw ax;
+   test ah, imm; jcc`), so it ran as a call in almost every float branch. */
 void emit_x87_status_ax(BlockCtx *c) {
   X86pA64Emit *e = c->e;
-  x87_lea_self(e);
-  x87_call(e, (const void *)&x86p_x87_status);
+  const int32_t status = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, status));
+  const int32_t top = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, top));
+  x86p_a64_emit_load16_zx(e, kA64X0, CPU_REG, status);
+  x86p_a64_emit_load8_zx(e, kA64X1, CPU_REG, top);
+  x86p_a64_emit_bfi_w(e, kA64X0, kA64X1, X86P_X87_TOP_SHIFT, 3u);
   x86p_a64_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kA64X0);
 }
 

@@ -11,6 +11,7 @@
 #include "cpu.h"
 #include "decode.h"
 #include "emit_arm64.h"
+#include "jit_arm64_cond.h"
 #include "jit_chain.h"
 #include "jit_x64.h"
 
@@ -95,6 +96,12 @@ typedef struct BlockCtx {
   unsigned cond_inline;
   unsigned cond_unknown_kind;
   MemPlan plan;
+  /* The flag tuple's registers (X86pA64FlagRegs): `flag_regs_out` is set by
+     an inline flag writer as it records the tuple, and the translator hands
+     it to the NEXT guest instruction alone as `flag_regs_in`, so a Jcc or
+     SETcc right after a CMP reads the registers it would otherwise reload. */
+  X86pA64FlagRegs flag_regs_out;
+  X86pA64FlagRegs flag_regs_in;
   X86pA64EmitSite faults[MAX_INSNS * 2];
   unsigned nfaults;
   X86pA64EmitSite divide_faults[MAX_INSNS];
@@ -166,6 +173,13 @@ static inline int32_t flag_off(size_t field) {
 #define FLAG_KIND flag_off(offsetof(X86pFlags, kind))
 #define FLAG_W flag_off(offsetof(X86pFlags, w))
 #define FLAG_CARRY_IN flag_off(offsetof(X86pFlags, carry_in))
+
+/*
+ * Record the lazy flag tuple from host registers: a and b in one pair store,
+ * r, and kind and width -- adjacent bytes -- in one halfword store. Leaves
+ * `c->flag_regs_out` naming the registers for the instruction that follows.
+ */
+void emit_record_flags(BlockCtx *c, X86pA64Reg a, X86pA64Reg b, X86pA64Reg r, int kind, int w);
 
 /* ---- calling a host helper ------------------------------------------------
  * The AAPCS64 counterpart of x64's repeated "mov r64,imm64; call r64"

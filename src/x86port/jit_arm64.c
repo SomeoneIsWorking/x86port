@@ -277,34 +277,36 @@ static int can_emit(const X86pInsn *insn) {
 
 /* ---- guest memory ---------------------------------------------------------
  * base + index*scale + disp, WITHOUT the segment base -- what LEA computes. */
-static void emit_address_parts(X86pA64Emit *e, const X86pOperand *o) {
-  int have_base = (o->base >= 0);
-  if (have_base) {
-    x86p_a64_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
-  } else {
-    x86p_a64_emit_mov_w_imm32(e, EA_REG, 0u);
+static unsigned scale_shift(uint8_t scale) {
+  switch (scale) {
+  case 2:
+    return 1u;
+  case 4:
+    return 2u;
+  case 8:
+    return 3u;
+  default:
+    return 0u;
   }
-  if (o->index >= 0) {
-    unsigned shift = 0u;
-    switch (o->scale) {
-    case 2:
-      shift = 1u;
-      break;
-    case 4:
-      shift = 2u;
-      break;
-    case 8:
-      shift = 3u;
-      break;
-    default:
-      shift = 0u;
-      break;
+}
+
+static void emit_address_parts(X86pA64Emit *e, const X86pOperand *o) {
+  const unsigned shift = scale_shift(o->scale);
+  if (o->base >= 0) {
+    x86p_a64_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
+    if (o->index >= 0) {
+      x86p_a64_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
+      x86p_a64_emit_alu_w_w_lsl(e, kA64Add, EA_REG, EA_REG, ADDR_TMP, shift);
     }
-    x86p_a64_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
+  } else if (o->index >= 0) {
+    x86p_a64_emit_load32(e, EA_REG, CPU_REG, reg_off(o->index));
     if (shift) {
-      x86p_a64_emit_shl_w_imm(e, ADDR_TMP, (uint8_t)shift);
+      x86p_a64_emit_shl_w_imm(e, EA_REG, (uint8_t)shift);
     }
-    x86p_a64_emit_alu_w_w(e, kA64Add, EA_REG, ADDR_TMP);
+  } else {
+    /* An absolute address is the displacement alone. */
+    x86p_a64_emit_mov_w_imm32(e, EA_REG, (uint32_t)o->disp);
+    return;
   }
   if (o->disp != 0) {
     x86p_a64_emit_alu_w_imm(e, kA64Add, EA_REG, (uint32_t)o->disp);
@@ -377,12 +379,19 @@ static void note_fault(BlockCtx *c, X86pA64EmitSite site) {
   c->e->overflow = 1;
 }
 
-void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
-  emit_effective_address(c->e, o);
+/* HOSTPTR_REG for the `w`-byte access at EA_REG: bounds-checked, unless the
+   plan is guarded and the host faults the overrun itself. Every guest access
+   goes through here. */
+static void emit_checked_host_pointer(BlockCtx *c, uint32_t insn_eip, int w) {
   if (!plan_is_guarded(&c->plan, w)) {
     note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, w));
   }
   emit_host_pointer(c->e, &c->plan);
+}
+
+void emit_mem_prepare_w(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip, int w) {
+  emit_effective_address(c->e, o);
+  emit_checked_host_pointer(c, insn_eip, w);
 }
 
 static void emit_mem_prepare(BlockCtx *c, const X86pOperand *o, uint32_t insn_eip) {
@@ -491,8 +500,7 @@ static void emit_lea(BlockCtx *c, const X86pInsn *insn) {
 static void emit_leave(BlockCtx *c, uint32_t insn_eip) {
   x86p_a64_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEbp));
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
-  emit_host_pointer(c->e, &c->plan);
+  emit_checked_host_pointer(c, insn_eip, 4);
   x86p_a64_emit_load32(c->e, kA64X0, HOSTPTR_REG, 0);
   x86p_a64_emit_alu_w_imm(c->e, kA64Add, EA_REG, 4u);
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
@@ -530,8 +538,7 @@ static void emit_string(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
 static void emit_push_x0(BlockCtx *c, uint32_t insn_eip) {
   x86p_a64_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
   x86p_a64_emit_alu_w_imm(c->e, kA64Sub, EA_REG, 4u);
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
-  emit_host_pointer(c->e, &c->plan);
+  emit_checked_host_pointer(c, insn_eip, 4);
   x86p_a64_emit_store32(c->e, HOSTPTR_REG, 0, kA64X0);
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(kX86pEsp), EA_REG);
 }
@@ -556,8 +563,7 @@ static void emit_push(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
    emit_push_x0 above for PUSH). The caller decides where X0 ends up. */
 static void emit_pop_x0(BlockCtx *c, uint32_t insn_eip) {
   x86p_a64_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
-  emit_host_pointer(c->e, &c->plan);
+  emit_checked_host_pointer(c, insn_eip, 4);
   x86p_a64_emit_load32(c->e, kA64X0, HOSTPTR_REG, 0);
 
   x86p_a64_emit_mov_w_w(c->e, kA64X1, EA_REG);
@@ -729,8 +735,7 @@ static void emit_call_indirect(BlockCtx *c, const X86pInsn *insn, uint32_t retur
    immediate counts bytes ABOVE the return address. */
 static void emit_ret(BlockCtx *c, uint32_t release, uint32_t insn_eip) {
   x86p_a64_emit_load32(c->e, EA_REG, CPU_REG, reg_off(kX86pEsp));
-  note_fault(c, emit_bounds_check(c->e, &c->plan, insn_eip, 4));
-  emit_host_pointer(c->e, &c->plan);
+  emit_checked_host_pointer(c, insn_eip, 4);
   x86p_a64_emit_load32(c->e, kA64X0, HOSTPTR_REG, 0);
 
   x86p_a64_emit_mov_w_w(c->e, kA64X1, EA_REG);
@@ -807,6 +812,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
   memset(&ctx, 0, sizeof ctx);
   ctx.e = &e;
   ctx.mem = mem;
+  ctx.flag_regs_out = x86p_a64_flags_in_memory();
   ctx.plan.host = (uint64_t)(uintptr_t)mem->host;
   ctx.plan.lo = mem->lo;
   ctx.plan.size = mem->size;
@@ -835,6 +841,8 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       return kX86pJitOutOfSpace;
     }
     insn_start = e.len;
+    ctx.flag_regs_in = ctx.flag_regs_out;
+    ctx.flag_regs_out = x86p_a64_flags_in_memory();
 
     if (count >= MAX_INSNS) {
       break;

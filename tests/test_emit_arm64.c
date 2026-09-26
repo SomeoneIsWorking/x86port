@@ -332,6 +332,92 @@ static void test_alu_w_imm_and_ff_ffff(void) {
   CHECK(e.len >= 4u);
 }
 
+/* Words from the NDK's assembler. */
+/* A load straight after a store to the same address reads the stored
+   register; a branch target between them makes it a real load again. */
+static void test_store_to_load_forwarding(void) {
+  uint8_t buf[64];
+  X86pA64Emit e;
+  X86pA64EmitSite skip;
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store32(&e, kA64X19, 4, kA64X2);
+  x86p_a64_emit_load32(&e, kA64X2, kA64X19, 4);
+  CHECK(e.len == 4u); /* the value is already there */
+  x86p_a64_emit_load32(&e, kA64X0, kA64X19, 4);
+  CHECK(e.len == 8u && last_word(&e) == 0x2a0203e0u); /* mov w0, w2 */
+  x86p_a64_emit_load32(&e, kA64X1, kA64X19, 4);
+  CHECK(e.len == 12u && last_word(&e) == 0xb9400661u); /* ldr w1, [x19, #4]: the move came between */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store32(&e, kA64X19, 4, kA64X2);
+  x86p_a64_emit_load32(&e, kA64X0, kA64X19, 8);
+  CHECK(last_word(&e) == 0xb9400a60u); /* ldr w0, [x19, #8]: another address */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store32(&e, kA64X19, 4, kA64X2);
+  (void)x86p_a64_emit_label(&e);
+  x86p_a64_emit_load32(&e, kA64X0, kA64X19, 4);
+  CHECK(last_word(&e) == 0xb9400660u); /* ldr w0, [x19, #4] */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  skip = x86p_a64_emit_cbz_w(&e, kA64X3);
+  x86p_a64_emit_store32(&e, kA64X19, 4, kA64X2);
+  x86p_a64_emit_bind(&e, skip);
+  x86p_a64_emit_load32(&e, kA64X0, kA64X19, 4);
+  CHECK(last_word(&e) == 0xb9400660u); /* the skip arrives without the store */
+}
+
+static void test_pair_store_bitfield_and_immediate_forms(void) {
+  uint8_t buf[16];
+  X86pA64Emit e;
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store_pair32(&e, kA64X19, 0x24, kA64X0, kA64X1);
+  CHECK(e.len == 4u && last_word(&e) == 0x29048660u); /* stp w0, w1, [x19, #0x24] */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store_pair32(&e, kA64X19, -8, kA64X2, kA64X9);
+  CHECK(e.len == 4u && last_word(&e) == 0x293f2662u); /* stp w2, w9, [x19, #-8] */
+  /* Past STP's reach: two STRs. */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_store_pair32(&e, kA64X19, 0x400, kA64X0, kA64X1);
+  CHECK(e.len == 8u);
+
+  /* Adding -8 is subtracting 8, and subtracting -8 adds it. */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_alu_w_imm(&e, kA64Add, kA64X10, 0xFFFFFFF8u);
+  CHECK(e.len == 4u && last_word(&e) == 0x5100214au); /* sub w10, w10, #8 */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_alu_w_imm(&e, kA64Sub, kA64X10, 0xFFFFFFF8u);
+  CHECK(e.len == 4u && last_word(&e) == 0x1100214au); /* add w10, w10, #8 */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_alu_w_w_w(&e, kA64Add, kA64X2, kA64X0, kA64X1);
+  CHECK(last_word(&e) == 0x0b010002u); /* add w2, w0, w1 */
+  x86p_a64_emit_alu_w_w_w(&e, kA64Eor, kA64X2, kA64X0, kA64X1);
+  CHECK(last_word(&e) == 0x4a010002u); /* eor w2, w0, w1 */
+  CHECK(x86p_a64_emit_add_sub_w_imm(&e, 0, kA64X2, kA64X0, 0xFFFFFFF8u));
+  CHECK(last_word(&e) == 0x51002002u); /* sub w2, w0, #8 */
+  CHECK(x86p_a64_emit_add_sub_w_imm(&e, 0, kA64X2, kA64X0, 0x5000u));
+  CHECK(last_word(&e) == 0x11401402u); /* add w2, w0, #5, lsl #12 */
+  CHECK(e.len == 16u);
+  CHECK(!x86p_a64_emit_add_sub_w_imm(&e, 0, kA64X2, kA64X0, 0x12345u));
+  CHECK(e.len == 16u); /* refused, and nothing emitted */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_bfi_w(&e, kA64X0, kA64X1, 11, 3);
+  CHECK(e.len == 4u && last_word(&e) == 0x33150820u); /* bfi w0, w1, #11, #3 */
+
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_shl_w_w_imm(&e, kA64X0, kA64X2, 8);
+  CHECK(e.len == 4u && last_word(&e) == 0x53185c40u); /* lsl w0, w2, #8 */
+  x86p_a64_emit_init(&e, buf, sizeof buf);
+  x86p_a64_emit_shl_w_w_imm(&e, kA64X0, kA64X0, 0);
+  CHECK(e.len == 0u);
+  x86p_a64_emit_shl_w_w_imm(&e, kA64X0, kA64X2, 0);
+  CHECK(e.len == 4u); /* mov w0, w2 */
+}
+
 static void test_shl_sar_w_imm(void) {
   uint8_t buf[16];
   X86pA64Emit e;
@@ -944,6 +1030,8 @@ int main(void) {
   RUN(test_load32_negative_displacement_uses_materialize_fallback);
   RUN(test_alu_w_w_every_op);
   RUN(test_alu_w_imm_and_ff_ffff);
+  RUN(test_pair_store_bitfield_and_immediate_forms);
+  RUN(test_store_to_load_forwarding);
   RUN(test_shl_sar_w_imm);
   RUN(test_cmp_and_tst);
   RUN(test_csel_every_condition);

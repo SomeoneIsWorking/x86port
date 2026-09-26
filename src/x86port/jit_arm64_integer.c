@@ -64,6 +64,18 @@ int inline_alu_shape(uint8_t alu, X86pA64Alu *host, X86pFlagKind *kind, int *wri
   }
 }
 
+_Static_assert(offsetof(X86pFlags, b) == offsetof(X86pFlags, a) + 4u, "a and b form one pair store");
+_Static_assert(offsetof(X86pFlags, w) == offsetof(X86pFlags, kind) + 1u, "kind and w form one halfword");
+
+void emit_record_flags(BlockCtx *c, X86pA64Reg a, X86pA64Reg b, X86pA64Reg r, int kind, int w) {
+  x86p_a64_emit_store_pair32(c->e, CPU_REG, FLAG_A, a, b);
+  x86p_a64_emit_store32(c->e, CPU_REG, FLAG_R, r);
+  x86p_a64_emit_store16_imm(c->e, CPU_REG, FLAG_KIND, (uint16_t)((unsigned)kind | ((unsigned)w << 8)));
+  c->flag_regs_out.a = (int)a;
+  c->flag_regs_out.b = (int)b;
+  c->flag_regs_out.r = (int)r;
+}
+
 /*
  * Store `carry_in`: the CF the flag state held BEFORE this operation
  * overwrites it -- see jit_x64.c's emit_compute_carry_in for the full
@@ -149,6 +161,9 @@ void emit_alu_inline(BlockCtx *c,
    * every entry to that block) was 5.07% of the port library's samples.
    */
   const int carry_live = x86p_flags_carry_in_is_live(kind);
+  /* With the tuple dead, an ADD or SUB immediate never needs `b` in a
+     register: the host instruction can take it directly. */
+  const int fold_imm = flags_dead && src->kind == kX86pOperandImm && (host == kA64Add || host == kA64Sub);
 
   if (!flags_dead && carry_live) {
     c->flag_helper_calls += (unsigned)emit_compute_carry_in(c->e, last_kind);
@@ -160,7 +175,9 @@ void emit_alu_inline(BlockCtx *c,
       x86p_a64_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kA64X0, HOSTPTR_REG, 0, w);
-    emit_read_alu_src(c, kA64X1, src, w);
+    if (!fold_imm) {
+      emit_read_alu_src(c, kA64X1, src, w);
+    }
   } else if (src->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, src, insn_eip, w);
     if (!flags_dead && carry_live) {
@@ -173,21 +190,24 @@ void emit_alu_inline(BlockCtx *c,
       x86p_a64_emit_store8_reg(c->e, CPU_REG, FLAG_CARRY_IN, CARRY_REG);
     }
     emit_load_w(c->e, kA64X0, CPU_REG, reg_off_w(dst->reg, w), w);
-    emit_read_alu_src(c, kA64X1, src, w);
+    if (!fold_imm) {
+      emit_read_alu_src(c, kA64X1, src, w);
+    }
   }
 
-  x86p_a64_emit_mov_w_w(c->e, kA64X2, kA64X0);
-  x86p_a64_emit_alu_w_w(c->e, host, kA64X2, kA64X1); /* r */
+  /* r */
+  if (!fold_imm || !x86p_a64_emit_add_sub_w_imm(c->e, host == kA64Sub, kA64X2, kA64X0, src->imm & width_mask(w))) {
+    if (fold_imm) {
+      emit_read_alu_src(c, kA64X1, src, w);
+    }
+    x86p_a64_emit_alu_w_w_w(c->e, host, kA64X2, kA64X0, kA64X1);
+  }
   if (w != 4) {
     x86p_a64_emit_alu_w_imm(c->e, kA64And, kA64X2, width_mask(w));
   }
 
   if (!flags_dead) {
-    x86p_a64_emit_store32(c->e, CPU_REG, FLAG_A, kA64X0);
-    x86p_a64_emit_store32(c->e, CPU_REG, FLAG_B, kA64X1);
-    x86p_a64_emit_store32(c->e, CPU_REG, FLAG_R, kA64X2);
-    x86p_a64_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-    x86p_a64_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
+    emit_record_flags(c, kA64X0, kA64X1, kA64X2, kind, w);
   }
 
   if (writes_dest) {
@@ -263,11 +283,7 @@ int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_
   }
 
   if (!flags_dead) {
-    x86p_a64_emit_store32(e, CPU_REG, FLAG_A, kA64X0);
-    x86p_a64_emit_store32(e, CPU_REG, FLAG_B, kA64X1);
-    x86p_a64_emit_store32(e, CPU_REG, FLAG_R, kA64X2);
-    x86p_a64_emit_store8_imm(e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-    x86p_a64_emit_store8_imm(e, CPU_REG, FLAG_W, (uint8_t)w);
+    emit_record_flags(c, kA64X0, kA64X1, kA64X2, kind, w);
   }
   if (dst->kind == kX86pOperandMem) {
     emit_store_w(e, HOSTPTR_REG, 0, kA64X2, w);
@@ -275,7 +291,10 @@ int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_
     emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kA64X2, w);
   }
   if (by_cl) {
+    /* A zero count skips here with the tuple unwritten, so the registers
+       describe it on one path only. */
     x86p_a64_emit_bind(e, zero);
+    c->flag_regs_out = x86p_a64_flags_in_memory();
     return SHIFT_FLAGS_UNKNOWN;
   }
   return (int)kind;
@@ -401,14 +420,9 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
     x86p_a64_emit_alu_w_w(c->e, kA64Sub, kA64X1, kA64X0);
     kind = kX86pFlagsSub;
   } else {
-    x86p_a64_emit_mov_w_w(c->e, kA64X1, kA64X0);
-    if (insn->alu == (uint8_t)kX86pAluInc) {
-      x86p_a64_emit_alu_w_imm(c->e, kA64Add, kA64X1, 1u);
-      kind = kX86pFlagsInc;
-    } else {
-      x86p_a64_emit_alu_w_imm(c->e, kA64Sub, kA64X1, 1u);
-      kind = kX86pFlagsDec;
-    }
+    const int is_dec = insn->alu != (uint8_t)kX86pAluInc;
+    (void)x86p_a64_emit_add_sub_w_imm(c->e, is_dec, kA64X1, kA64X0, 1u); /* 1 always encodes */
+    kind = is_dec ? kX86pFlagsDec : kX86pFlagsInc;
   }
   if (w != 4) {
     x86p_a64_emit_alu_w_imm(c->e, kA64And, kA64X1, width_mask(w));
@@ -418,16 +432,14 @@ int emit_alu_unary_inline(BlockCtx *c, const X86pInsn *insn, int last_kind, int 
      `a` throughout -- reused below whichever branch ran -- and X1 holds the
      result. */
   if (!flags_dead) {
+    /* The constant operand goes through X2, which neither branch uses. */
     if (kind == kX86pFlagsSub) {
-      x86p_a64_emit_store32_imm(c->e, CPU_REG, FLAG_A, 0u);
-      x86p_a64_emit_store32(c->e, CPU_REG, FLAG_B, kA64X0);
+      x86p_a64_emit_mov_w_imm32(c->e, kA64X2, 0u);
+      emit_record_flags(c, kA64X2, kA64X0, kA64X1, (int)kind, w);
     } else {
-      x86p_a64_emit_store32(c->e, CPU_REG, FLAG_A, kA64X0);
-      x86p_a64_emit_store32_imm(c->e, CPU_REG, FLAG_B, 1u);
+      x86p_a64_emit_mov_w_imm32(c->e, kA64X2, 1u);
+      emit_record_flags(c, kA64X0, kA64X2, kA64X1, (int)kind, w);
     }
-    x86p_a64_emit_store32(c->e, CPU_REG, FLAG_R, kA64X1);
-    x86p_a64_emit_store8_imm(c->e, CPU_REG, FLAG_KIND, (uint8_t)kind);
-    x86p_a64_emit_store8_imm(c->e, CPU_REG, FLAG_W, (uint8_t)w);
   }
 
   if (is_mem) {
