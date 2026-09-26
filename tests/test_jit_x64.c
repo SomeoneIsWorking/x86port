@@ -1714,6 +1714,7 @@ static void test_identity_mapped_guest_memory(void) {
   jit_x64_harness_code_free(code, 4096);
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
 /* ModRM rm fields of the offset registers: EAX holds a zero-based guest
    address, EDI the offset computed from any other lower bound. */
 #define RM_EAX 0u
@@ -1736,6 +1737,7 @@ static int has_host_lea(const uint8_t *code, size_t len, unsigned base_rm, uint3
   }
   return 0;
 }
+#endif
 
 /*
  * A host mapping below 2 GB is addressed with a disp32 lea rather than a
@@ -1779,7 +1781,11 @@ static void run_low_based(uint8_t *base, size_t page, uint32_t lo) {
   const X86pJitStatus st = jit_x64_harness_translate(&mem, lo + 0x10u, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
   if (st == kX86pJitOk) {
+#if defined(__x86_64__) || defined(_M_X64)
+    /* The lea is x64's encoding; another backend's block runs the same checks
+       below without it. */
     CHECK(has_host_lea((const uint8_t *)code, blk.host_bytes, lo == 0u ? RM_EAX : RM_EDI, (uint32_t)(uintptr_t)base));
+#endif
     X86pCpu cpu;
     seed_cpu(&cpu, 11u);
     cpu.reg[kX86pEcx] = 0x5A5A5A5Au;
