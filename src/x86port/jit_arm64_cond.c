@@ -91,8 +91,8 @@ static int cond_after_cmp_sub(uint8_t cond, X86pA64Cond *out) {
   case kX86pCondG:
     *out = kA64CondGt;
     return 1;
-  /* PF is a parity of the low byte. AArch64 has no such flag and computing it
-     is more work than the call it would replace. */
+  /* P and NP never reach here: x86p_a64_emit_condition_flags folds the
+     result's low byte for them before consulting the kind. */
   default:
     return 0;
   }
@@ -210,9 +210,10 @@ static int cond_after_cmp_logic(uint8_t cond, X86pA64Cond *out, int *constant) {
 
 /*
  * INC and DEC preserve CF and give OF its own rule in flags.c -- "wrapped to
- * the most negative value", which is not the generic add/sub overflow -- so
- * only the conditions that read neither are inlined here. That still covers
- * the loop idiom `dec ecx; jnz`, which is why the kind is worth a case at all.
+ * the most negative value", which is not the generic add/sub overflow -- and
+ * a shift's CF and OF depend on its count, so only the conditions that read
+ * neither are inlined here. That still covers the idioms `dec ecx; jnz` and
+ * `shr eax, 1; jz`, which is why the kinds are worth a case at all.
  */
 static int cond_after_cmp_result(uint8_t cond, X86pA64Cond *out) {
   switch ((X86pCond)cond) {
@@ -233,8 +234,42 @@ static int cond_after_cmp_result(uint8_t cond, X86pA64Cond *out) {
   }
 }
 
-/* Put the condition in NZCV without a helper call, or return 0 having emitted
-   nothing. */
+/*
+ * PF, flags.c x86p_flag_pf: the parity of the result's LOW BYTE, at every
+ * width, for every kind but Explicit and None. AArch64 has no parity flag, so
+ * the byte is folded onto bit 0 -- three EORs with the value shifted right by
+ * 4, 2 and 1 leave bit 0 the XOR of bits 0..7 and nothing above them -- and
+ * `tst #1` sets Z exactly when that XOR is 0, i.e. when the byte has an even
+ * number of ones, which is PF = 1.
+ *
+ * This is not the rare condition it looks like: MSVC compares floats with
+ * `fnstsw ax; test ah, imm; jp`, so it is almost every JP/JNP in the title,
+ * and every one of them was a call into x86p_cond.
+ */
+static int kind_has_result_parity(int kind) {
+  switch (kind) {
+  case (int)kX86pFlagsSub:
+  case (int)kX86pFlagsAdd:
+  case (int)kX86pFlagsLogic:
+  case (int)kX86pFlagsInc:
+  case (int)kX86pFlagsDec:
+  case (int)kX86pFlagsShl:
+  case (int)kX86pFlagsShr:
+  case (int)kX86pFlagsSar:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static void emit_result_parity(X86pA64Emit *e) {
+  x86p_a64_emit_load32(e, kA64X0, CPU_REG, FLAG_R);
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 4u);
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 2u);
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 1u);
+  x86p_a64_emit_tst_w_bit0(e, kA64X0);
+}
+
 /* Load a flag operand and left-align it for the recorded width. */
 static void load_aligned(X86pA64Emit *e, X86pA64Reg reg, int32_t offset, uint8_t shift) {
   x86p_a64_emit_load32(e, reg, CPU_REG, offset);
@@ -253,6 +288,14 @@ int x86p_a64_emit_condition_flags(
 
   if (last_w != 1 && last_w != 2 && last_w != 4) {
     return 0;
+  }
+  if (cond == (uint8_t)kX86pCondP || cond == (uint8_t)kX86pCondNP) {
+    if (!kind_has_result_parity(last_kind)) {
+      return 0;
+    }
+    emit_result_parity(e);
+    *out_cc = cond == (uint8_t)kX86pCondP ? kA64CondEq : kA64CondNe;
+    return 1;
   }
   shift = (uint8_t)(32 - 8 * last_w);
   switch (last_kind) {
@@ -285,6 +328,9 @@ int x86p_a64_emit_condition_flags(
     break;
   case (int)kX86pFlagsInc:
   case (int)kX86pFlagsDec:
+  case (int)kX86pFlagsShl:
+  case (int)kX86pFlagsShr:
+  case (int)kX86pFlagsSar:
     if (!cond_after_cmp_result(cond, &cc)) {
       return 0;
     }

@@ -199,6 +199,88 @@ void emit_alu_inline(BlockCtx *c,
   }
 }
 
+/*
+ * SHL, SHR and SAR on the host, recording the tuple x86p_alu records: the
+ * masked operand, the masked count, the result and the kind -- see
+ * jit_x64_alu.c's emit_shift_inline, which this mirrors. Every flag is still
+ * derived from that tuple by flags.c; only the arithmetic moved. Before this,
+ * every shift was a call to x86p_alu through emit_alu_helper.
+ *
+ * A count of zero (after the architectural five-bit mask) writes no flags and
+ * leaves the destination alone, so it keeps only a memory operand's bounds
+ * check: known at translation for an immediate, tested at run time for CL.
+ *
+ * The narrow widths come out of the 32-bit host shift unchanged: the operand
+ * is loaded zero-extended, so LSR cannot pull in stray bits and LSL's are
+ * masked off; ASR sign-extends first, so a count past the width fills with the
+ * sign as x86p_alu's does. The count is at most 31, inside the 32-bit
+ * register's range, so the hardware's modulo-32 never applies.
+ *
+ * carry_in is not stored: x86p_flags_carry_in_is_live says a shift kind never
+ * reads it, exactly as for the binary operations in emit_alu_inline.
+ */
+int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_t insn_eip) {
+  X86pA64Emit *e = c->e;
+  const X86pOperand *dst = &insn->operand[0];
+  const X86pOperand *src = &insn->operand[1];
+  const int w = dst->size;
+  const int by_cl = src->kind != kX86pOperandImm;
+  const uint32_t count = src->imm & 0x1Fu;
+  const X86pA64Shift op = insn->alu == (uint8_t)kX86pAluShl   ? kA64Lsl
+                          : insn->alu == (uint8_t)kX86pAluShr ? kA64Lsr
+                                                              : kA64Asr;
+  const X86pFlagKind kind = op == kA64Lsl ? kX86pFlagsShl : op == kA64Lsr ? kX86pFlagsShr : kX86pFlagsSar;
+  X86pA64EmitSite zero = {0};
+
+  if (dst->kind == kX86pOperandMem) {
+    /* Even at a zero count: the access still happens, and faults. */
+    emit_mem_prepare_w(c, dst, insn_eip, w);
+  }
+  if (!by_cl && count == 0u) {
+    return SHIFT_FLAGS_UNCHANGED;
+  }
+  if (dst->kind == kX86pOperandMem) {
+    emit_load_w(e, kA64X0, HOSTPTR_REG, 0, w);
+  } else {
+    emit_load_w(e, kA64X0, CPU_REG, reg_off_w(dst->reg, w), w);
+  }
+  if (by_cl) {
+    emit_load_w(e, kA64X1, CPU_REG, reg_off_w(src->reg, src->size), src->size);
+    x86p_a64_emit_alu_w_imm(e, kA64And, kA64X1, 0x1Fu);
+    zero = x86p_a64_emit_cbz_w(e, kA64X1);
+  } else {
+    x86p_a64_emit_mov_w_imm32(e, kA64X1, count);
+  }
+
+  x86p_a64_emit_mov_w_w(e, kA64X2, kA64X0);
+  if (op == kA64Asr && w != 4) {
+    x86p_a64_emit_shl_w_imm(e, kA64X2, (uint8_t)(32 - 8 * w));
+    x86p_a64_emit_sar_w_imm(e, kA64X2, (uint8_t)(32 - 8 * w));
+  }
+  x86p_a64_emit_shift_w_w(e, op, kA64X2, kA64X2, kA64X1);
+  if (op != kA64Lsr && w != 4) {
+    x86p_a64_emit_alu_w_imm(e, kA64And, kA64X2, width_mask(w));
+  }
+
+  if (!flags_dead) {
+    x86p_a64_emit_store32(e, CPU_REG, FLAG_A, kA64X0);
+    x86p_a64_emit_store32(e, CPU_REG, FLAG_B, kA64X1);
+    x86p_a64_emit_store32(e, CPU_REG, FLAG_R, kA64X2);
+    x86p_a64_emit_store8_imm(e, CPU_REG, FLAG_KIND, (uint8_t)kind);
+    x86p_a64_emit_store8_imm(e, CPU_REG, FLAG_W, (uint8_t)w);
+  }
+  if (dst->kind == kX86pOperandMem) {
+    emit_store_w(e, HOSTPTR_REG, 0, kA64X2, w);
+  } else {
+    emit_store_w(e, CPU_REG, reg_off_w(dst->reg, w), kA64X2, w);
+  }
+  if (by_cl) {
+    x86p_a64_emit_bind(e, zero);
+    return SHIFT_FLAGS_UNKNOWN;
+  }
+  return (int)kind;
+}
+
 void emit_cdq(X86pA64Emit *e) {
   x86p_a64_emit_load32(e, kA64X0, CPU_REG, reg_off(kX86pEax));
   x86p_a64_emit_sar_w_imm(e, kA64X0, 31u);

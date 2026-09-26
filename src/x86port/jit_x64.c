@@ -400,7 +400,7 @@ static int keeps_x87_mirror(const X86pInsn *insn) {
   case kX86pInsnAluUnary:
     return 1;
   case kX86pInsnAlu:
-    return inline_alu_shape(insn->alu, &host, &kind, &writes_dest) || is_inline_shift(insn->alu);
+    return inline_alu_shape(insn->alu, &host, &kind, &writes_dest) || x86p_alu_is_shift(insn->alu);
   default:
     return 0;
   }
@@ -488,7 +488,7 @@ static int flag_write_is_dead(const X86pMem *mem,
           insn.operand[1].kind != kX86pOperandMem) {
         return 1;
       }
-      if (is_inline_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
+      if (x86p_alu_is_shift(insn.alu) && insn.operand[0].kind != kX86pOperandMem &&
           insn.operand[1].kind == kX86pOperandImm && (insn.operand[1].imm & 0x1Fu) != 0u) {
         return 1; /* a nonzero constant count rewrites the whole tuple */
       }
@@ -1154,7 +1154,7 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
           last_kind = (int)kind;
           last_w = insn.operand[0].size;
         }
-      } else if (is_inline_shift(insn.alu)) {
+      } else if (x86p_alu_is_shift(insn.alu)) {
         int dead = flag_write_is_dead(
             mem, pc + insn.length, eip, boundary, boundary_user, count, e.len + ctx.fault_tail_bytes, code_cap);
         int k = emit_shift_inline(&ctx, &insn, dead, pc);

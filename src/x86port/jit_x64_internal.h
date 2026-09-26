@@ -345,7 +345,6 @@ void emit_alu_helper(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip);
 #define SHIFT_FLAGS_UNKNOWN (-1)
 #define SHIFT_FLAGS_UNCHANGED (-2)
 
-int is_inline_shift(uint8_t alu);
 int emit_shift_inline(BlockCtx *c, const X86pInsn *insn, int flags_dead, uint32_t insn_eip);
 
 void emit_cpu_transfer(BlockCtx *c, uint8_t op);

@@ -382,6 +382,11 @@ void x86p_a64_emit_lsr_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   bitfield(e, 2u /* UBFM */, dst, dst, count & 31u, 31u);
 }
 
+void x86p_a64_emit_shift_w_w(X86pA64Emit *e, X86pA64Shift op, X86pA64Reg dst, X86pA64Reg src, X86pA64Reg count) {
+  /* Data-processing (2 source), 32-bit: opcode 0b0010oo in bits 15:10. */
+  put32(e, 0x1AC02000u | ((uint32_t)count << 16) | ((uint32_t)op << 10) | ((uint32_t)src << 5) | (uint32_t)dst);
+}
+
 void x86p_a64_emit_lsr_x_imm(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg src, uint8_t count) {
   /* LSR Xd, Xn, #s == UBFM Xd, Xn, #s, #63: sf and N set for 64 bits. */
   uint32_t word = (1u << 31) | (2u << 29) | (0x26u << 23) | (1u << 22) | (((uint32_t)count & 0x3Fu) << 16) |
@@ -606,6 +611,20 @@ void x86p_a64_emit_alu_x_x_lsl(
 void x86p_a64_emit_alu_w_w_lsl(
     X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift) {
   alu_lsl(e, 0, op, dst, a, b, shift);
+}
+
+void x86p_a64_emit_eor_w_w_lsr(X86pA64Emit *e, X86pA64Reg dst, X86pA64Reg a, X86pA64Reg b, unsigned shift) {
+  /* EOR (shifted register), 32-bit, shift type LSR (01 in bits 23:22). */
+  if (shift > 31u) {
+    e->overflow = 1;
+    return;
+  }
+  put32(e, 0x4A400000u | ((uint32_t)b << 16) | (shift << 10) | ((uint32_t)a << 5) | (uint32_t)dst);
+}
+
+void x86p_a64_emit_tst_w_bit0(X86pA64Emit *e, X86pA64Reg a) {
+  /* ANDS (immediate), 32-bit: N=0, immr=0, imms=0 is the mask 1. */
+  put32(e, 0x7200001Fu | ((uint32_t)a << 5));
 }
 
 void x86p_a64_emit_orr_x_bit(X86pA64Emit *e, X86pA64Reg dst, unsigned bit) {

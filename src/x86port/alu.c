@@ -20,6 +20,10 @@ _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pAluOpCou
 static const char *kUnNames[] = {"NOT", "NEG", "INC", "DEC"};
 _Static_assert((int)(sizeof kUnNames / sizeof kUnNames[0]) == (int)kX86pAluUnOpCount, "every X86pAluUnOp needs a name");
 
+int x86p_alu_is_shift(uint8_t op) {
+  return op == (uint8_t)kX86pAluShl || op == (uint8_t)kX86pAluShr || op == (uint8_t)kX86pAluSar;
+}
+
 const char *x86p_alu_name(X86pAluOp op) {
   if ((unsigned)op >= (unsigned)kX86pAluOpCount) {
     return "unknown";

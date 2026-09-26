@@ -723,6 +723,24 @@ static void emit_add_lsl(X86pA64Emit *e) {
 static void emit_orr_lsl(X86pA64Emit *e) {
   x86p_a64_emit_alu_w_w_lsl(e, kA64Orr, kA64X0, kA64X0, kA64X1, 15);
 }
+static void emit_eor_lsr4(X86pA64Emit *e) {
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X0, kA64X0, kA64X0, 4);
+}
+static void emit_eor_lsr1(X86pA64Emit *e) {
+  x86p_a64_emit_eor_w_w_lsr(e, kA64X1, kA64X2, kA64X3, 1);
+}
+static void emit_lslv(X86pA64Emit *e) {
+  x86p_a64_emit_shift_w_w(e, kA64Lsl, kA64X0, kA64X0, kA64X1);
+}
+static void emit_lsrv(X86pA64Emit *e) {
+  x86p_a64_emit_shift_w_w(e, kA64Lsr, kA64X0, kA64X0, kA64X1);
+}
+static void emit_asrv(X86pA64Emit *e) {
+  x86p_a64_emit_shift_w_w(e, kA64Asr, kA64X2, kA64X3, kA64X4);
+}
+static void emit_tst_bit0(X86pA64Emit *e) {
+  x86p_a64_emit_tst_w_bit0(e, kA64X0);
+}
 static void emit_orr_bit63(X86pA64Emit *e) {
   x86p_a64_emit_orr_x_bit(e, kA64X2, 63);
 }
@@ -766,6 +784,12 @@ static const AssembledForm kForms[] = {
     {"orr w0, w0, w1, lsl #15", emit_orr_lsl, 0x2A013C00u},
     {"orr x2, x2, #0x8000000000000000", emit_orr_bit63, 0xB2410042u},
     {"orr x2, x2, #0x1", emit_orr_bit0, 0xB2400042u},
+    {"eor w0, w0, w0, lsr #4", emit_eor_lsr4, 0x4A401000u},
+    {"eor w1, w2, w3, lsr #1", emit_eor_lsr1, 0x4A430441u},
+    {"tst w0, #0x1", emit_tst_bit0, 0x7200001Fu},
+    {"lsl w0, w0, w1", emit_lslv, 0x1AC12000u},
+    {"lsr w0, w0, w1", emit_lsrv, 0x1AC12400u},
+    {"asr w2, w3, w4", emit_asrv, 0x1AC42862u},
     {"ldr q0, [x3]", emit_ldr_q_at, 0x3DC00060u},
     {"str q1, [x7]", emit_str_q_at, 0x3D8000E1u},
 };
