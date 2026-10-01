@@ -50,10 +50,9 @@ typedef enum X86pReg {
  *
  * Translated code reads or writes this struct on nearly every emitted
  * instruction -- guest registers live here, and so does the flag state each
- * arithmetic operation records. When an instance straddled a cache-line
- * boundary, `x86p_jit_bench` measured translated code at 1.93 ns per guest
- * instruction; aligned, the same code measured 0.97. A clean factor of two,
- * decided by where the allocator happened to put it.
+ * arithmetic operation records. An instance straddling a cache-line boundary
+ * was measured to halve translated throughput, so the alignment belongs on the
+ * type rather than in one caller.
  *
  * The interpreter is indifferent (its cost is dominated by decode), which is
  * exactly why this went unnoticed until there was a translator, and why the

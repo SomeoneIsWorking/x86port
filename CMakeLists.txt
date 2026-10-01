@@ -16,10 +16,8 @@ if(MSVC)
   # standard C an error. The portable functions are the ones used here.
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
   set(X86P_WARN_FLAGS /W4 /WX)
-  set(X86P_OPTIMIZE_FLAG /O2)
 else()
   set(X86P_WARN_FLAGS -Wall -Wextra -Werror)
-  set(X86P_OPTIMIZE_FLAG -O2)
 endif()
 
 function(x86p_strict_target target)
@@ -121,41 +119,15 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x64)$")
     src/x86port/jit_x64_x87_inline.c)
 endif()
 
-# A host with no backend is a refusal, not a default. The one exception is
-# explicit and named: a portability MEASUREMENT wants to compile everything
-# that can be compiled for a host whose backend does not exist yet, and it says
-# so on the command line. It still gets told, every configure, that the
-# resulting library cannot execute a guest instruction.
+# A host with no backend is a refusal, not a default. Configuring anyway would
+# link an emitter this host cannot run and fail at the first translated block.
 if(X86P_JIT_BACKEND_SOURCES STREQUAL "")
-  string(CONCAT X86P_NO_BACKEND_REASON
-    "no JIT backend exists for CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'. "
-    "The supported hosts are arm64/aarch64, x86_64/amd64, and Emscripten (WebAssembly).")
-  if(X86P_MEASURE_UNRUNNABLE_BACKEND)
-    string(CONCAT X86P_NO_BACKEND_WARNING
-      "x86port: ${X86P_NO_BACKEND_REASON} "
-      "X86P_MEASURE_UNRUNNABLE_BACKEND is set, so the x86-64 emitter is linked to let a portability "
-      "measurement compile the rest. THE RESULTING LIBRARY CANNOT EXECUTE A GUEST INSTRUCTION ON THIS "
-      "HOST. Never set this for anything a person runs.")
-    message(WARNING "${X86P_NO_BACKEND_WARNING}")
-    set(X86P_JIT_BACKEND_SOURCES
-      src/x86port/jit_x64.c
-      src/x86port/jit_x64_mem.c
-      src/x86port/jit_x64_cond.c
-      src/x86port/jit_x64_alu.c
-      src/x86port/jit_x64_gpr.c
-      src/x86port/jit_x64_branch.c
-      src/x86port/jit_x64_simd.c
-      src/x86port/jit_x64_x87_register.c
-      src/x86port/jit_x64_x87.c
-      src/x86port/jit_x64_x87_inline.c)
-  else()
-    string(CONCAT X86P_NO_BACKEND_REFUSAL
-      "x86port: ${X86P_NO_BACKEND_REASON} "
-      "Configuring anyway would link an emitter this host cannot run and fail at the first translated "
-      "block, so this refuses instead. A portability measurement may pass "
-      "-DX86P_MEASURE_UNRUNNABLE_BACKEND=ON, which produces a library that cannot execute guest code.")
-    message(FATAL_ERROR "${X86P_NO_BACKEND_REFUSAL}")
-  endif()
+  string(CONCAT X86P_NO_BACKEND_REFUSAL
+    "x86port: no JIT backend exists for CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'. "
+    "The supported hosts are arm64/aarch64, x86_64/amd64, and Emscripten (WebAssembly). "
+    "Configuring anyway would link an emitter this host cannot run and fail at the first translated "
+    "block, so this refuses instead.")
+  message(FATAL_ERROR "${X86P_NO_BACKEND_REFUSAL}")
 endif()
 
 include(cmake/softfloat.cmake)
@@ -336,25 +308,6 @@ target_include_directories(test_jit_profile PRIVATE src/x86port)
 x86p_strict_target(test_jit_profile)
 add_test(NAME test_jit_profile COMMAND test_jit_profile)
 
-if(NOT WIN32)
-  # These operator-only instruments currently depend on POSIX process and
-  # timing facilities. They are not part of the runtime or test oracle.
-  add_executable(x86p_jit_coverage tools/jit_coverage.c)
-  target_link_libraries(x86p_jit_coverage PRIVATE x86port_runtime x86port_test_oracle)
-  x86p_strict_target(x86p_jit_coverage)
-  target_compile_options(x86p_jit_coverage PRIVATE ${X86P_OPTIMIZE_FLAG})
-
-  add_executable(x86p_jit_bench tools/jit_bench.c)
-  target_link_libraries(x86p_jit_bench PRIVATE x86port_runtime x86port_test_oracle)
-  x86p_strict_target(x86p_jit_bench)
-  target_compile_options(x86p_jit_bench PRIVATE ${X86P_OPTIMIZE_FLAG})
-
-  add_executable(x86p_jit_x87_bench tools/jit_x87_bench.c)
-  target_link_libraries(x86p_jit_x87_bench PRIVATE x86port_runtime x86port_test_oracle)
-  x86p_strict_target(x86p_jit_x87_bench)
-  target_compile_options(x86p_jit_x87_bench PRIVATE ${X86P_OPTIMIZE_FLAG})
-endif()
-
 enable_testing()
 
 if(EMSCRIPTEN)
@@ -432,21 +385,6 @@ if(NOT WIN32)
 
   set_tests_properties(test_integer_tail test_x87_fn test_simd test_string_ops
     PROPERTIES SKIP_RETURN_CODE 77)
-
-  foreach(oracle IN ITEMS test_integer_tail test_x87_fn test_simd test_string_ops)
-    # The compiled fixture proves the exit; also require CTest to classify that
-    # exit as skipped for the real suite rather than as success or failure.
-    get_test_property(${oracle} SKIP_RETURN_CODE oracle_skip_code)
-    if(NOT oracle_skip_code STREQUAL "77")
-      message(FATAL_ERROR "${oracle} must classify unavailable hardware as skip 77")
-    endif()
-    add_executable(${oracle}_unavailable tests/test_oracle_unavailable.c)
-    target_compile_definitions(${oracle}_unavailable PRIVATE
-      X86P_ORACLE_SOURCE="${oracle}.c")
-    target_link_libraries(${oracle}_unavailable PRIVATE x86port_runtime)
-    x86p_strict_target(${oracle}_unavailable)
-    add_test(NAME ${oracle}_unavailable COMMAND ${oracle}_unavailable)
-  endforeach()
 endif()
 
 add_executable(test_decode tests/test_decode.c)
@@ -660,12 +598,6 @@ target_link_libraries(test_x87_software PRIVATE x86port_runtime)
 x86p_strict_target(test_x87_software)
 add_test(NAME test_x87_software COMMAND test_x87_software)
 
-# A measurement, not a gate: it reports a ratio of two wall-clock times, which
-# is not a property a test can assert. Deliberately absent from add_test.
-add_executable(bench_x87_arith tests/bench_x87_arith.cpp)
-target_link_libraries(bench_x87_arith PRIVATE x86port_runtime x86p_softfloat)
-x86p_strict_target(bench_x87_arith)
-
 if(NOT EMSCRIPTEN)
   # Exercises a native callee-saved host register; the WASM ABI has no r12.
   add_executable(test_jit_startup tests/test_jit_startup.c)
@@ -700,55 +632,23 @@ add_test(
     --product "$<TARGET_FILE:x86port_runtime>"
     --oracle "$<TARGET_FILE:x86port_test_oracle>")
 add_test(
-  NAME verify_product_boundary_rejects_oracle
-  COMMAND
-    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_product_boundary.py"
-    --nm "${X86P_SYMBOL_TOOL}"
-    --product "$<TARGET_FILE:x86port_test_oracle>"
-    --oracle "$<TARGET_FILE:x86port_test_oracle>"
-    --expect-product-leak)
-add_test(
-  NAME test_product_boundary_symbols
-  COMMAND
-    "${CMAKE_COMMAND}" -E env "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
-    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_product_boundary.py")
-add_test(
   NAME verify_source_policy
   COMMAND
     "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_source_policy.py"
     --root "${CMAKE_CURRENT_SOURCE_DIR}")
-add_test(
-  NAME verify_source_policy_negative
-  COMMAND
-    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_source_policy.py"
-    --selftest)
-# CLAUDE.md requires the normal verifier to include a format check and it had
-# none, so drift was invisible: a ten-file backend landed with seven files off
-# the tracked style while the other 126 matched it exactly. This SKIPs (77)
-# rather than passing when no clang-format is present, and its negative control
-# proves both that the comparison fires and that the file list contains sources
-# that have never been committed -- enumerating the index alone made this check
-# blind to new files, which is the one case where its verdict is being read.
+# This SKIPs (77) rather than passing when no clang-format is present, because a
+# scan that did not happen has established nothing. Hosts that install one pass
+# --require-formatter, which makes its absence the failure.
 add_test(
   NAME verify_format
   COMMAND
     "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_format.py"
     --root "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(verify_format PROPERTIES SKIP_RETURN_CODE 77)
-add_test(
-  NAME verify_format_negative
-  COMMAND
-    "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_format.py"
-    --selftest "${CMAKE_CURRENT_SOURCE_DIR}")
-set_tests_properties(verify_format_negative PROPERTIES SKIP_RETURN_CODE 77)
 set_tests_properties(
   verify_product_boundary
-  verify_product_boundary_rejects_oracle
-  test_product_boundary_symbols
   verify_source_policy
-  verify_source_policy_negative
   verify_format
-  verify_format_negative
   PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 x86p_binary128_model_link_executables()

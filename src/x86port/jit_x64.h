@@ -257,7 +257,7 @@ typedef struct X86pJitBlock {
    *
    * FILLED BY THE WEBASSEMBLY BACKEND ONLY. The machine-code backends leave
    * these zero, so a consumer that reports them must refuse rather than print a
-   * zero that reads like a census; see tools/jit_coverage.c.
+   * zero that reads like a measurement.
    */
   unsigned exits;
   unsigned exits_static;
