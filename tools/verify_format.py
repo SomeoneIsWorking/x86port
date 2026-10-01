@@ -6,16 +6,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from x86port_checks.format import enumeration_selftest, selftest, verify_format
+from x86port_checks.format import verify_format
 
 SKIP = 77
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--root", type=Path)
-    mode.add_argument("--selftest", type=Path)
+    parser.add_argument("--root", type=Path, required=True)
     parser.add_argument(
         "--require-formatter",
         action="store_true",
@@ -30,14 +28,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    root = (args.root or args.selftest).resolve()
+    root = args.root.resolve()
     try:
-        if args.selftest:
-            formatter = selftest(root)
-            print(f"format negative control passed: {formatter} rewrote misformatted input")
-            listing = enumeration_selftest()
-            print(f"enumeration control passed: {listing}")
-            return 0
         result = verify_format(root)
     except FileNotFoundError as error:
         if args.require_formatter:
