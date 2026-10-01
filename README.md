@@ -42,7 +42,7 @@ target architecture and ordered replacement gates are in
 | --- | --- |
 | `src/x86port/` | CPU state, decode, semantics, diagnostics, JIT dispatch, code emission, profiling, and invalidation |
 | `tests/` | Hermetic unit tests and the separately linked interpreter/JIT differential oracle |
-| `tools/` | PE32 inspection, corpus decode comparison, coverage reporting, and benchmarking |
+| `tools/` | PE32 inspection and corpus decode comparison, plus the verifier and its format, source-policy and product-boundary checks |
 | `vendor/zydis/` | Pinned Zydis decoder source and generated decode tables; no guest semantics |
 | `docs/` | Goals, factual state, ownership, and migration gates |
 

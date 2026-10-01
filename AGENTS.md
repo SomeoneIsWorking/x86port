@@ -21,9 +21,8 @@ options.
   guest instruction.
 - The zero-argument product starts in dynarec mode and offers every cold block
   to the JIT. A bounded interpreter fallback may run only after typed failed or
-  unsupported compilation, or when executing emitted code would be unsafe; it
-  records the reason, guest PC, block count, and instruction count before
-  returning to JIT dispatch.
+  unsupported compilation, or when executing emitted code would be unsafe, and
+  returns to JIT dispatch.
 - A gameplay build has no explicit interpreter selector, environment switch,
   profiling-first interpretation, missing-backend fallback, or silent
   instruction-step escape. Interpreter-only execution lives in a separately
@@ -91,16 +90,10 @@ conformance gaps.
 
 ## Verification discipline
 
-- The product-link gate must inspect the actual consumer-facing library or
-  executable and prove explicit interpreter selection and the test-oracle
-  dispatcher are absent; any bounded product fallback has separate entry-edge
-  and telemetry tests.
-- JIT evidence reports nonzero translated block execution, cache/invalidation
-  behavior, and every refusal with a denominator. A successful final CPU state
-  alone does not prove that translated code ran.
-- Differential tests use the separately linked interpreter-only oracle and stop
-  at the first divergence. Gameplay and performance claims exclude fallback
-  intervals even when their results match that oracle.
+- The product-link gate inspects the consumer-facing library and proves the
+  interpreter-only oracle and an explicit engine selector are absent from it.
+- Differential tests link the separately built interpreter-only oracle and stop
+  at the first divergence.
 - Exercise executable-memory publication, instruction-cache coherence,
   invalidation, native dispatch, scoped original calls, exceptions, interrupts,
   and bounded exits on every supported host architecture.
@@ -111,6 +104,13 @@ conformance gaps.
   Project tests and tools are built only when `x86port` is the top-level CMake
   project.
 
-Do not call the current tree verified until the outstanding source edits have
-been integrated, a clean Clang build has been identified as Clang, the focused
-tests pass, and the combined repository gate is run once on the frozen diff.
+Build and gate with the repository's own verifier, which configures the pinned
+`jit-common` checkout, builds it, and runs CTest:
+
+```sh
+uv run --frozen python tools/verify.py --build-dir build/verify --cc clang --cxx clang++
+```
+
+It also runs the format, source-policy and product-boundary checks. Do not call
+the tree verified until the focused tests pass and that verifier has been run
+once on the frozen diff.
