@@ -100,6 +100,8 @@ int x86p_jit_storage_compaction_stopped(const X86pJitStorage *storage);
  * modules. */
 unsigned x86p_jit_storage_ceilings_learned(const X86pJitStorage *storage);
 unsigned x86p_jit_storage_ceilings_retired(const X86pJitStorage *storage);
+/* Code memory chunks made so far, or 0 where blocks are not machine code. */
+size_t x86p_jit_storage_chunks(const X86pJitStorage *storage);
 
 void x86p_jit_storage_reset(X86pJitStorage *storage);
 void x86p_jit_storage_invalidate(X86pJitStorage *storage, uint32_t lo, uint32_t hi);

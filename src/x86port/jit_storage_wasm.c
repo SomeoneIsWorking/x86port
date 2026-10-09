@@ -504,6 +504,12 @@ unsigned x86p_jit_storage_ceilings_learned(const X86pJitStorage *storage) {
   return storage ? x86p_wasm_arena_ceilings_learned(&storage->arena) : 0u;
 }
 
+size_t x86p_jit_storage_chunks(const X86pJitStorage *storage) {
+  /* Each block is its own module, not bytes in a chunk. */
+  (void)storage;
+  return 0u;
+}
+
 unsigned x86p_jit_storage_ceilings_retired(const X86pJitStorage *storage) {
   return storage ? x86p_wasm_arena_ceilings_retired(&storage->arena) : 0u;
 }
