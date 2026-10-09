@@ -167,6 +167,9 @@ typedef struct X86pJitEngineStats {
   uint64_t eviction_blocks_dropped;
   uint64_t cache_flushes;
   uint64_t code_bytes_used;
+  /* Code memory chunks made so far; machine-code hosts grow by chunks up to
+     `code_bytes_limit`, and a WebAssembly host makes none. */
+  uint64_t code_chunks;
   /*
    * Batches of singly-published blocks this storage has rebuilt as ONE module,
    * and batches it left alone.

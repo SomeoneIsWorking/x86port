@@ -37,8 +37,9 @@ X86pJitChain *x86p_jit_chain_create(size_t slots) {
   if (!chain) {
     return NULL;
   }
+  /* Slots are initialised as they are claimed, so the pages of a large pool
+     stay untouched until the working set reaches them. */
   chain->capacity = slots;
-  unlink_slots(chain, slots);
   return chain;
 }
 

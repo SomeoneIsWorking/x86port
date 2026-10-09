@@ -327,6 +327,51 @@ static void test_a_full_code_region_flushes_and_keeps_going(void) {
   x86p_jit_engine_destroy(eng);
 }
 
+/*
+ * The same program under a ceiling that holds it: the code memory grows chunk
+ * by chunk instead of flushing, and blocks in earlier chunks stay live.
+ */
+static void test_a_code_region_below_its_ceiling_grows_instead_of_flushing(void) {
+  X86pMem mem = guest_mem();
+  X86pCpu ci;
+  X86pCpu ce;
+  X86pJitEngine *eng;
+  X86pJitEngineStats st;
+  char reason[256];
+  unsigned spin_off;
+  unsigned budget;
+
+  spin_off = write_long_program();
+  budget = spin_off * 2u + 64u;
+  memcpy(g_saved, g_guest, sizeof g_guest);
+  seed(&ci);
+  CHECK(interp_to(&ci, &mem, GUEST_BASE + spin_off, budget));
+  memcpy(g_guest, g_saved, sizeof g_guest);
+
+  reason[0] = '\0';
+  eng = x86p_jit_engine_create(&mem, 32u * X86P_JIT_MIN_BLOCK_BYTES, 4096u, reason, (unsigned)sizeof reason);
+  CHECK(eng != NULL);
+  if (!eng) {
+    printf("    (%s)\n", reason);
+    return;
+  }
+
+  seed(&ce);
+  CHECK(x86p_jit_engine_run(eng, &ce, NULL, budget, reason, (unsigned)sizeof reason) == kX86pRunBudget);
+  CHECK(same_cpu(&ci, &ce));
+
+  x86p_jit_engine_stats(eng, &st);
+  CHECK(st.cache_flushes == 0u);
+  CHECK(st.code_chunks > 1u);
+  printf("    %llu byte(s) of code in %llu chunk(s), %llu translated for %llu entered\n",
+         (unsigned long long)st.code_bytes_used,
+         (unsigned long long)st.code_chunks,
+         (unsigned long long)st.blocks_translated,
+         (unsigned long long)st.blocks_entered);
+
+  x86p_jit_engine_destroy(eng);
+}
+
 /* An engine sized below one block is refused AT CREATION, naming the sizes.
    Discovering it at run time would blame the guest program for the caller's
    choice. */
@@ -2108,6 +2153,7 @@ int main(void) {
 
   RUN(test_engine_matches_interpreter_on_a_looping_program);
   RUN(test_a_full_code_region_flushes_and_keeps_going);
+  RUN(test_a_code_region_below_its_ceiling_grows_instead_of_flushing);
   RUN(test_an_undersized_code_region_is_refused_at_creation);
   RUN(test_invalidation_drops_a_stale_translation);
   RUN(test_a_guest_memory_fault_stops_the_run_and_says_so);
