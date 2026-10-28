@@ -152,6 +152,7 @@ add_library(x86port_runtime STATIC
   src/x86port/cpu.c
   src/x86port/memory.c
   src/x86port/memory_sparse.c
+  src/x86port/pe_image.c
   src/x86port/cond.c
   src/x86port/x87.c
   src/x86port/x87_binary128.c
@@ -271,6 +272,11 @@ add_executable(test_memory_sparse tests/test_memory_sparse.c)
 target_link_libraries(test_memory_sparse PRIVATE x86port_runtime)
 x86p_strict_target(test_memory_sparse)
 add_test(NAME test_memory_sparse COMMAND test_memory_sparse)
+
+add_executable(test_pe_image tests/test_pe_image.c)
+target_link_libraries(test_pe_image PRIVATE x86port_runtime)
+x86p_strict_target(test_pe_image)
+add_test(NAME test_pe_image COMMAND test_pe_image)
 
 add_executable(test_memory_perms tests/test_memory_perms.c)
 target_link_libraries(test_memory_perms PRIVATE x86port_runtime)
