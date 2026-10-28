@@ -20,7 +20,7 @@ extern "C" {
 
 typedef enum X86pPeStatus {
   kX86pPeOk = 0,
-  kX86pPeMalformed,      /* a header, table or string runs past its bounds */
+  kX86pPeMalformed,      /* a header, table or string runs past the file or the image */
   kX86pPeNotI386,        /* machine field is not i386 */
   kX86pPeNotPe32,        /* optional header is not PE32 */
   kX86pPeGuestMemory,    /* a guest read or write was refused */
@@ -83,7 +83,8 @@ typedef struct X86pPeImport {
 typedef int (*X86pPeImportVisitor)(const X86pPeImport *import, void *user);
 
 /* Visit every ordinary import, then every delay-load import, of an image
- * mapped at `base`. Strings are valid only during the call. */
+ * mapped at `base`. Table reads stay inside size_of_image. Strings are valid
+ * only during the call. */
 X86pPeStatus
 x86p_pe_imports(const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, X86pPeImportVisitor visit, void *user);
 

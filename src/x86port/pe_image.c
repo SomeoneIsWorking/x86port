@@ -106,24 +106,35 @@ X86pPeStatus x86p_pe_parse(const uint8_t *file, size_t size, X86pPeHeaders *out)
   return kX86pPeOk;
 }
 
-static int guest32(const X86pMem *mem, uint32_t address, uint32_t *value) {
-  return x86p_mem_read(mem, address, 4, value);
+/* A mapped image as the table walkers see it: every read is an RVA bounded by size_of_image. */
+typedef struct Image {
+  const X86pMem *mem;
+  uint32_t base;
+  uint32_t size;
+} Image;
+
+static int image_read(const Image *image, uint32_t rva, uint32_t width, uint32_t *value) {
+  return rva <= image->size && image->size - rva >= width && x86p_mem_read(image->mem, image->base + rva, width, value);
 }
 
-static int guest16(const X86pMem *mem, uint32_t address, uint16_t *value) {
+static int rva32(const Image *image, uint32_t rva, uint32_t *value) {
+  return image_read(image, rva, 4, value);
+}
+
+static int rva16(const Image *image, uint32_t rva, uint16_t *value) {
   uint32_t wide = 0;
-  if (!x86p_mem_read(mem, address, 2, &wide)) {
+  if (!image_read(image, rva, 2, &wide)) {
     return 0;
   }
   *value = (uint16_t)wide;
   return 1;
 }
 
-/* A NUL-terminated guest string; refuses an unterminated or unreadable one. */
-static int guest_string(const X86pMem *mem, uint32_t address, char *out, size_t capacity) {
+/* A NUL-terminated string inside the image; refuses an unterminated one. */
+static int rva_string(const Image *image, uint32_t rva, char *out, size_t capacity) {
   for (size_t i = 0; i < capacity; ++i) {
     uint32_t byte = 0;
-    if (!x86p_mem_read(mem, address + (uint32_t)i, 1, &byte)) {
+    if (!image_read(image, rva + (uint32_t)i, 1, &byte)) {
       return 0;
     }
     out[i] = (char)byte;
@@ -134,25 +145,22 @@ static int guest_string(const X86pMem *mem, uint32_t address, char *out, size_t 
   return 0;
 }
 
-static X86pPeStatus relocate(const X86pMem *mem, const X86pPeHeaders *headers, uint32_t base) {
+static X86pPeStatus relocate(const Image *image, const X86pPeHeaders *headers) {
   const X86pPeDataDirectory relocs = headers->directories[kX86pPeDirBaseRelocation];
   if (relocs.size == 0) {
     return kX86pPeNoRelocations;
   }
-  const uint32_t delta = base - headers->image_base;
+  const uint32_t delta = image->base - headers->image_base;
   uint32_t block = relocs.rva;
   while (block + 8 <= relocs.rva + relocs.size) {
     uint32_t page = 0, block_size = 0;
-    if (!guest32(mem, base + block, &page) || !guest32(mem, base + block + 4, &block_size)) {
-      return kX86pPeGuestMemory;
-    }
-    if (block_size < 8) {
+    if (!rva32(image, block, &page) || !rva32(image, block + 4, &block_size) || block_size < 8) {
       return kX86pPeMalformed;
     }
     for (uint32_t entry = block + 8; entry + 2 <= block + block_size; entry += 2) {
       uint16_t word = 0;
-      if (!guest16(mem, base + entry, &word)) {
-        return kX86pPeGuestMemory;
+      if (!rva16(image, entry, &word)) {
+        return kX86pPeMalformed;
       }
       const uint32_t type = word >> 12;
       if (type == PE_RELOC_ABSOLUTE) {
@@ -161,9 +169,12 @@ static X86pPeStatus relocate(const X86pMem *mem, const X86pPeHeaders *headers, u
       if (type != PE_RELOC_HIGHLOW) {
         return kX86pPeRelocationType;
       }
-      const uint32_t target = base + page + (word & 0x0fffu);
+      const uint32_t target = page + (word & 0x0fffu);
       uint32_t value = 0;
-      if (!guest32(mem, target, &value) || !x86p_mem_write(mem, target, 4, value + delta)) {
+      if (!rva32(image, target, &value)) {
+        return kX86pPeMalformed;
+      }
+      if (!x86p_mem_write(image->mem, image->base + target, 4, value + delta)) {
         return kX86pPeGuestMemory;
       }
     }
@@ -192,12 +203,12 @@ x86p_pe_map(const X86pMem *mem, const uint8_t *file, size_t size, const X86pPeHe
       return kX86pPeGuestMemory;
     }
   }
-  return base == headers->image_base ? kX86pPeOk : relocate(mem, headers, base);
+  const Image image = {mem, base, headers->size_of_image};
+  return base == headers->image_base ? kX86pPeOk : relocate(&image, headers);
 }
 
 typedef struct ThunkWalk {
-  const X86pMem *mem;
-  uint32_t base;
+  const Image *image;
   const char *dll;
   uint32_t names_rva;
   uint32_t slots_rva;
@@ -209,8 +220,8 @@ static X86pPeStatus walk_thunks(const ThunkWalk *walk, X86pPeImportVisitor visit
   char symbol[X86P_PE_MAX_NAME];
   for (uint32_t i = 0;; ++i) {
     uint32_t thunk = 0;
-    if (!guest32(walk->mem, walk->base + walk->names_rva + i * 4, &thunk)) {
-      return kX86pPeGuestMemory;
+    if (!rva32(walk->image, walk->names_rva + i * 4, &thunk)) {
+      return kX86pPeMalformed;
     }
     if (thunk == 0) {
       return kX86pPeOk;
@@ -218,13 +229,12 @@ static X86pPeStatus walk_thunks(const ThunkWalk *walk, X86pPeImportVisitor visit
     X86pPeImport import = {.dll = walk->dll,
                            .symbol = NULL,
                            .ordinal = 0,
-                           .slot = walk->base + walk->slots_rva + i * 4,
+                           .slot = walk->image->base + walk->slots_rva + i * 4,
                            .delay_loaded = walk->delay_loaded};
     if ((thunk & PE_ORDINAL_FLAG) != 0) {
       import.ordinal = (uint16_t)(thunk & 0xffffu);
     } else {
-      if (!guest16(walk->mem, walk->base + thunk, &import.ordinal) ||
-          !guest_string(walk->mem, walk->base + thunk + 2, symbol, sizeof symbol)) {
+      if (!rva16(walk->image, thunk, &import.ordinal) || !rva_string(walk->image, thunk + 2, symbol, sizeof symbol)) {
         return kX86pPeMalformed;
       }
       import.symbol = symbol;
@@ -238,22 +248,23 @@ static X86pPeStatus walk_thunks(const ThunkWalk *walk, X86pPeImportVisitor visit
 
 X86pPeStatus x86p_pe_imports(
     const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, X86pPeImportVisitor visit, void *user) {
+  const Image image = {mem, base, headers->size_of_image};
   char dll[X86P_PE_MAX_NAME];
   int stop = 0;
   const X86pPeDataDirectory imports = headers->directories[kX86pPeDirImport];
   for (uint32_t descriptor = imports.rva; imports.size != 0 && !stop; descriptor += PE_IMPORT_DESCRIPTOR) {
     uint32_t names = 0, name = 0, slots = 0;
-    if (!guest32(mem, base + descriptor, &names) || !guest32(mem, base + descriptor + 12, &name) ||
-        !guest32(mem, base + descriptor + 16, &slots)) {
-      return kX86pPeGuestMemory;
+    if (!rva32(&image, descriptor, &names) || !rva32(&image, descriptor + 12, &name) ||
+        !rva32(&image, descriptor + 16, &slots)) {
+      return kX86pPeMalformed;
     }
     if (name == 0 && slots == 0) {
       break;
     }
-    if (!guest_string(mem, base + name, dll, sizeof dll)) {
+    if (!rva_string(&image, name, dll, sizeof dll)) {
       return kX86pPeMalformed;
     }
-    const ThunkWalk walk = {mem, base, dll, names != 0 ? names : slots, slots, 0};
+    const ThunkWalk walk = {&image, dll, names != 0 ? names : slots, slots, 0};
     const X86pPeStatus status = walk_thunks(&walk, visit, user, &stop);
     if (status != kX86pPeOk) {
       return status;
@@ -262,9 +273,9 @@ X86pPeStatus x86p_pe_imports(
   const X86pPeDataDirectory delayed = headers->directories[kX86pPeDirDelayImport];
   for (uint32_t descriptor = delayed.rva; delayed.size != 0 && !stop; descriptor += PE_DELAY_DESCRIPTOR) {
     uint32_t attributes = 0, name = 0, slots = 0, names = 0;
-    if (!guest32(mem, base + descriptor, &attributes) || !guest32(mem, base + descriptor + 4, &name) ||
-        !guest32(mem, base + descriptor + 12, &slots) || !guest32(mem, base + descriptor + 16, &names)) {
-      return kX86pPeGuestMemory;
+    if (!rva32(&image, descriptor, &attributes) || !rva32(&image, descriptor + 4, &name) ||
+        !rva32(&image, descriptor + 12, &slots) || !rva32(&image, descriptor + 16, &names)) {
+      return kX86pPeMalformed;
     }
     if (name == 0) {
       break;
@@ -275,10 +286,10 @@ X86pPeStatus x86p_pe_imports(
       slots -= headers->image_base;
       names -= headers->image_base;
     }
-    if (!guest_string(mem, base + name, dll, sizeof dll)) {
+    if (!rva_string(&image, name, dll, sizeof dll)) {
       return kX86pPeMalformed;
     }
-    const ThunkWalk walk = {mem, base, dll, names, slots, 1};
+    const ThunkWalk walk = {&image, dll, names, slots, 1};
     const X86pPeStatus status = walk_thunks(&walk, visit, user, &stop);
     if (status != kX86pPeOk) {
       return status;
@@ -296,64 +307,59 @@ typedef struct ExportTable {
   uint32_t ordinals;
 } ExportTable;
 
-static X86pPeStatus export_table(const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, ExportTable *table) {
+static X86pPeStatus export_table(const Image *image, const X86pPeHeaders *headers, ExportTable *table) {
   const X86pPeDataDirectory exports = headers->directories[kX86pPeDirExport];
   if (exports.size == 0) {
     return kX86pPeNotFound;
   }
-  const uint32_t at = base + exports.rva;
-  if (!guest32(mem, at + 16, &table->ordinal_base) || !guest32(mem, at + 20, &table->function_count) ||
-      !guest32(mem, at + 24, &table->name_count) || !guest32(mem, at + 28, &table->functions) ||
-      !guest32(mem, at + 32, &table->names) || !guest32(mem, at + 36, &table->ordinals)) {
-    return kX86pPeGuestMemory;
+  const uint32_t at = exports.rva;
+  if (!rva32(image, at + 16, &table->ordinal_base) || !rva32(image, at + 20, &table->function_count) ||
+      !rva32(image, at + 24, &table->name_count) || !rva32(image, at + 28, &table->functions) ||
+      !rva32(image, at + 32, &table->names) || !rva32(image, at + 36, &table->ordinals)) {
+    return kX86pPeMalformed;
   }
   return kX86pPeOk;
 }
 
-static X86pPeStatus export_at(const X86pMem *mem,
-                              uint32_t base,
-                              const X86pPeHeaders *headers,
-                              const ExportTable *table,
-                              uint32_t index,
-                              X86pPeExport *out) {
+static X86pPeStatus export_at(
+    const Image *image, const X86pPeHeaders *headers, const ExportTable *table, uint32_t index, X86pPeExport *out) {
   uint32_t rva = 0;
   memset(out, 0, sizeof *out);
   if (index >= table->function_count) {
     return kX86pPeNotFound;
   }
-  if (!guest32(mem, base + table->functions + index * 4, &rva)) {
-    return kX86pPeGuestMemory;
+  if (!rva32(image, table->functions + index * 4, &rva)) {
+    return kX86pPeMalformed;
   }
   if (rva == 0) {
     return kX86pPeNotFound;
   }
   const X86pPeDataDirectory exports = headers->directories[kX86pPeDirExport];
   if (rva >= exports.rva && rva - exports.rva < exports.size) {
-    return guest_string(mem, base + rva, out->forwarder, sizeof out->forwarder) ? kX86pPeOk : kX86pPeMalformed;
+    return rva_string(image, rva, out->forwarder, sizeof out->forwarder) ? kX86pPeOk : kX86pPeMalformed;
   }
-  out->address = base + rva;
+  out->address = image->base + rva;
   return kX86pPeOk;
 }
 
 X86pPeStatus x86p_pe_export_by_name(
     const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, const char *symbol, X86pPeExport *out) {
+  const Image image = {mem, base, headers->size_of_image};
   ExportTable table;
   char name[X86P_PE_MAX_NAME];
-  X86pPeStatus status = export_table(mem, base, headers, &table);
+  X86pPeStatus status = export_table(&image, headers, &table);
   if (status != kX86pPeOk) {
     return status;
   }
   for (uint32_t i = 0; i < table.name_count; ++i) {
     uint32_t name_rva = 0;
     uint16_t index = 0;
-    if (!guest32(mem, base + table.names + i * 4, &name_rva) || !guest16(mem, base + table.ordinals + i * 2, &index)) {
-      return kX86pPeGuestMemory;
-    }
-    if (!guest_string(mem, base + name_rva, name, sizeof name)) {
+    if (!rva32(&image, table.names + i * 4, &name_rva) || !rva16(&image, table.ordinals + i * 2, &index) ||
+        !rva_string(&image, name_rva, name, sizeof name)) {
       return kX86pPeMalformed;
     }
     if (strcmp(name, symbol) == 0) {
-      return export_at(mem, base, headers, &table, index, out);
+      return export_at(&image, headers, &table, index, out);
     }
   }
   return kX86pPeNotFound;
@@ -361,13 +367,14 @@ X86pPeStatus x86p_pe_export_by_name(
 
 X86pPeStatus x86p_pe_export_by_ordinal(
     const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, uint16_t ordinal, X86pPeExport *out) {
+  const Image image = {mem, base, headers->size_of_image};
   ExportTable table;
-  X86pPeStatus status = export_table(mem, base, headers, &table);
+  X86pPeStatus status = export_table(&image, headers, &table);
   if (status != kX86pPeOk) {
     return status;
   }
   if (ordinal < table.ordinal_base) {
     return kX86pPeNotFound;
   }
-  return export_at(mem, base, headers, &table, ordinal - table.ordinal_base, out);
+  return export_at(&image, headers, &table, ordinal - table.ordinal_base, out);
 }

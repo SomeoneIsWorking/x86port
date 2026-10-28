@@ -187,6 +187,15 @@ static void refusals(void) {
   check(x86p_pe_parse(file, sizeof file, &headers) == kX86pPeOk, "parse without relocations");
   check(x86p_pe_map(&mem, file, sizeof file, &headers, 0x10000000) == kX86pPeNoRelocations,
         "moved image without relocations");
+  static uint8_t wide[kImageSize + 0x1000];
+  X86pMem roomy = {.host = wide, .lo = kPreferred, .size = sizeof wide};
+  Seen seen = {0};
+  build(1);
+  put32(0x98 + 96 + 1 * 8, kImageSize - 8);
+  check(x86p_pe_parse(file, sizeof file, &headers) == kX86pPeOk &&
+            x86p_pe_map(&roomy, file, sizeof file, &headers, kPreferred) == kX86pPeOk &&
+            x86p_pe_imports(&roomy, kPreferred, &headers, record, &seen) == kX86pPeMalformed,
+        "import table past the image, inside guest memory");
   X86pMem small = {.host = image, .lo = kPreferred, .size = 0x100};
   check(x86p_pe_map(&small, file, sizeof file, &headers, kPreferred) == kX86pPeGuestMemory,
         "image larger than guest memory");
