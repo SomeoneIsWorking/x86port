@@ -59,8 +59,7 @@ static const char *kOpNames[] = {
     "string",      "simd",  "cld",       "std",    "bcd",   "bit",     "shld",     "shrd",    "sahf",  "lahf",
     "stc",         "clc",   "cmc",       "salc",   "xlat",  "pushad",  "popad",    "enter",   "loop",  "loope",
     "loopne",      "jecxz", "int3",      "int1",   "int",   "into",    "iretd",    "bound",   "arpl",  "sldt",
-    "lfp",         "hlt",   "wbinvd",    "cli",    "sti",   "port-io", "cpuid",    "rdtsc",
-    "xadd",        "cmpxchg"};
+    "lfp",         "hlt",   "wbinvd",    "cli",    "sti",   "port-io", "cpuid",    "rdtsc",   "xadd",  "cmpxchg"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
