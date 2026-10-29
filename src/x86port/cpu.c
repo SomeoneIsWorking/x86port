@@ -179,6 +179,16 @@ void x86p_cpu_double_shift32(X86pCpu *cpu, void *destination, uint32_t source, u
   /* Every masked count is defined for the admitted 32-bit operand width. */
 }
 
+void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operation, uint32_t width) {
+  uint32_t value = 0u, flags = x86p_eflags(&cpu->flags);
+  memcpy(&value, destination, width);
+  const uint32_t result = x86p_bit_apply((X86pBitOp)operation, value, bit & (width * 8u - 1u), &flags);
+  if (operation != (uint32_t)kX86pBitTest) {
+    memcpy(destination, &result, width);
+  }
+  x86p_flags_set_explicit(&cpu->flags, flags);
+}
+
 /* LOOP preserves flags and the upper half of ECX for address-size 16. */
 int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition) {
   const uint32_t mask = width == 16 ? 0xFFFFu : UINT32_MAX;

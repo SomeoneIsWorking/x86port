@@ -226,6 +226,8 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnShld:
   case kX86pInsnShrd:
     return double_shift_is_emittable(insn);
+  case kX86pInsnBit:
+    return bit_is_emittable(insn);
   case kX86pInsnSimd:
     return simd_bits_is_emittable(insn);
   case kX86pInsnMov:
@@ -949,6 +951,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
     case kX86pInsnShld:
     case kX86pInsnShrd:
       emit_double_shift(&ctx, &insn, pc);
+      last_kind = -1;
+      last_w = -1;
+      break;
+    case kX86pInsnBit:
+      emit_bit(&ctx, &insn, pc);
       last_kind = -1;
       last_w = -1;
       break;

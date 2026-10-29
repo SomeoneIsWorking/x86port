@@ -304,6 +304,10 @@ void x86p_cpu_rdtsc(X86pCpu *cpu);
  * The host emitter owns bounds/fault exits; this owner preserves zero-count
  * destination and lazy flags and publishes changed value/flags together. */
 void x86p_cpu_double_shift32(X86pCpu *cpu, void *destination, uint32_t source, uint32_t count, uint32_t left);
+/* BT, BTS, BTR or BTC (`operation`, an X86pBitOp) on a prevalidated 2- or
+ * 4-byte register or memory destination, the bit index taken modulo its width.
+ * Only BT leaves the destination unwritten; every operation sets CF. */
+void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operation, uint32_t width);
 void x86p_cpu_cpuid(X86pCpu *cpu);
 int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition);
 void x86p_cpu_sahf(X86pCpu *cpu);
