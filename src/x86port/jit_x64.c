@@ -228,6 +228,8 @@ static int can_emit(const X86pInsn *insn) {
     return double_shift_is_emittable(insn);
   case kX86pInsnBit:
     return bit_is_emittable(insn);
+  case kX86pInsnCmovcc:
+    return x86p_x64_cmovcc_is_emittable(insn);
   case kX86pInsnXadd:
   case kX86pInsnCmpxchg:
     return exchange_rmw_is_emittable(insn);
@@ -986,6 +988,9 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnSetcc:
       x86p_x64_emit_setcc(&ctx, &insn, pc, last_kind, last_w);
+      break;
+    case kX86pInsnCmovcc:
+      x86p_x64_emit_cmovcc(&ctx, &insn, pc, last_kind, last_w);
       break;
     case kX86pInsnAluUnary: {
       int dead = x86p_jit_flag_write_is_dead(&flag_scan, pc + insn.length);
