@@ -359,5 +359,7 @@ void emit_mul32(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 
 int double_shift_is_emittable(const X86pInsn *insn);
 void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+int bit_is_emittable(const X86pInsn *insn);
+void emit_bit(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 
 #endif /* X86PORT_JIT_X64_INTERNAL_H */

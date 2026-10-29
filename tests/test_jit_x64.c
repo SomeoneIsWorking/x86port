@@ -117,7 +117,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 124u);
+  unsigned pick = (unsigned)(r % 131u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -764,6 +764,32 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[3] = memdisp;
     p[4] = (uint8_t)(r >> 40);
     return 5;
+  /* The bit-test family: BT, BTS, BTR, BTC. */
+  case 124: /* <bt> r/m32, imm8 -- 0F BA /4+op, mod=11. The offset ranges past 31. */
+  case 127: /* <bt> r/m16, imm8 -- 66 0F BA /4+op, mod=11 */
+  {
+    uint32_t n = 0;
+    if (pick == 127u) {
+      p[n++] = 0x66u;
+    }
+    p[n++] = 0x0Fu;
+    p[n++] = 0xBAu;
+    p[n++] = (uint8_t)(0xC0u | ((4u + (aluop & 3u)) << 3) | dst);
+    p[n++] = (uint8_t)(r >> 40);
+    return n;
+  }
+  case 125: /* <bt> [base+disp8], imm8 -- 0F BA /4+op, mod=01 */
+    p[0] = 0x0Fu;
+    p[1] = 0xBAu;
+    p[2] = (uint8_t)(0x40u | ((4u + (aluop & 3u)) << 3) | membase);
+    p[3] = memdisp;
+    p[4] = (uint8_t)(r >> 40);
+    return 5;
+  case 126: /* <bt> r/m32, r32 -- 0F A3/AB/B3/BB /r, mod=11 */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0xA3u + 8u * (aluop & 3u));
+    p[2] = (uint8_t)(0xC0u | (src << 3) | dst);
+    return 3;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -1191,7 +1217,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
         }
         span += di.length;
         if ((di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) ||
-            di.op == (uint8_t)kX86pInsnImul ||
+            di.op == (uint8_t)kX86pInsnImul || di.op == (uint8_t)kX86pInsnBit ||
             (di.op == (uint8_t)kX86pInsnString &&
              (di.str == (uint8_t)kX86pStringScas || di.str == (uint8_t)kX86pStringCmps))) {
           unknown_kind_insns++;
@@ -1289,8 +1315,8 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
      *
      * Plus one per instruction whose recorded flag kind is not decidable at
      * translation time: a SHIFT, because a count of zero writes no flags at
-     * all and the count can be a register, or IMUL, whose narrow semantics
-     * owner materialises the selectively-written flags. The allowance is per
+     * all and the count can be a register, or IMUL or the bit-test family,
+     * whose semantics owners materialise the selectively-written flags. The allowance is per
      * instruction rather than blanket so that a backend which stopped deriving
      * carry-in entirely still fails here.
      */

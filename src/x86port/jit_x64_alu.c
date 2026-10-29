@@ -540,6 +540,37 @@ int double_shift_is_emittable(const X86pInsn *insn) {
          (count->kind == kX86pOperandImm ||
           (count->kind == kX86pOperandReg && count->reg == kX86pEcx && count->size == 1));
 }
+/* A register bit offset into memory addresses a signed bit string beyond the
+   operand (exec.c); that form waits for an emitter of its address rule. */
+int bit_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *dst = &insn->operand[0], *index = &insn->operand[1];
+  return insn->operands == 2 && insn->bit < (uint8_t)kX86pBitOpCount && (dst->size == 2 || dst->size == 4) &&
+         ((dst->kind == kX86pOperandReg && dst->reg >= 0 && dst->reg < 8) ||
+          (dst->kind == kX86pOperandMem && !dst->addr16)) &&
+         (index->kind == kX86pOperandImm ||
+          (index->kind == kX86pOperandReg && index->reg >= 0 && index->reg < 8 && dst->kind == kX86pOperandReg));
+}
+
+void emit_bit(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
+  const X86pOperand *dst = &insn->operand[0], *index = &insn->operand[1];
+  if (dst->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, dst, pc, dst->size);
+  } else {
+    x86p_emit_lea64(c->e, HOSTPTR_REG, CPU_REG, reg_off(dst->reg));
+  }
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG);
+  if (index->kind == kX86pOperandImm) {
+    x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, index->imm);
+  } else {
+    gpr_load(c, X86P_JIT_HOST_ARG2, index->reg, 4);
+  }
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, insn->bit);
+  x86p_jit_abi_emit_arg32_imm(c->e, X86P_JIT_HOST_ABI, 4, (uint32_t)dst->size);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_bit);
+  x86p_emit_call_r64(c->e, kX64Rax);
+}
+
 void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1], *count = &insn->operand[2];
   if (dst->kind == kX86pOperandMem) {
