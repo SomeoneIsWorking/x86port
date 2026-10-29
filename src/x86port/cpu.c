@@ -1,5 +1,6 @@
 #include "cpuid.h"
 /* cpu.c -- see cpu.h for the two traps this file exists to get right. */
+#include "alu.h"
 #include "bit_ops.h"
 #include "cpu.h"
 #include "diagnostic.h"
@@ -187,6 +188,57 @@ void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operat
     memcpy(destination, &result, width);
   }
   x86p_flags_set_explicit(&cpu->flags, flags);
+}
+
+static uint32_t atomic_fetch_add_w(void *destination, uint32_t addend, uint32_t width) {
+  switch (width) {
+  case 1:
+    return __atomic_fetch_add((uint8_t *)destination, (uint8_t)addend, __ATOMIC_SEQ_CST);
+  case 2:
+    return __atomic_fetch_add((uint16_t *)destination, (uint16_t)addend, __ATOMIC_SEQ_CST);
+  default:
+    return __atomic_fetch_add((uint32_t *)destination, addend, __ATOMIC_SEQ_CST);
+  }
+}
+
+/* Returns the destination's value before the operation; it is `expected` on success. */
+static uint32_t atomic_compare_exchange_w(void *destination, uint32_t expected, uint32_t desired, uint32_t width) {
+  switch (width) {
+  case 1: {
+    uint8_t seen = (uint8_t)expected;
+    (void)__atomic_compare_exchange_n(
+        (uint8_t *)destination, &seen, (uint8_t)desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return seen;
+  }
+  case 2: {
+    uint16_t seen = (uint16_t)expected;
+    (void)__atomic_compare_exchange_n(
+        (uint16_t *)destination, &seen, (uint16_t)desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return seen;
+  }
+  default: {
+    uint32_t seen = expected;
+    (void)__atomic_compare_exchange_n((uint32_t *)destination, &seen, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return seen;
+  }
+  }
+}
+
+void x86p_cpu_xadd(X86pCpu *cpu, void *destination, uint32_t source, uint32_t width) {
+  const uint32_t addend = x86p_reg_read(cpu, (int)source, (int)width);
+  const uint32_t old = atomic_fetch_add_w(destination, addend, width);
+  (void)x86p_alu(kX86pAluAdd, old, addend, (int)width, &cpu->flags);
+  x86p_reg_write(cpu, (int)source, (int)width, old);
+}
+
+void x86p_cpu_cmpxchg(X86pCpu *cpu, void *destination, uint32_t source, uint32_t width) {
+  const uint32_t accumulator = x86p_reg_read(cpu, kX86pEax, (int)width);
+  const uint32_t desired = x86p_reg_read(cpu, (int)source, (int)width);
+  const uint32_t old = atomic_compare_exchange_w(destination, accumulator, desired, width);
+  (void)x86p_alu(kX86pAluCmp, accumulator, old, (int)width, &cpu->flags);
+  if (old != accumulator) {
+    x86p_reg_write(cpu, kX86pEax, (int)width, old);
+  }
 }
 
 /* LOOP preserves flags and the upper half of ECX for address-size 16. */

@@ -573,11 +573,14 @@ static void sweep_addr16(const char *what, const uint8_t *code, unsigned len) {
 /* Two-operand sweeps for the shifts and bit tests, over values chosen to cross
    every boundary these instructions have: a sign bit, a zero result, a count
    at each end of its range. */
-typedef enum FlagRule { kFlagsDoubleShift, kFlagsBitTest } FlagRule;
+typedef enum FlagRule { kFlagsDoubleShift, kFlagsBitTest, kFlagsArithmetic } FlagRule;
 
 static uint32_t two_defined_flags(FlagRule rule, uint32_t count, unsigned bits) {
   if (rule == kFlagsBitTest) {
     return X86P_CF;
+  }
+  if (rule == kFlagsArithmetic) {
+    return COMPARED_FLAGS;
   }
   count &= 0x1Fu;
   if (count == 0u) {
@@ -760,6 +763,14 @@ int main(void) {
   INSN(k_bts_m, 0x0Fu, 0xABu, 0x03u)
   INSN(k_btr_m, 0x0Fu, 0xB3u, 0x03u)
   INSN(k_btc_m, 0x0Fu, 0xBBu, 0x03u)
+  INSN(k_xadd, 0x0Fu, 0xC1u, 0xD1u)          /* XADD ECX, EDX */
+  INSN(k_xadd_same, 0x0Fu, 0xC1u, 0xD2u)     /* XADD EDX, EDX */
+  INSN(k_xadd8, 0x0Fu, 0xC0u, 0xF1u)         /* XADD CL, DH */
+  INSN(k_xadd16, 0x66u, 0x0Fu, 0xC1u, 0xD1u) /* XADD CX, DX */
+  INSN(k_cmpxchg, 0x0Fu, 0xB1u, 0xD1u)       /* CMPXCHG ECX, EDX */
+  INSN(k_cmpxchg_acc, 0x0Fu, 0xB1u, 0xD0u)   /* CMPXCHG EAX, EDX */
+  INSN(k_cmpxchg8, 0x0Fu, 0xB0u, 0xD1u)      /* CMPXCHG CL, DL */
+  INSN(k_cmpxchg16, 0x66u, 0x0Fu, 0xB1u, 0xD1u)
   /* LEA EAX, <16-bit address>. Every form that does not name BP, which the
      harness uses as its own frame register. */
   INSN(k_lea16_bxsi, 0x67u, 0x8Du, 0x00u)
@@ -821,6 +832,16 @@ int main(void) {
   BIT(btr_i);
   BIT(btc_i);
 #undef BIT
+#define RMW(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, kFlagsArithmetic)
+  RMW(xadd);
+  RMW(xadd_same);
+  RMW(xadd8);
+  RMW(xadd16);
+  RMW(cmpxchg);
+  RMW(cmpxchg_acc);
+  RMW(cmpxchg8);
+  RMW(cmpxchg16);
+#undef RMW
 #undef SHIFT
 #define STRING(x) sweep_bit_string(#x, k_##x, (unsigned)sizeof k_##x)
   STRING(bt_m);

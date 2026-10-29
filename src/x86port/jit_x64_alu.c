@@ -571,6 +571,34 @@ void emit_bit(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 
+/* XADD and CMPXCHG. A register destination is the 2- or 4-byte register
+   itself, and must not be the source: the helper writes the source last. */
+int exchange_rmw_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1];
+  const int w = dst->size;
+  return insn->operands == 2 && (w == 1 || w == 2 || w == 4) && src->kind == kX86pOperandReg && src->size == w &&
+         src->reg >= 0 && src->reg < 8 &&
+         ((dst->kind == kX86pOperandMem && !dst->addr16) ||
+          (dst->kind == kX86pOperandReg && w != 1 && dst->reg >= 0 && dst->reg < 8 && dst->reg != src->reg));
+}
+
+void emit_exchange_rmw(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
+  const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1];
+  void (*helper)(X86pCpu *, void *, uint32_t, uint32_t) =
+      insn->op == (uint8_t)kX86pInsnXadd ? x86p_cpu_xadd : x86p_cpu_cmpxchg;
+  if (dst->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, dst, pc, dst->size);
+  } else {
+    x86p_emit_lea64(c->e, HOSTPTR_REG, CPU_REG, reg_off(dst->reg));
+  }
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, (uint32_t)src->reg);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, (uint32_t)dst->size);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)helper);
+  x86p_emit_call_r64(c->e, kX64Rax);
+}
+
 void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1], *count = &insn->operand[2];
   if (dst->kind == kX86pOperandMem) {

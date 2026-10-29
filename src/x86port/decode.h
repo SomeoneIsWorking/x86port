@@ -257,6 +257,11 @@ typedef enum X86pInsnOp {
   kX86pInsnPortIo, /* IN, OUT, INS, OUTS -- one kind, since one outcome */
   kX86pInsnCpuid,
   kX86pInsnRdtsc,
+  /* The read-modify-write pair lock-free guest code is built from. operand[0]
+     is the destination, operand[1] the source register; CMPXCHG also reads
+     and may write the accumulator its width names. */
+  kX86pInsnXadd,
+  kX86pInsnCmpxchg,
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
 

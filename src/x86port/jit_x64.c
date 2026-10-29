@@ -228,6 +228,9 @@ static int can_emit(const X86pInsn *insn) {
     return double_shift_is_emittable(insn);
   case kX86pInsnBit:
     return bit_is_emittable(insn);
+  case kX86pInsnXadd:
+  case kX86pInsnCmpxchg:
+    return exchange_rmw_is_emittable(insn);
   case kX86pInsnSimd:
     return simd_bits_is_emittable(insn);
   case kX86pInsnMov:
@@ -958,6 +961,13 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_bit(&ctx, &insn, pc);
       last_kind = -1;
       last_w = -1;
+      break;
+    case kX86pInsnXadd:
+    case kX86pInsnCmpxchg:
+      /* x86p_alu records the ADD or CMP tuple for every outcome. */
+      emit_exchange_rmw(&ctx, &insn, pc);
+      last_kind = insn.op == (uint8_t)kX86pInsnXadd ? (int)kX86pFlagsAdd : (int)kX86pFlagsSub;
+      last_w = insn.operand[0].size;
       break;
     case kX86pInsnSimd:
       emit_simd_bits(&ctx, &insn, pc);
