@@ -360,6 +360,53 @@ static void execute(Ctx *c) {
     return;
   }
 
+  case kX86pInsnXadd: {
+    /* A memory destination is stored first, at the address the old registers
+       give; a register destination last, so XADD r, r leaves the sum. */
+    X86pFlags flags = cpu->flags;
+    const uint32_t old = read_operand(c, o0);
+    const uint32_t sum = x86p_alu(kX86pAluAdd, old, read_operand(c, o1), o0->size, &flags);
+    if (c->fault) {
+      return;
+    }
+    if (o0->kind == kX86pOperandMem) {
+      write_operand(c, o0, sum);
+      if (c->fault) {
+        return;
+      }
+      write_operand(c, o1, old);
+    } else {
+      write_operand(c, o1, old);
+      write_operand(c, o0, sum);
+    }
+    cpu->flags = flags;
+    return;
+  }
+
+  case kX86pInsnCmpxchg: {
+    /* A failed compare still writes the destination back, and the accumulator
+       takes its value. */
+    X86pFlags flags = cpu->flags;
+    const int w = o0->size;
+    const uint32_t accumulator = x86p_reg_read(cpu, kX86pEax, w);
+    const uint32_t old = read_operand(c, o0);
+    const uint32_t source = read_operand(c, o1);
+    if (c->fault) {
+      return;
+    }
+    (void)x86p_alu(kX86pAluCmp, accumulator, old, w, &flags);
+    const int equal = accumulator == old;
+    write_operand(c, o0, equal ? source : old);
+    if (c->fault) {
+      return;
+    }
+    if (!equal) {
+      x86p_reg_write(cpu, kX86pEax, w, old);
+    }
+    cpu->flags = flags;
+    return;
+  }
+
   case kX86pInsnJmp: {
     uint32_t t = branch_target(c, o0);
     if (c->fault) {

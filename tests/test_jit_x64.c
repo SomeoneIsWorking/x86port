@@ -117,7 +117,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 131u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 137u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -790,6 +790,39 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[1] = (uint8_t)(0xA3u + 8u * (aluop & 3u));
     p[2] = (uint8_t)(0xC0u | (src << 3) | dst);
     return 3;
+  /* XADD and CMPXCHG. EAX is CMPXCHG's accumulator, so a seeded EAX that
+     matches the destination takes the store and one that does not takes the
+     load. */
+  case 128: /* XADD r/m32, r32 -- 0F C1 /r, mod=11 */
+  case 129: /* CMPXCHG r/m32, r32 -- 0F B1 /r, mod=11 */
+  case 130: /* XADD r/m16, r16 -- 66 0F C1 /r, mod=11 */
+  {
+    uint32_t n = 0;
+    if (pick == 130u) {
+      p[n++] = 0x66u;
+    }
+    p[n++] = 0x0Fu;
+    p[n++] = pick == 129u ? 0xB1u : 0xC1u;
+    p[n++] = (uint8_t)(0xC0u | (src << 3) | dst);
+    return n;
+  }
+  case 131: /* LOCK XADD [base+disp8], r32 -- F0 0F C1 /r, mod=01 */
+  case 132: /* LOCK CMPXCHG [base+disp8], r32 -- F0 0F B1 /r, mod=01 */
+  case 133: /* LOCK XADD [base+disp8], r8 -- F0 0F C0 /r */
+  case 134: /* LOCK CMPXCHG [base+disp8], r8 -- F0 0F B0 /r */
+  case 135: /* LOCK CMPXCHG [base+disp8], r16 -- 66 F0 0F B1 /r */
+  {
+    uint32_t n = 0;
+    if (pick == 135u) {
+      p[n++] = 0x66u;
+    }
+    p[n++] = 0xF0u;
+    p[n++] = 0x0Fu;
+    p[n++] = pick == 131u ? 0xC1u : pick == 133u ? 0xC0u : pick == 134u ? 0xB0u : 0xB1u;
+    p[n++] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[n++] = memdisp;
+    return n;
+  }
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
