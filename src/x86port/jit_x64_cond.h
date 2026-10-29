@@ -18,4 +18,9 @@ void x86p_x64_emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fall
    without touching guest flags. */
 void x86p_x64_emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w);
 
+/* CMOVcc: a 2- or 4-byte register destination takes the source when the
+   condition holds. The source is read either way, as the hardware reads it. */
+int x86p_x64_cmovcc_is_emittable(const X86pInsn *insn);
+void x86p_x64_emit_cmovcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w);
+
 #endif /* X86PORT_JIT_X64_COND_H */

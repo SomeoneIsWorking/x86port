@@ -249,6 +249,34 @@ void x86p_x64_emit_jcc(BlockCtx *c, uint8_t cond, uint32_t target, uint32_t fall
 /* SETcc materialises the canonical condition evaluator's 0/1 result without
    touching guest flags. A memory destination computes the condition first,
    then preserves it in RCX while the shared address/bounds path uses RAX. */
+int x86p_x64_cmovcc_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1];
+  const int w = dst->size;
+  return insn->cond < (uint8_t)kX86pCondCount && insn->operands == 2 && (w == 2 || w == 4) &&
+         dst->kind == kX86pOperandReg && dst->reg >= 0 && dst->reg < 8 && src->size == w &&
+         ((src->kind == kX86pOperandReg && src->reg >= 0 && src->reg < 8) || src->kind == kX86pOperandMem);
+}
+
+void x86p_x64_emit_cmovcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w) {
+  const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1];
+  const int w = dst->size;
+
+  c->conds++;
+  emit_condition_value(c, insn->cond, last_kind, last_w, 0);
+  /* CARRY_REG survives the address computation, as SETcc relies on. */
+  x86p_emit_mov_r32_r32(c->e, CARRY_REG, kX64Rax);
+  if (src->kind == kX86pOperandMem) {
+    emit_mem_prepare_w(c, src, insn_eip, w);
+    emit_load_w(c->e, kX64Rsi, HOSTPTR_REG, 0, w);
+  } else {
+    gpr_load(c, kX64Rsi, src->reg, w);
+  }
+  gpr_load(c, kX64Rdx, dst->reg, w);
+  x86p_emit_test_r32_r32(c->e, CARRY_REG, CARRY_REG);
+  x86p_emit_cmovcc_r32_r32(c->e, (unsigned)kX86pCondNZ, kX64Rdx, kX64Rsi);
+  gpr_store(c, dst->reg, kX64Rdx, w);
+}
+
 void x86p_x64_emit_setcc(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip, int last_kind, int last_w) {
   const X86pOperand *dst = &insn->operand[0];
 

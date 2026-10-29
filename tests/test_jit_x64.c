@@ -117,7 +117,7 @@ static uint32_t interesting(uint64_t r) {
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 137u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 139u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -823,6 +823,18 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[n++] = memdisp;
     return n;
   }
+  case 136: /* CMOVcc r32, r/m32 -- 0F 40+cc /r, mod=11. Reads the flags the
+               previous instruction set, as Jcc does. */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0x40u | ((r >> 12) & 0xFu));
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 137: /* CMOVcc r32, [base+disp8] -- reads, and can fault, either way */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0x40u | ((r >> 12) & 0xFu));
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
