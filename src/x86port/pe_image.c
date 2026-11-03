@@ -405,3 +405,167 @@ X86pPeStatus x86p_pe_tls(const X86pMem *mem, uint32_t base, const X86pPeHeaders 
   }
   return kX86pPeOk;
 }
+
+/* IMAGE_RESOURCE_DIRECTORY: named and ID entry counts, then 8-byte entries; an entry's name or
+ * offset with the top bit set is relative to the root of the tree. */
+enum {
+  kResourceNamedCount = 12,
+  kResourceIdCount = 14,
+  kResourceEntries = 16,
+  kResourceEntryBytes = 8,
+  kResourceDataEntryBytes = 16,
+};
+#define RESOURCE_SUBTREE 0x80000000u
+#define LANG_NEUTRAL 0x0000u
+#define LANG_EN_US 0x0409u
+
+typedef struct ResourceTree {
+  const Image *image;
+  uint32_t root;
+  uint32_t size;
+} ResourceTree;
+
+static int tree_holds(const ResourceTree *tree, uint32_t rva, uint32_t size) {
+  return rva >= tree->root && rva - tree->root <= tree->size && tree->size - (rva - tree->root) >= size;
+}
+
+static uint16_t ascii_upper(uint16_t unit) {
+  return (unit >= 'a' && unit <= 'z') ? (uint16_t)(unit - 'a' + 'A') : unit;
+}
+
+/* 1 when an entry's name field names `key`, 0 when not, -1 when its string is outside the tree. */
+static int resource_name_matches(const ResourceTree *tree, uint32_t field, X86pPeResourceKey key) {
+  if ((field & RESOURCE_SUBTREE) == 0) {
+    return key.name == NULL && field == key.id;
+  }
+  if (key.name == NULL) {
+    return 0;
+  }
+  const uint32_t at = tree->root + (field & ~RESOURCE_SUBTREE);
+  uint16_t length = 0;
+  if (!tree_holds(tree, at, 2) || !rva16(tree->image, at, &length) || !tree_holds(tree, at + 2, 2u * length)) {
+    return -1;
+  }
+  for (uint32_t i = 0; i < length; i++) {
+    uint16_t unit = 0;
+    if (!rva16(tree->image, at + 2 + 2 * i, &unit)) {
+      return -1;
+    }
+    if (key.name[i] == 0 || ascii_upper(key.name[i]) != ascii_upper(unit)) {
+      return 0;
+    }
+  }
+  return key.name[length] == 0;
+}
+
+/* The entry count of the directory at `dir`, bounds-checked against the tree. */
+static int resource_entries(const ResourceTree *tree, uint32_t dir, uint32_t *count) {
+  uint16_t named = 0;
+  uint16_t ids = 0;
+  if (!tree_holds(tree, dir, kResourceEntries) || !rva16(tree->image, dir + kResourceNamedCount, &named) ||
+      !rva16(tree->image, dir + kResourceIdCount, &ids)) {
+    return 0;
+  }
+  *count = (uint32_t)named + ids;
+  return tree_holds(tree, dir + kResourceEntries, *count * kResourceEntryBytes);
+}
+
+/* The subdirectory under `dir` that `key` names. */
+static X86pPeStatus resource_subtree(const ResourceTree *tree, uint32_t dir, X86pPeResourceKey key, uint32_t *out) {
+  uint32_t count = 0;
+  if (!resource_entries(tree, dir, &count)) {
+    return kX86pPeMalformed;
+  }
+  for (uint32_t i = 0; i < count; i++) {
+    const uint32_t entry = dir + kResourceEntries + i * kResourceEntryBytes;
+    uint32_t field = 0;
+    uint32_t offset = 0;
+    if (!rva32(tree->image, entry, &field) || !rva32(tree->image, entry + 4, &offset)) {
+      return kX86pPeMalformed;
+    }
+    const int matches = resource_name_matches(tree, field, key);
+    if (matches < 0 || (matches && (offset & RESOURCE_SUBTREE) == 0)) {
+      return kX86pPeMalformed;
+    }
+    if (matches) {
+      *out = tree->root + (offset & ~RESOURCE_SUBTREE);
+      return kX86pPeOk;
+    }
+  }
+  return kX86pPeNotFound;
+}
+
+/* The data entry of the preferred language under the name directory `dir`. */
+static X86pPeStatus resource_language(const ResourceTree *tree, uint32_t dir, uint32_t *out) {
+  uint32_t count = 0;
+  if (!resource_entries(tree, dir, &count)) {
+    return kX86pPeMalformed;
+  }
+  int best = -1;
+  for (uint32_t i = 0; i < count; i++) {
+    const uint32_t entry = dir + kResourceEntries + i * kResourceEntryBytes;
+    uint32_t language = 0;
+    uint32_t offset = 0;
+    if (!rva32(tree->image, entry, &language) || !rva32(tree->image, entry + 4, &offset) ||
+        (offset & RESOURCE_SUBTREE) != 0) {
+      return kX86pPeMalformed;
+    }
+    const int rank = language == LANG_NEUTRAL ? 2 : (language == LANG_EN_US ? 1 : 0);
+    if (rank > best) {
+      best = rank;
+      *out = tree->root + offset;
+    }
+  }
+  return best < 0 ? kX86pPeNotFound : kX86pPeOk;
+}
+
+static X86pPeStatus resource_data(const ResourceTree *tree, uint32_t entry, X86pPeResource *out) {
+  uint32_t data = 0;
+  uint32_t size = 0;
+  if (!tree_holds(tree, entry, kResourceDataEntryBytes) || !rva32(tree->image, entry, &data) ||
+      !rva32(tree->image, entry + 4, &size) || !image_holds(tree->image, tree->image->base + data, size)) {
+    return kX86pPeMalformed;
+  }
+  out->entry = tree->image->base + entry;
+  out->data = tree->image->base + data;
+  out->size = size;
+  return kX86pPeOk;
+}
+
+X86pPeStatus x86p_pe_resource(const X86pMem *mem,
+                              uint32_t base,
+                              const X86pPeHeaders *headers,
+                              X86pPeResourceKey type,
+                              X86pPeResourceKey name,
+                              X86pPeResource *out) {
+  const Image image = {mem, base, headers->size_of_image};
+  const X86pPeDataDirectory directory = headers->directories[kX86pPeDirResource];
+  memset(out, 0, sizeof *out);
+  if (directory.rva == 0 || directory.size == 0) {
+    return kX86pPeNotFound;
+  }
+  const ResourceTree tree = {&image, directory.rva, directory.size};
+  uint32_t types = 0;
+  uint32_t languages = 0;
+  uint32_t entry = 0;
+  X86pPeStatus status = resource_subtree(&tree, tree.root, type, &types);
+  if (status == kX86pPeOk) {
+    status = resource_subtree(&tree, types, name, &languages);
+  }
+  if (status == kX86pPeOk) {
+    status = resource_language(&tree, languages, &entry);
+  }
+  return status == kX86pPeOk ? resource_data(&tree, entry, out) : status;
+}
+
+X86pPeStatus x86p_pe_resource_at(
+    const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, uint32_t entry, X86pPeResource *out) {
+  const Image image = {mem, base, headers->size_of_image};
+  const X86pPeDataDirectory directory = headers->directories[kX86pPeDirResource];
+  const ResourceTree tree = {&image, directory.rva, directory.size};
+  memset(out, 0, sizeof *out);
+  if (directory.rva == 0 || entry < base) {
+    return kX86pPeMalformed;
+  }
+  return resource_data(&tree, entry - base, out);
+}

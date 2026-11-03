@@ -62,6 +62,8 @@ static void build(int with_relocations) {
   put32(opt + 96 + 0 * 8 + 4, 0x80);
   put32(opt + 96 + 1 * 8, 0x1040); /* import */
   put32(opt + 96 + 1 * 8 + 4, 40);
+  put32(opt + 96 + 2 * 8, 0x1380); /* resources */
+  put32(opt + 96 + 2 * 8 + 4, 0x80);
   if (with_relocations) {
     put32(opt + 96 + 5 * 8, 0x1180);
     put32(opt + 96 + 5 * 8 + 4, 20);
@@ -121,6 +123,32 @@ static void build(int with_relocations) {
   sec32(0x130c, kPreferred + 0x1360);
   sec32(0x1310, 16);
   sec32(0x1360, kPreferred + 0x1000);
+
+  /* Resources: RT_RCDATA (10), one name directory reached by "CFG" and by ID 0x3f2, listing
+     German (two bytes at RVA 0x1374) before US English (four bytes at RVA 0x1370). */
+  put16(kRaw + 0x38e, 1); /* root: one ID entry */
+  sec32(0x1390, 10);
+  sec32(0x1394, 0x80000000u | 0x18);
+  put16(kRaw + 0x3a4, 1); /* type 10: one named and one ID entry */
+  put16(kRaw + 0x3a6, 1);
+  sec32(0x13a8, 0x80000000u | 0x68);
+  sec32(0x13ac, 0x80000000u | 0x38);
+  sec32(0x13b0, 0x3f2);
+  sec32(0x13b4, 0x80000000u | 0x38);
+  put16(kRaw + 0x3c6, 2); /* the name: two languages */
+  sec32(0x13c8, 0x407);
+  sec32(0x13cc, 0x70);
+  sec32(0x13d0, 0x409);
+  sec32(0x13d4, 0x58);
+  sec32(0x13d8, 0x1370); /* data entries */
+  sec32(0x13dc, 4);
+  sec32(0x13f0, 0x1374);
+  sec32(0x13f4, 2);
+  put16(kRaw + 0x3e8, 3); /* "CFG" */
+  put16(kRaw + 0x3ea, 'C');
+  put16(kRaw + 0x3ec, 'F');
+  put16(kRaw + 0x3ee, 'G');
+  sec32(0x1370, 0x44332211u);
 
   sec32(0x1200, 1); /* PHYS.dll, RVA-based delay descriptor */
   sec32(0x1204, 0x1240);
@@ -194,6 +222,29 @@ static void map_and_walk(uint32_t base) {
             tls.callbacks == base + 0x1360,
         "TLS directory, relocated");
   check(x86p_mem_read(&mem, base + 0x1360, 4, &value) && value == base + 0x1000, "TLS callback relocated");
+
+  static const uint16_t cfg[] = {'c', 'f', 'g', 0};
+  static const uint16_t cf[] = {'C', 'F', 0};
+  static const uint16_t cfgx[] = {'C', 'F', 'G', 'X', 0};
+  const X86pPeResourceKey rcdata = {10, NULL};
+  X86pPeResource resource;
+  check(x86p_pe_resource(&mem, base, &headers, rcdata, (X86pPeResourceKey){0x3f2, NULL}, &resource) == kX86pPeOk &&
+            resource.data == base + 0x1370 && resource.size == 4 && resource.entry == base + 0x13d8,
+        "resource by ID, in US English over the language listed first");
+  check(x86p_pe_resource(&mem, base, &headers, rcdata, (X86pPeResourceKey){0, cfg}, &resource) == kX86pPeOk &&
+            resource.data == base + 0x1370,
+        "resource by name, any case");
+  check(x86p_pe_resource(&mem, base, &headers, rcdata, (X86pPeResourceKey){0, cfgx}, &resource) == kX86pPeNotFound,
+        "a longer name is not the name");
+  check(x86p_pe_resource(&mem, base, &headers, rcdata, (X86pPeResourceKey){0, cf}, &resource) == kX86pPeNotFound,
+        "a name prefix is not the name");
+  check(x86p_pe_resource(&mem, base, &headers, rcdata, (X86pPeResourceKey){5, NULL}, &resource) == kX86pPeNotFound,
+        "missing resource name");
+  check(x86p_pe_resource(&mem, base, &headers, (X86pPeResourceKey){3, NULL}, rcdata, &resource) == kX86pPeNotFound,
+        "missing resource type");
+  check(x86p_pe_resource_at(&mem, base, &headers, base + 0x13d8, &resource) == kX86pPeOk &&
+            resource.data == base + 0x1370 && resource.size == 4,
+        "resource from its data entry");
 }
 
 static void refusals(void) {
@@ -232,6 +283,21 @@ static void refusals(void) {
         "TLS index slot past the image");
   headers.directories[kX86pPeDirTls].size = 0;
   check(x86p_pe_tls(&roomy, kPreferred, &headers, &tls) == kX86pPeNotFound, "no TLS directory");
+
+  X86pPeResource resource;
+  const X86pPeResourceKey rcdata = {10, NULL};
+  build(1);
+  put32(0x13d8 - 0x1000 + kRaw, kImageSize);
+  check(x86p_pe_parse(file, sizeof file, &headers) == kX86pPeOk &&
+            x86p_pe_map(&roomy, file, sizeof file, &headers, kPreferred) == kX86pPeOk &&
+            x86p_pe_resource(&roomy, kPreferred, &headers, rcdata, (X86pPeResourceKey){0x3f2, NULL}, &resource) ==
+                kX86pPeMalformed,
+        "resource data past the image");
+  check(x86p_pe_resource_at(&roomy, kPreferred, &headers, kPreferred + 0x1000, &resource) == kX86pPeMalformed,
+        "data entry outside the resource tree");
+  headers.directories[kX86pPeDirResource].size = 0;
+  check(x86p_pe_resource(&roomy, kPreferred, &headers, rcdata, rcdata, &resource) == kX86pPeNotFound,
+        "no resource directory");
 }
 
 int main(void) {

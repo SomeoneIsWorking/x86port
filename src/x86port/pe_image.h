@@ -1,6 +1,6 @@
 /* PE32 (i386) images: header parsing, placement into guest memory, base
- * relocation, and the import, delay-import and export tables read back from
- * guest memory. Which range an image gets and which modules are loaded belong
+ * relocation, and the import, delay-import, export, TLS and resource tables
+ * read back from guest memory. Which range an image gets and which modules are loaded belong
  * to the consumer; this module only moves bytes through X86pMem. */
 #ifndef X86PORT_PE_IMAGE_H
 #define X86PORT_PE_IMAGE_H
@@ -26,7 +26,7 @@ typedef enum X86pPeStatus {
   kX86pPeGuestMemory,    /* a guest read or write was refused */
   kX86pPeNoRelocations,  /* placed away from its preferred base without relocations */
   kX86pPeRelocationType, /* a base relocation other than ABSOLUTE or HIGHLOW */
-  kX86pPeNotFound,       /* export lookup found nothing */
+  kX86pPeNotFound,       /* a lookup found nothing */
 } X86pPeStatus;
 
 const char *x86p_pe_status_name(X86pPeStatus status);
@@ -34,6 +34,7 @@ const char *x86p_pe_status_name(X86pPeStatus status);
 typedef enum X86pPeDirectory {
   kX86pPeDirExport = 0,
   kX86pPeDirImport = 1,
+  kX86pPeDirResource = 2,
   kX86pPeDirBaseRelocation = 5,
   kX86pPeDirTls = 9,
   kX86pPeDirDelayImport = 13,
@@ -112,6 +113,32 @@ typedef struct X86pPeTls {
 /* kX86pPeNotFound when the image has no TLS directory; kX86pPeMalformed when the directory or a
  * range it names lies outside the image. */
 X86pPeStatus x86p_pe_tls(const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, X86pPeTls *out);
+
+/* A resource type or name: an integer ID (MAKEINTRESOURCE), or a NUL-terminated UTF-16 name,
+ * matched without regard to ASCII case as FindResource does. */
+typedef struct X86pPeResourceKey {
+  uint16_t id;          /* used when `name` is NULL */
+  const uint16_t *name; /* NULL for an ID */
+} X86pPeResourceKey;
+
+typedef struct X86pPeResource {
+  uint32_t entry; /* guest VA of its IMAGE_RESOURCE_DATA_ENTRY, the HRSRC FindResource returns */
+  uint32_t data;  /* guest VA of its bytes */
+  uint32_t size;
+} X86pPeResource;
+
+/* Resource (type, name) in the language neutral, else US English, else the first one listed.
+ * kX86pPeNotFound when the image has no such resource; kX86pPeMalformed when the tree or the data
+ * it names lies outside the image. */
+X86pPeStatus x86p_pe_resource(const X86pMem *mem,
+                              uint32_t base,
+                              const X86pPeHeaders *headers,
+                              X86pPeResourceKey type,
+                              X86pPeResourceKey name,
+                              X86pPeResource *out);
+/* The resource whose data entry is at `entry`, as x86p_pe_resource returned it. */
+X86pPeStatus x86p_pe_resource_at(
+    const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, uint32_t entry, X86pPeResource *out);
 
 #ifdef __cplusplus
 }
