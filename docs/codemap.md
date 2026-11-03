@@ -32,7 +32,7 @@ dispatcher alone may enter a bounded fallback for a refused or unsafe block.
 | PE32 images | i386 PE header parsing, copying an image to a consumer-chosen guest base with HIGHLOW relocation, and reading its import, delay-import and export tables back from guest memory; which modules load and how imports bind belong to the consumer | `src/x86port/pe_image.{h,c}` | `x86p_pe_parse`, `x86p_pe_map`, `x86p_pe_imports`, `x86p_pe_export_by_name` | — |
 | Decode | Runtime byte decoding and operand normalization; no guest semantics | `src/x86port/decode.{h,c}`, `src/x86port/decode_cache.{h,c}` | `x86p_decode` | — |
 | Integer semantics | ALU, conditions, bit operations, strings, BCD, privilege, and CPUID rules | `src/x86port/alu.{h,c}`, `src/x86port/cond.{h,c}`, `src/x86port/bit_ops.{h,c}`, `src/x86port/string_ops.{h,c}`, `src/x86port/bcd.{h,c}`, `src/x86port/privilege.{h,c}`, `src/x86port/cpuid.{h,c}` | Narrow module APIs | — |
-| Floating and vector semantics | SIMD, 3DNow!, x87 state, arithmetic, execution, and transcendental rules | `src/x86port/simd.{h,c}`, `src/x86port/simd_int.c`, `src/x86port/simd_float.c`, `src/x86port/three_dnow.{h,c}`, `src/x86port/x87.{h,c}`, `src/x86port/x87_state.{h,c}`, `src/x86port/x87_exec.{h,c}`, `src/x86port/x87_transcendental.{h,c}` | Narrow module APIs | — |
+| Floating and vector semantics | SIMD, 3DNow!, x87 state, arithmetic, execution, and transcendental rules | `src/x86port/simd.{h,c}`, `src/x86port/simd_int.c`, `src/x86port/simd_float.c`, `src/x86port/simd_double.c`, `src/x86port/three_dnow.{h,c}`, `src/x86port/x87.{h,c}`, `src/x86port/x87_state.{h,c}`, `src/x86port/x87_exec.{h,c}`, `src/x86port/x87_transcendental.{h,c}` | Narrow module APIs | — |
 | x87 guest memory formats | Validated floating and signed-integer guest memory conversion shared by the test oracle and generated-code adapters, from an address, from operand bits a backend loaded itself, or into operand bytes a backend stores itself | `src/x86port/x87_memory.{h,c}` | `x86p_x87_read_value`, `x86p_x87_write_value`, `x86p_x87_reg_from_operand_bits`, `x86p_x87_operand_bytes_from_reg` | — |
 | Exact operand widening | Reassembly of a binary32 or binary64 operand into the ext80 encoding, which rounds nothing and raises nothing, kept out of the softfloat that exists to make the rounding decision this direction does not have | `src/x86port/x87_ext80_widen.{h,c}` | `x86p_ext80_from_f32_bits`, `x86p_ext80_from_f64_bits` | — |
 | Multi-access stack semantics | PUSHAD, POPAD and ENTER ordered register/stack transitions and precise access failure | `src/x86port/stack_ops.{h,c}` | `x86p_stack_pushad`, `x86p_stack_popad`, `x86p_stack_enter` | — |
@@ -101,7 +101,10 @@ The backend `jit_*_alu.c`, `jit_*_simd.c`, `jit_*_branch.c` and
 host operations or calls to narrow CPU semantic functions, never the test
 interpreter dispatcher. `cpu.c` owns status transfers and counted-loop state;
 `simd_packed.c` owns default-environment packed arithmetic shared with the
-oracle. `x87_stack.h` owns the register file itself -- reading ST(i), writing it,
+oracle. A SIMD form with no inline x64 lowering calls
+`x86p_simd_execute_host`, the SIMD family owner run on operands the block has
+already resolved and bounds-checked, so the x64 backend has no second copy of
+the SSE/SSE2 rules. `x87_stack.h` owns the register file itself -- reading ST(i), writing it,
 pushing, popping, and the tag every write derives -- as `static inline`,
 because those are on every x87 operation the engine performs;
 `x87_stack.c` gives them external definitions for callers outside the

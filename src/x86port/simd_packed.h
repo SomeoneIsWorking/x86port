@@ -17,4 +17,6 @@ void x86p_simd_divps(void *dst, const void *src);
  * 0xFFC00000 indefinite for an invalid operation.
  */
 float x86p_sse_nan_result(float a, float b, float computed);
+/* The same rule at binary64; the indefinite is 0xFFF8000000000000. */
+double x86p_sse_nan_result_f64(double a, double b, double computed);
 #endif

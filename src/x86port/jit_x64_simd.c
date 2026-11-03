@@ -1,6 +1,8 @@
+#include "diagnostic.h"
 #include "jit_x64_internal.h"
 #include "simd.h"
 #include <stddef.h>
+#include <string.h>
 
 static int xmm(const X86pOperand *o) {
   return o->kind == kX86pOperandXmm && o->reg >= 0 && o->reg < 8;
@@ -156,4 +158,102 @@ void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
     }
   }
   x86p_emit_movups_store(c->e, CPU_REG, dst, kX64Xmm0);
+}
+
+/*
+ * Every other SIMD form runs its semantics owner, x86p_simd_execute_host, from
+ * the block: the block computes and bounds-checks the memory operand, and the
+ * helper reads the operands, computes and writes back. The shape word carries
+ * the operand kinds and registers, which is all the owner reads of an operand
+ * besides its memory, so the helper needs no decoded instruction at run time.
+ */
+enum { kShapeKindBits = 4, kShapeRegBits = 3 };
+
+static int call_operand_ok(const X86pOperand *o) {
+  switch (o->kind) {
+  case kX86pOperandXmm:
+    return o->reg >= 0 && o->reg < 8;
+  case kX86pOperandReg:
+    return o->reg >= 0 && o->reg < 8 && o->size == 4;
+  case kX86pOperandMem:
+    return !o->addr16;
+  case kX86pOperandImm:
+    return 1;
+  default:
+    return 0; /* MMX aliases the x87 file, which a block may hold on the host stack */
+  }
+}
+
+int simd_call_is_emittable(const X86pInsn *insn) {
+  const X86pSimdOp op = (X86pSimdOp)insn->simd;
+  int memories = 0;
+  int i;
+  if (!x86p_simd_is_implemented(op) || op == kX86pSimdMaskmovdqu || op == kX86pSimdPf || insn->operands > 3) {
+    return 0;
+  }
+  for (i = 0; i < insn->operands; i++) {
+    if (!call_operand_ok(&insn->operand[i])) {
+      return 0;
+    }
+    memories += insn->operand[i].kind == kX86pOperandMem;
+  }
+  return memories <= 1;
+}
+
+static uint32_t shape_operand(const X86pOperand *o) {
+  return (uint32_t)o->kind | ((uint32_t)(o->reg < 0 ? 0 : o->reg) << kShapeKindBits);
+}
+
+static void unshape_operand(uint32_t bits, X86pOperand *o) {
+  o->kind = (uint8_t)(bits & ((1u << kShapeKindBits) - 1u));
+  o->reg = (int8_t)((bits >> kShapeKindBits) & ((1u << kShapeRegBits) - 1u));
+  o->size = 4;
+}
+
+static void simd_call(X86pCpu *cpu, uint8_t *memory, uint32_t shape, uint32_t immediate) {
+  const uint32_t per = kShapeKindBits + kShapeRegBits;
+  X86pInsn insn;
+  int i;
+  memset(&insn, 0, sizeof insn);
+  insn.op = (uint8_t)kX86pInsnSimd;
+  insn.simd = (uint8_t)(shape & 0xFFu);
+  insn.operands = (uint8_t)((shape >> 8) & 3u);
+  for (i = 0; i < insn.operands; i++) {
+    unshape_operand(shape >> (10u + per * (uint32_t)i), &insn.operand[i]);
+    if (insn.operand[i].kind == kX86pOperandImm) {
+      insn.operand[i].imm = immediate;
+      insn.operand[i].size = 1;
+    }
+  }
+  if (x86p_simd_execute_host(cpu, memory, &insn) != kX86pSimdOk) {
+    x86p_diagnostic_fatalf("jit.x64.simd", "%s was admitted and refused", x86p_simd_op_name((X86pSimdOp)insn.simd));
+  }
+}
+
+void emit_simd_call(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
+  const uint32_t per = kShapeKindBits + kShapeRegBits;
+  uint32_t shape = (uint32_t)insn->simd | ((uint32_t)insn->operands << 8);
+  uint32_t immediate = 0u;
+  const X86pOperand *memory = NULL;
+  int i;
+  for (i = 0; i < insn->operands; i++) {
+    const X86pOperand *o = &insn->operand[i];
+    shape |= shape_operand(o) << (10u + per * (uint32_t)i);
+    if (o->kind == kX86pOperandImm) {
+      immediate = o->imm;
+    } else if (o->kind == kX86pOperandMem) {
+      memory = o;
+    }
+  }
+  if (memory && x86p_simd_memory_bytes(insn) > 0u) {
+    emit_mem_prepare_w(c, memory, pc, (int)x86p_simd_memory_bytes(insn));
+    x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG);
+  } else {
+    x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, 0u);
+  }
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, shape);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG3, immediate);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&simd_call);
+  x86p_emit_call_r64(c->e, kX64Rax);
 }

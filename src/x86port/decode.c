@@ -357,6 +357,7 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     out->op = (uint8_t)(o);                                                                                            \
     return
     SIMPLE(ZYDIS_MNEMONIC_MOV, kX86pInsnMov);
+    SIMPLE(ZYDIS_MNEMONIC_MOVNTI, kX86pInsnMov); /* a non-temporal hint on a plain store */
     SIMPLE(ZYDIS_MNEMONIC_MOVZX, kX86pInsnMovzx);
     SIMPLE(ZYDIS_MNEMONIC_MOVSX, kX86pInsnMovsx);
     SIMPLE(ZYDIS_MNEMONIC_LEA, kX86pInsnLea);
@@ -382,6 +383,7 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     return;
     SIMPLE(ZYDIS_MNEMONIC_LEAVE, kX86pInsnLeave);
     SIMPLE(ZYDIS_MNEMONIC_NOP, kX86pInsnNop);
+    SIMPLE(ZYDIS_MNEMONIC_PAUSE, kX86pInsnNop);
     SIMPLE(ZYDIS_MNEMONIC_CDQ, kX86pInsnCdq);
     SIMPLE(ZYDIS_MNEMONIC_CWDE, kX86pInsnCwde);
     SIMPLE(ZYDIS_MNEMONIC_MUL, kX86pInsnMul);
@@ -499,6 +501,9 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
  */
 #define STR(m, k, w)                                                                                                   \
   case m:                                                                                                              \
+    if (insn->meta.category != ZYDIS_CATEGORY_STRINGOP) {                                                              \
+      break; /* SSE2 MOVSD and CMPSD share the mnemonic; matched by name below */                                      \
+    }                                                                                                                  \
     out->op = kX86pInsnString;                                                                                         \
     out->str = (uint8_t)(k);                                                                                           \
     out->str_width = (uint8_t)(w);                                                                                     \

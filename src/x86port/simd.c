@@ -40,6 +40,8 @@ typedef struct SimdName {
 
 static const SimdName kNames[] = {
     {kX86pSimdMovq, "MOVQ"},
+    {kX86pSimdMovq, "MOVQ2DQ"},
+    {kX86pSimdMovq, "MOVDQ2Q"},
     {kX86pSimdMovd, "MOVD"},
     {kX86pSimdMovaps, "MOVAPS"},
     {kX86pSimdMovaps, "MOVUPS"},
@@ -47,6 +49,9 @@ static const SimdName kNames[] = {
     {kX86pSimdMovaps, "MOVDQU"},
     {kX86pSimdMovaps, "MOVAPD"},
     {kX86pSimdMovaps, "MOVUPD"},
+    {kX86pSimdMovaps, "MOVNTPS"},
+    {kX86pSimdMovaps, "MOVNTPD"},
+    {kX86pSimdMovaps, "MOVNTDQ"},
     {kX86pSimdMovss, "MOVSS"},
     {kX86pSimdMovlps, "MOVLPS"},
     {kX86pSimdMovlps, "MOVLPD"},
@@ -55,6 +60,9 @@ static const SimdName kNames[] = {
     {kX86pSimdMovhlps, "MOVHLPS"},
     {kX86pSimdMovlhps, "MOVLHPS"},
     {kX86pSimdMovmskps, "MOVMSKPS"},
+    {kX86pSimdMovmskpd, "MOVMSKPD"},
+    {kX86pSimdMovsd, "MOVSD"},
+    {kX86pSimdMaskmovdqu, "MASKMOVDQU"},
     {kX86pSimdPmovmskb, "PMOVMSKB"},
     {kX86pSimdPand, "PAND"},
     {kX86pSimdPandn, "PANDN"},
@@ -114,6 +122,15 @@ static const SimdName kNames[] = {
     {kX86pSimdPinsrw, "PINSRW"},
     {kX86pSimdPshufw, "PSHUFW"},
     {kX86pSimdPshufd, "PSHUFD"},
+    {kX86pSimdPshuflw, "PSHUFLW"},
+    {kX86pSimdPshufhw, "PSHUFHW"},
+    {kX86pSimdPslldq, "PSLLDQ"},
+    {kX86pSimdPsrldq, "PSRLDQ"},
+    {kX86pSimdPunpcklqdq, "PUNPCKLQDQ"},
+    {kX86pSimdPunpcklqdq, "UNPCKLPD"},
+    {kX86pSimdPunpckhqdq, "PUNPCKHQDQ"},
+    {kX86pSimdPunpckhqdq, "UNPCKHPD"},
+    {kX86pSimdPmuludq, "PMULUDQ"},
     {kX86pSimdAddps, "ADDPS"},
     {kX86pSimdSubps, "SUBPS"},
     {kX86pSimdMulps, "MULPS"},
@@ -132,6 +149,10 @@ static const SimdName kNames[] = {
     {kX86pSimdAndnps, "ANDNPS"},
     {kX86pSimdOrps, "ORPS"},
     {kX86pSimdXorps, "XORPS"},
+    {kX86pSimdAndps, "ANDPD"},
+    {kX86pSimdAndnps, "ANDNPD"},
+    {kX86pSimdOrps, "ORPD"},
+    {kX86pSimdXorps, "XORPD"},
     {kX86pSimdCmpps, "CMPPS"},
     {kX86pSimdCmpss, "CMPSS"},
     {kX86pSimdComiss, "COMISS"},
@@ -145,6 +166,41 @@ static const SimdName kNames[] = {
     {kX86pSimdCvtpi2ps, "CVTPI2PS"},
     {kX86pSimdCvtps2pi, "CVTPS2PI"},
     {kX86pSimdCvttps2pi, "CVTTPS2PI"},
+    {kX86pSimdCvtdq2ps, "CVTDQ2PS"},
+    {kX86pSimdCvtps2dq, "CVTPS2DQ"},
+    {kX86pSimdCvttps2dq, "CVTTPS2DQ"},
+    {kX86pSimdAddpd, "ADDPD"},
+    {kX86pSimdSubpd, "SUBPD"},
+    {kX86pSimdMulpd, "MULPD"},
+    {kX86pSimdDivpd, "DIVPD"},
+    {kX86pSimdMinpd, "MINPD"},
+    {kX86pSimdMaxpd, "MAXPD"},
+    {kX86pSimdSqrtpd, "SQRTPD"},
+    {kX86pSimdAddsd, "ADDSD"},
+    {kX86pSimdSubsd, "SUBSD"},
+    {kX86pSimdMulsd, "MULSD"},
+    {kX86pSimdDivsd, "DIVSD"},
+    {kX86pSimdMinsd, "MINSD"},
+    {kX86pSimdMaxsd, "MAXSD"},
+    {kX86pSimdSqrtsd, "SQRTSD"},
+    {kX86pSimdCmppd, "CMPPD"},
+    {kX86pSimdCmpsd, "CMPSD"},
+    {kX86pSimdComisd, "COMISD"},
+    {kX86pSimdUcomisd, "UCOMISD"},
+    {kX86pSimdShufpd, "SHUFPD"},
+    {kX86pSimdCvtps2pd, "CVTPS2PD"},
+    {kX86pSimdCvtpd2ps, "CVTPD2PS"},
+    {kX86pSimdCvtss2sd, "CVTSS2SD"},
+    {kX86pSimdCvtsd2ss, "CVTSD2SS"},
+    {kX86pSimdCvtdq2pd, "CVTDQ2PD"},
+    {kX86pSimdCvtpd2dq, "CVTPD2DQ"},
+    {kX86pSimdCvttpd2dq, "CVTTPD2DQ"},
+    {kX86pSimdCvtsi2sd, "CVTSI2SD"},
+    {kX86pSimdCvtsd2si, "CVTSD2SI"},
+    {kX86pSimdCvttsd2si, "CVTTSD2SI"},
+    {kX86pSimdCvtpi2pd, "CVTPI2PD"},
+    {kX86pSimdCvtpd2pi, "CVTPD2PI"},
+    {kX86pSimdCvttpd2pi, "CVTTPD2PI"},
     {kX86pSimdEmms, "EMMS"},
     {kX86pSimdEmms, "FEMMS"},
     {kX86pSimdLdmxcsr, "LDMXCSR"},
@@ -173,6 +229,10 @@ static const SimdName kNames[] = {
  */
 static int is_refused(X86pSimdOp op) {
   return op == kX86pSimdRcpps || op == kX86pSimdRcpss || op == kX86pSimdRsqrtps || op == kX86pSimdRsqrtss;
+}
+
+int x86p_simd_writes_flags(X86pSimdOp op) {
+  return op == kX86pSimdComiss || op == kX86pSimdUcomiss || op == kX86pSimdComisd || op == kX86pSimdUcomisd;
 }
 
 int x86p_simd_is_implemented(X86pSimdOp op) {
@@ -215,6 +275,10 @@ int x86p_simd_parse(const char *mnemonic, X86pSimdOp *out) {
 typedef struct Ctx {
   X86pCpu *cpu;
   const X86pMem *mem;
+  /* When set, the memory operand is these host bytes, already guarded by a
+     translated block, instead of a guest address resolved through `mem`. */
+  uint8_t *host;
+  unsigned host_bytes;
   int fault;
   uint32_t fault_addr;
 } Ctx;
@@ -268,7 +332,16 @@ static int read_vec(Ctx *c, const X86pOperand *o, unsigned bytes, X86pVec *out) 
     vec_set_u32(out, 0, o->imm);
     return 1;
   case kX86pOperandMem: {
-    uint32_t addr = address_of(c, o);
+    uint32_t addr;
+    if (c->host) {
+      if (bytes > c->host_bytes) {
+        c->fault = kX86pSimdUnsupported; /* wider than the block guarded */
+        return 0;
+      }
+      memcpy(out->b, c->host, bytes);
+      return 1;
+    }
+    addr = address_of(c, o);
     if (!x86p_mem_read_bytes(c->mem, addr, out->b, bytes)) {
       c->fault = kX86pSimdFault;
       c->fault_addr = addr;
@@ -307,7 +380,16 @@ static int write_vec(Ctx *c, const X86pOperand *o, unsigned bytes, const X86pVec
     x86p_reg_write(c->cpu, o->reg, o->size, vec_u32(v, 0));
     return 1;
   case kX86pOperandMem: {
-    uint32_t addr = address_of(c, o);
+    uint32_t addr;
+    if (c->host) {
+      if (bytes > c->host_bytes) {
+        c->fault = kX86pSimdUnsupported;
+        return 0;
+      }
+      memcpy(c->host, v->b, bytes);
+      return 1;
+    }
+    addr = address_of(c, o);
     if (!x86p_mem_write_bytes(c->mem, addr, v->b, bytes)) {
       c->fault = kX86pSimdFault;
       c->fault_addr = addr;
@@ -345,17 +427,118 @@ static X86pSimdStatus finish(Ctx *c, uint32_t *fault_addr) {
   return kX86pSimdOk;
 }
 
+/*
+ * The widths of the regular two-operand shape: the conversions read and write
+ * different widths, and a scalar form reads only its lane from memory.
+ */
+static void generic_widths(X86pSimdOp op, const X86pOperand *s, unsigned w, unsigned *src_bytes, unsigned *dst_bytes) {
+  const int from_memory = s->kind == kX86pOperandMem;
+  *src_bytes = w;
+  *dst_bytes = w;
+  switch (op) {
+  case kX86pSimdCvtsi2ss:
+  case kX86pSimdCvtsi2sd:
+    *src_bytes = 4u;
+    *dst_bytes = 16u;
+    break;
+  case kX86pSimdCvtss2si:
+  case kX86pSimdCvttss2si:
+    *src_bytes = 4u;
+    *dst_bytes = 4u;
+    break;
+  case kX86pSimdCvtsd2si:
+  case kX86pSimdCvttsd2si:
+    *src_bytes = 8u;
+    *dst_bytes = 4u;
+    break;
+  case kX86pSimdCvtpi2ps:
+  case kX86pSimdCvtpi2pd:
+    *src_bytes = 8u;
+    *dst_bytes = 16u;
+    break;
+  case kX86pSimdCvtps2pi:
+  case kX86pSimdCvttps2pi:
+    *src_bytes = from_memory ? 8u : 16u;
+    *dst_bytes = 8u;
+    break;
+  case kX86pSimdCvtpd2pi:
+  case kX86pSimdCvttpd2pi:
+    *src_bytes = 16u;
+    *dst_bytes = 8u;
+    break;
+  case kX86pSimdCvtps2pd:
+  case kX86pSimdCvtdq2pd:
+  case kX86pSimdAddsd:
+  case kX86pSimdSubsd:
+  case kX86pSimdMulsd:
+  case kX86pSimdDivsd:
+  case kX86pSimdMinsd:
+  case kX86pSimdMaxsd:
+  case kX86pSimdSqrtsd:
+  case kX86pSimdCmpsd:
+  case kX86pSimdComisd:
+  case kX86pSimdUcomisd:
+  case kX86pSimdCvtsd2ss:
+    /* A scalar double or two packed lanes: eight bytes from memory. */
+    *src_bytes = from_memory ? 8u : w;
+    break;
+  case kX86pSimdAddss:
+  case kX86pSimdSubss:
+  case kX86pSimdMulss:
+  case kX86pSimdDivss:
+  case kX86pSimdMinss:
+  case kX86pSimdMaxss:
+  case kX86pSimdSqrtss:
+  case kX86pSimdCmpss:
+  case kX86pSimdComiss:
+  case kX86pSimdUcomiss:
+  case kX86pSimdCvtss2sd:
+    /* Reading sixteen would fault on an operand the guest placed at the end
+       of a page -- a fault the guest never takes. */
+    *src_bytes = from_memory ? 4u : w;
+    break;
+  default:
+    break;
+  }
+}
+
+unsigned x86p_simd_memory_bytes(const X86pInsn *insn) {
+  const X86pSimdOp op = (X86pSimdOp)insn->simd;
+  const X86pOperand *s = &insn->operand[1];
+  unsigned src_bytes;
+  unsigned dst_bytes;
+  switch (op) {
+  case kX86pSimdMovq:
+  case kX86pSimdMovlps:
+  case kX86pSimdMovhps:
+  case kX86pSimdMovsd:
+    return 8u;
+  case kX86pSimdMovd:
+  case kX86pSimdMovss:
+  case kX86pSimdLdmxcsr:
+  case kX86pSimdStmxcsr:
+    return 4u;
+  case kX86pSimdMovaps:
+    return 16u;
+  case kX86pSimdPinsrw:
+    return 2u;
+  case kX86pSimdPf:
+    return 8u;
+  case kX86pSimdPrefetch:
+  case kX86pSimdFence:
+  case kX86pSimdEmms:
+  case kX86pSimdMaskmovdqu:
+    return 0u; /* no explicit memory operand is accessed */
+  default:
+    generic_widths(op, s, reg_width(insn), &src_bytes, &dst_bytes);
+    return src_bytes;
+  }
+}
+
+static X86pSimdStatus execute(Ctx *cp, const X86pInsn *insn, uint32_t *fault_addr);
+
 X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr) {
   Ctx c;
-  X86pSimdOp op;
-  const X86pOperand *d;
-  const X86pOperand *s;
-  X86pVec a;
-  X86pVec b;
-  X86pVec r;
-  unsigned w;
-  uint8_t imm = 0u;
-
   if (fault_addr) {
     *fault_addr = 0u;
   }
@@ -365,6 +548,37 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
   memset(&c, 0, sizeof c);
   c.cpu = cpu;
   c.mem = mem;
+  return execute(&c, insn, fault_addr);
+}
+
+X86pSimdStatus x86p_simd_execute_host(X86pCpu *cpu, uint8_t *memory, const X86pInsn *insn) {
+  Ctx c;
+  if (!cpu || !insn) {
+    return kX86pSimdFault;
+  }
+  memset(&c, 0, sizeof c);
+  c.cpu = cpu;
+  c.host = memory;
+  c.host_bytes = memory ? x86p_simd_memory_bytes(insn) : 0u;
+  if (insn->simd == (uint8_t)kX86pSimdMaskmovdqu) {
+    return kX86pSimdUnsupported; /* its store goes through EDI, not an operand */
+  }
+  return execute(&c, insn, NULL);
+}
+
+static X86pSimdStatus execute(Ctx *cp, const X86pInsn *insn, uint32_t *fault_addr) {
+  Ctx c = *cp;
+  X86pCpu *cpu = c.cpu;
+  const X86pMem *mem = c.mem;
+  X86pSimdOp op;
+  const X86pOperand *d;
+  const X86pOperand *s;
+  X86pVec a;
+  X86pVec b;
+  X86pVec r;
+  unsigned w;
+  uint8_t imm = 0u;
+
   op = (X86pSimdOp)insn->simd;
   if (op < 0 || op >= kX86pSimdOpCount || is_refused(op)) {
     return kX86pSimdUnsupported;
@@ -447,27 +661,47 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
   }
 
   case kX86pSimdMovss:
-    if (!read_vec(&c, s, 4u, &b)) {
+  case kX86pSimdMovsd: {
+    unsigned n = (op == kX86pSimdMovsd) ? 8u : 4u;
+    if (!read_vec(&c, s, n, &b)) {
       return finish(&c, fault_addr);
     }
     if (d->kind == kX86pOperandXmm && s->kind == kX86pOperandMem) {
-      /* From memory: the upper three lanes are ZEROED. From a register: they
-         are preserved. Two rules for one mnemonic, and the one a test with a
-         zeroed destination cannot tell apart. */
+      /* From memory the rest of the register is ZEROED; from a register it is
+         preserved. A test with a zeroed destination cannot tell them apart. */
       memset(&r, 0, sizeof r);
-      vec_set_u32(&r, 0, vec_u32(&b, 0));
+      memcpy(r.b, b.b, n);
       r.bytes = 16u;
       (void)write_vec(&c, d, 16u, &r);
     } else if (d->kind == kX86pOperandXmm) {
       memcpy(r.b, cpu->xmm[d->reg], 16u);
       r.bytes = 16u;
-      vec_set_u32(&r, 0, vec_u32(&b, 0));
+      memcpy(r.b, b.b, n);
       (void)write_vec(&c, d, 16u, &r);
     } else {
-      b.bytes = 4u;
-      (void)write_vec(&c, d, 4u, &b);
+      b.bytes = n;
+      (void)write_vec(&c, d, n, &b);
     }
     return finish(&c, fault_addr);
+  }
+
+  case kX86pSimdMaskmovdqu: {
+    /* Each byte of d whose mask byte in s has its top bit set goes to DS:EDI+i. */
+    unsigned i;
+    if (d->kind != kX86pOperandXmm || s->kind != kX86pOperandXmm) {
+      return kX86pSimdUnsupported;
+    }
+    for (i = 0; i < 16u; i++) {
+      uint32_t addr = cpu->reg[kX86pEdi] + i;
+      if ((cpu->xmm[s->reg][i] & 0x80u) && !x86p_mem_write_bytes(mem, addr, &cpu->xmm[d->reg][i], 1u)) {
+        if (fault_addr) {
+          *fault_addr = addr;
+        }
+        return kX86pSimdFault;
+      }
+    }
+    return kX86pSimdOk;
+  }
 
   case kX86pSimdMovlps:
   case kX86pSimdMovhps: {
@@ -504,6 +738,7 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
     return finish(&c, fault_addr);
 
   case kX86pSimdMovmskps:
+  case kX86pSimdMovmskpd:
   case kX86pSimdPmovmskb: {
     uint32_t mask = 0u;
     unsigned bytes = (s->kind == kX86pOperandXmm) ? 16u : 8u;
@@ -514,6 +749,10 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
     if (op == kX86pSimdMovmskps) {
       for (i = 0; i < bytes / 4u; i++) {
         mask |= (uint32_t)((vec_u32(&b, i) >> 31) & 1u) << i;
+      }
+    } else if (op == kX86pSimdMovmskpd) {
+      for (i = 0; i < 2u; i++) {
+        mask |= (uint32_t)((vec_u64(&b, i) >> 63) & 1u) << i;
       }
     } else {
       for (i = 0; i < bytes; i++) {
@@ -582,45 +821,9 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
    * different widths and different files; they carry their own widths.
    */
   {
-    unsigned src_bytes = w;
-    unsigned dst_bytes = w;
-    switch (op) {
-    case kX86pSimdCvtsi2ss:
-      src_bytes = 4u;
-      dst_bytes = 16u;
-      break;
-    case kX86pSimdCvtss2si:
-    case kX86pSimdCvttss2si:
-      src_bytes = 4u;
-      dst_bytes = 4u;
-      break;
-    case kX86pSimdCvtpi2ps:
-      src_bytes = 8u;
-      dst_bytes = 16u;
-      break;
-    case kX86pSimdCvtps2pi:
-    case kX86pSimdCvttps2pi:
-      src_bytes = 16u;
-      dst_bytes = 8u;
-      break;
-    case kX86pSimdAddss:
-    case kX86pSimdSubss:
-    case kX86pSimdMulss:
-    case kX86pSimdDivss:
-    case kX86pSimdMinss:
-    case kX86pSimdMaxss:
-    case kX86pSimdSqrtss:
-    case kX86pSimdCmpss:
-    case kX86pSimdComiss:
-    case kX86pSimdUcomiss:
-      /* A scalar operation reads only four bytes from MEMORY. Reading sixteen
-         would fault on an operand the guest placed at the end of a page --
-         a fault the guest never takes. */
-      src_bytes = (s->kind == kX86pOperandMem) ? 4u : w;
-      break;
-    default:
-      break;
-    }
+    unsigned src_bytes;
+    unsigned dst_bytes;
+    generic_widths(op, s, w, &src_bytes, &dst_bytes);
 
     if (!read_vec(&c, d, dst_bytes, &a) || !read_vec(&c, s, src_bytes, &b)) {
       return finish(&c, fault_addr);
@@ -633,8 +836,15 @@ X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pIns
       return finish(&c, fault_addr);
     }
     if (x86p_simd_float(op, &a, &b, imm, &r, &cpu->flags)) {
-      if (op == kX86pSimdComiss || op == kX86pSimdUcomiss) {
-        return kX86pSimdOk; /* writes flags only */
+      if (x86p_simd_writes_flags(op)) {
+        return kX86pSimdOk;
+      }
+      (void)write_vec(&c, d, r.bytes, &r);
+      return finish(&c, fault_addr);
+    }
+    if (x86p_simd_double(op, &a, &b, imm, &r, &cpu->flags)) {
+      if (x86p_simd_writes_flags(op)) {
+        return kX86pSimdOk;
       }
       (void)write_vec(&c, d, r.bytes, &r);
       return finish(&c, fault_addr);

@@ -31,6 +31,7 @@
 #include "exec.h"
 #include "jit_x64.h"
 #include "jit_x64_harness.h"
+#include "simd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,8 +117,98 @@ static uint32_t interesting(uint64_t r) {
   return (uint32_t)(r >> 16);
 }
 
+/*
+ * The SIMD forms the block runs through x86p_simd_execute_host: prefix,
+ * opcode, the operand shape and whether an imm8 follows. The register field is
+ * the first operand except for a store, where it is the source.
+ */
+typedef enum SimdShape {
+  kSimdXmm,      /* xmm, xmm/m */
+  kSimdStore,    /* xmm/m, xmm */
+  kSimdToGpr,    /* r32, xmm (register source only) */
+  kSimdToGprMem, /* r32, xmm/m */
+  kSimdToRm,     /* r/m32, xmm: MOVD's store direction */
+  kSimdFromGpr,  /* xmm, r32/m32 */
+  kSimdShiftImm, /* xmm, imm8 with /digit in the register field */
+  kSimdMxcsr     /* STMXCSR m32 */
+} SimdShape;
+
+typedef struct SimdForm {
+  uint8_t prefix; /* 0 for none */
+  uint8_t opcode;
+  uint8_t shape;
+  uint8_t imm; /* nonzero: an imm8 follows; for kSimdShiftImm, the /digit */
+} SimdForm;
+
+static const SimdForm kSimdForms[] = {
+    {0x66u, 0x58u, kSimdXmm, 0},      {0x66u, 0x5Cu, kSimdXmm, 0},      {0x66u, 0x59u, kSimdXmm, 0},
+    {0x66u, 0x5Eu, kSimdXmm, 0},      {0x66u, 0x5Du, kSimdXmm, 0},      {0x66u, 0x5Fu, kSimdXmm, 0},
+    {0x66u, 0x51u, kSimdXmm, 0},      {0x66u, 0x54u, kSimdXmm, 0},      {0x66u, 0x57u, kSimdXmm, 0},
+    {0x66u, 0x14u, kSimdXmm, 0},      {0x66u, 0x15u, kSimdXmm, 0},      {0x66u, 0xC6u, kSimdXmm, 1},
+    {0x66u, 0xC2u, kSimdXmm, 1},      {0xF2u, 0x58u, kSimdXmm, 0},      {0xF2u, 0x5Cu, kSimdXmm, 0},
+    {0xF2u, 0x59u, kSimdXmm, 0},      {0xF2u, 0x5Eu, kSimdXmm, 0},      {0xF2u, 0x5Du, kSimdXmm, 0},
+    {0xF2u, 0x51u, kSimdXmm, 0},      {0xF2u, 0xC2u, kSimdXmm, 1},      {0xF2u, 0x10u, kSimdXmm, 0},
+    {0x66u, 0x2Fu, kSimdXmm, 0},      {0x66u, 0x2Eu, kSimdXmm, 0},      {0x00u, 0x2Fu, kSimdXmm, 0},
+    {0x00u, 0x5Au, kSimdXmm, 0},      {0x66u, 0x5Au, kSimdXmm, 0},      {0xF3u, 0x5Au, kSimdXmm, 0},
+    {0xF2u, 0x5Au, kSimdXmm, 0},      {0x00u, 0x5Bu, kSimdXmm, 0},      {0x66u, 0x5Bu, kSimdXmm, 0},
+    {0xF3u, 0x5Bu, kSimdXmm, 0},      {0xF3u, 0xE6u, kSimdXmm, 0},      {0xF2u, 0xE6u, kSimdXmm, 0},
+    {0x66u, 0xE6u, kSimdXmm, 0},      {0xF2u, 0x70u, kSimdXmm, 1},      {0xF3u, 0x70u, kSimdXmm, 1},
+    {0x66u, 0x70u, kSimdXmm, 1},      {0x66u, 0x6Cu, kSimdXmm, 0},      {0x66u, 0x6Du, kSimdXmm, 0},
+    {0x66u, 0xF4u, kSimdXmm, 0},      {0x66u, 0xEFu, kSimdXmm, 0},      {0x66u, 0xFEu, kSimdXmm, 0},
+    {0x66u, 0xD4u, kSimdXmm, 0},      {0x66u, 0x61u, kSimdXmm, 0},      {0x66u, 0x6Bu, kSimdXmm, 0},
+    {0x66u, 0x67u, kSimdXmm, 0},      {0x66u, 0xE2u, kSimdXmm, 0},      {0x66u, 0x65u, kSimdXmm, 0},
+    {0x66u, 0xEEu, kSimdXmm, 0},      {0x66u, 0x6Fu, kSimdXmm, 0},      {0xF3u, 0x7Eu, kSimdXmm, 0},
+    {0xF2u, 0x11u, kSimdStore, 0},    {0x66u, 0xD6u, kSimdStore, 0},    {0x66u, 0x7Fu, kSimdStore, 0},
+    {0x66u, 0x7Eu, kSimdToRm, 0},     {0x66u, 0x50u, kSimdToGpr, 0},    {0xF2u, 0x2Du, kSimdToGprMem, 0},
+    {0xF2u, 0x2Cu, kSimdToGprMem, 0}, {0xF3u, 0x2Du, kSimdToGprMem, 0}, {0x66u, 0xD7u, kSimdToGpr, 0},
+    {0x66u, 0xC5u, kSimdToGpr, 1},    {0xF2u, 0x2Au, kSimdFromGpr, 0},  {0xF3u, 0x2Au, kSimdFromGpr, 0},
+    {0x66u, 0x6Eu, kSimdFromGpr, 0},  {0x66u, 0xC4u, kSimdFromGpr, 1},  {0x66u, 0x73u, kSimdShiftImm, 7},
+    {0x66u, 0x73u, kSimdShiftImm, 3}, {0x66u, 0x73u, kSimdShiftImm, 6}, {0x66u, 0x72u, kSimdShiftImm, 4},
+    {0x66u, 0x71u, kSimdShiftImm, 6}, {0x00u, 0xAEu, kSimdMxcsr, 3},
+};
+
+/* One SIMD helper form, with a register or [base+disp8] operand. A store's
+   memory operand is the destination; ESP is never a GPR destination. */
+static uint32_t emit_simd_form(uint8_t *p, uint64_t r, unsigned dst, unsigned src, unsigned membase, uint8_t memdisp) {
+  const SimdForm *f = &kSimdForms[(r >> 44) % (sizeof kSimdForms / sizeof kSimdForms[0])];
+  int memory = (int)((r >> 52) & 1u);
+  unsigned reg = dst;
+  uint32_t n = 0;
+  if (f->shape == kSimdToGpr || f->shape == kSimdShiftImm) {
+    memory = 0;
+  }
+  if (f->shape == kSimdMxcsr) {
+    memory = 1;
+  }
+  if ((f->shape == kSimdToGpr || f->shape == kSimdToGprMem) && reg == 4u) {
+    reg = 0u;
+  }
+  if (f->shape == kSimdShiftImm || f->shape == kSimdMxcsr) {
+    reg = f->imm;
+  }
+  if (f->prefix) {
+    p[n++] = f->prefix;
+  }
+  p[n++] = 0x0Fu;
+  p[n++] = f->opcode;
+  if (memory) {
+    p[n++] = (uint8_t)(0x40u | (reg << 3) | membase);
+    p[n++] = memdisp;
+  } else {
+    unsigned rm = f->shape == kSimdShiftImm ? dst : src;
+    if (f->shape == kSimdToRm && rm == 4u) {
+      rm = 0u;
+    }
+    p[n++] = (uint8_t)(0xC0u | (reg << 3) | rm);
+  }
+  if ((f->imm && f->shape != kSimdMxcsr) || f->shape == kSimdShiftImm) {
+    p[n++] = (uint8_t)(r >> 56);
+  }
+  return n;
+}
+
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 139u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 141u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -835,6 +926,10 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
     p[3] = memdisp;
     return 4;
+  case 138: /* An SSE/SSE2 form run through the SIMD semantics owner. */
+  case 139:
+  case 140:
+    return emit_simd_form(p, r, dst, src, membase, memdisp);
   case 7: /* Jcc rel32 -- 0F 80+cc. A different encoding of the same branch;
              a backend that read the displacement at the wrong width would pass
              the rel8 cases and fail only here. */
@@ -1263,6 +1358,7 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
         span += di.length;
         if ((di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) ||
             di.op == (uint8_t)kX86pInsnImul || di.op == (uint8_t)kX86pInsnBit ||
+            (di.op == (uint8_t)kX86pInsnSimd && x86p_simd_writes_flags((X86pSimdOp)di.simd)) ||
             (di.op == (uint8_t)kX86pInsnString &&
              (di.str == (uint8_t)kX86pStringScas || di.str == (uint8_t)kX86pStringCmps))) {
           unknown_kind_insns++;

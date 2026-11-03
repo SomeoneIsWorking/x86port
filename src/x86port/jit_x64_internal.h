@@ -351,6 +351,8 @@ void emit_cpu_transfer(BlockCtx *c, uint8_t op);
 
 int simd_bits_is_emittable(const X86pInsn *insn);
 void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+int simd_call_is_emittable(const X86pInsn *insn);
+void emit_simd_call(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 
 int x87_register_is_emittable(const X86pInsn *insn);
 void emit_x87_register(BlockCtx *c, const X86pInsn *insn);

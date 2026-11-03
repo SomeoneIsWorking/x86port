@@ -45,72 +45,6 @@ static float max_ss(float a, float b) {
   return (a > b) ? a : b;
 }
 
-/*
- * The CMPPS predicate, selected by the low three bits of the immediate.
- *
- * ORDERED vs UNORDERED is the distinction that matters: EQ, LT and LE are
- * false if either operand is a NaN; NEQ, NLT and NLE are true. Writing the
- * last three as `!` of the first three gets that right, which is why they are
- * written that way rather than as their own comparisons.
- */
-static int cmp_predicate(unsigned imm, float a, float b) {
-  int unordered = (isnan(a) || isnan(b));
-  switch (imm & 7u) {
-  case 0:
-    return !unordered && a == b; /* EQ */
-  case 1:
-    return !unordered && a < b; /* LT */
-  case 2:
-    return !unordered && a <= b; /* LE */
-  case 3:
-    return unordered; /* UNORD */
-  case 4:
-    return !(!unordered && a == b); /* NEQ */
-  case 5:
-    return !(!unordered && a < b); /* NLT */
-  case 6:
-    return !(!unordered && a <= b); /* NLE */
-  default:
-    return !unordered; /* ORD */
-  }
-}
-
-/*
- * COMISS and UCOMISS write EFLAGS, which no other SSE instruction does.
- *
- * ZF, PF and CF encode the three-way result and PF is the UNORDERED flag: an
- * unordered comparison sets all three, which is a state ordinary arithmetic
- * never produces and which guest code branches on with JP. OF, SF and AF are
- * cleared. Recorded through x86p_flags_set_explicit because the lazy model has
- * no arithmetic operation that produces this.
- */
-static void comiss_flags(float a, float b, X86pFlags *f) {
-  uint32_t e = X86P_EFLAGS_FIXED;
-  if (!f) {
-    return;
-  }
-  if (isnan(a) || isnan(b)) {
-    e |= X86P_ZF | X86P_PF | X86P_CF;
-  } else if (a > b) {
-    /* all three clear */
-  } else if (a < b) {
-    e |= X86P_CF;
-  } else {
-    e |= X86P_ZF;
-  }
-  x86p_flags_set_explicit(f, e);
-}
-
-/* Invalid or unrepresentable SSE conversions produce integer-indefinite.
- * Checking before the C cast is essential: casting NaN/out-of-range values is
- * undefined and WebAssembly's conversion can trap instead of returning it. */
-static uint32_t integer_result(double rounded) {
-  if (!isfinite(rounded) || rounded < (double)INT32_MIN || rounded > (double)INT32_MAX) {
-    return UINT32_C(0x80000000);
-  }
-  return (uint32_t)(int32_t)rounded;
-}
-
 int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t imm, X86pVec *out, X86pFlags *flags) {
   X86pVec r;
   unsigned n;
@@ -218,11 +152,11 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
 
   case kX86pSimdCmpps:
     for (i = 0; i < n; i++) {
-      vec_set_u32(&r, i, cmp_predicate(imm, vec_f32(a, i), vec_f32(b, i)) ? 0xFFFFFFFFu : 0u);
+      vec_set_u32(&r, i, x86p_sse_compare(imm, vec_f32(a, i), vec_f32(b, i)) ? 0xFFFFFFFFu : 0u);
     }
     break;
   case kX86pSimdCmpss:
-    vec_set_u32(&r, 0, cmp_predicate(imm, vec_f32(a, 0), vec_f32(b, 0)) ? 0xFFFFFFFFu : 0u);
+    vec_set_u32(&r, 0, x86p_sse_compare(imm, vec_f32(a, 0), vec_f32(b, 0)) ? 0xFFFFFFFFu : 0u);
     break;
 
   case kX86pSimdComiss:
@@ -231,7 +165,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
        and exceptions are masked in every process this targets, so the
        observable result is the same. Kept as two names because a build that
        models the exception must be able to tell them apart. */
-    comiss_flags(vec_f32(a, 0), vec_f32(b, 0), flags);
+    x86p_sse_compare_flags(vec_f32(a, 0), vec_f32(b, 0), flags);
     *out = *a; /* neither writes a register */
     return 1;
 
@@ -275,7 +209,7 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
          mode and the only one this build models; the truncating form is right
          regardless of the mode, which is why it is the one compilers emit. */
       double d = (op == kX86pSimdCvttps2pi) ? (double)truncf(x) : (double)nearbyintf(x);
-      vec_set_u32(&r, i, integer_result(d));
+      vec_set_u32(&r, i, x86p_sse_integer(d));
     }
     break;
   case kX86pSimdCvtsi2ss:
@@ -287,9 +221,22 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
     double d = (op == kX86pSimdCvttss2si) ? (double)truncf(x) : (double)nearbyintf(x);
     memset(&r, 0, sizeof r);
     r.bytes = 4u;
-    vec_set_u32(&r, 0, integer_result(d));
+    vec_set_u32(&r, 0, x86p_sse_integer(d));
     break;
   }
+  case kX86pSimdCvtdq2ps:
+    for (i = 0; i < 4u; i++) {
+      vec_set_f32(&r, i, (float)(int32_t)vec_u32(b, i));
+    }
+    break;
+  case kX86pSimdCvtps2dq:
+  case kX86pSimdCvttps2dq:
+    for (i = 0; i < 4u; i++) {
+      float x = vec_f32(b, i);
+      double d = (op == kX86pSimdCvttps2dq) ? (double)truncf(x) : (double)nearbyintf(x);
+      vec_set_u32(&r, i, x86p_sse_integer(d));
+    }
+    break;
 
   default:
     return 0;

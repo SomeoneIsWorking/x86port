@@ -15,16 +15,12 @@
 #define F_CMOV (1u << 15) /* cond.c, and the CMOVcc emitter in jit_x64.c */
 #define F_MMX (1u << 23)  /* simd_int.c, aliased onto the x87 file by x87.c */
 #define F_SSE (1u << 25)  /* simd_float.c: the single-precision set, complete */
+#define F_SSE2 (1u << 26) /* simd_double.c and simd_int.c: the double-precision and 128-bit integer set */
 
 /*
  * WHAT IS DELIBERATELY NOT CLAIMED, and why each one would be a lie that
  * surfaced far from here:
  *
- *  - SSE2 (bit 26). simd_float.c implements no double-precision operation at
- *    all -- no ADDPD, no CVTSD2SI. Several SSE2 *integer* operations are
- *    implemented (PADDQ, PSHUFD, the 128-bit forms), but the bit gates the
- *    whole set, and a guest told SSE2 exists would reach the double-precision
- *    half and be refused thousands of instructions after the CPUID that let it.
  *  - CX8 (bit 8). CMPXCHG8B is not implemented. It is what lock-free guest
  *    code compiles to, so claiming it would fail exactly where failure is
  *    least debuggable.
@@ -95,7 +91,7 @@ void x86p_cpuid(uint32_t leaf, uint32_t subleaf, X86pCpuidResult *out) {
     out->eax = 0x00000681u;
     out->ebx = 0x00000000u;
     out->ecx = F_ECX;
-    out->edx = F_FPU | F_TSC | F_CMOV | F_MMX | F_SSE;
+    out->edx = F_FPU | F_TSC | F_CMOV | F_MMX | F_SSE | F_SSE2;
     return;
   case 0x80000000u:
     out->eax = 0x80000004u; /* the brand string leaves, and no further */

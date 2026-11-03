@@ -24,6 +24,7 @@
  */
 #include "cpu.h"
 #include "decode.h"
+#include "flags.h"
 #include "oracle_code.h"
 #include "simd.h"
 #include "x87.h"
@@ -46,11 +47,19 @@ static unsigned long g_oracle_runs;
 
 /* How the instruction under test names its operands. */
 typedef enum Form {
-  kFormMmx,    /* mm0, mm1 */
-  kFormXmm,    /* xmm0, xmm1 */
-  kFormMmxImm, /* mm0, mm1, imm8 */
-  kFormXmmImm  /* xmm0, xmm1, imm8 */
+  kFormMmx,      /* mm0, mm1 */
+  kFormXmm,      /* xmm0, xmm1 */
+  kFormMmxImm,   /* mm0, mm1, imm8 */
+  kFormXmmImm,   /* xmm0, xmm1, imm8 */
+  kFormXmmShift, /* xmm0, imm8 */
+  kFormToGpr,    /* eax, xmm1 */
+  kFormFromGpr,  /* xmm0, eax */
+  kFormFlags     /* xmm0, xmm1, compared through EFLAGS */
 } Form;
+
+static int has_imm_form(Form f) {
+  return f == kFormMmxImm || f == kFormXmmImm || f == kFormXmmShift;
+}
 
 typedef struct Case {
   const char *name;
@@ -145,6 +154,56 @@ INSN(k_movss, 0xF3u, 0x0Fu, 0x10u, 0xC1u)
 INSN(k_movhlps, 0x0Fu, 0x12u, 0xC1u)
 INSN(k_movlhps, 0x0Fu, 0x16u, 0xC1u)
 INSN(k_movaps, 0x0Fu, 0x28u, 0xC1u)
+/* SSE2: 66 0F xx C1 packed double, F2 0F xx C1 scalar double. */
+INSN(k_addpd, 0x66u, 0x0Fu, 0x58u, 0xC1u)
+INSN(k_subpd, 0x66u, 0x0Fu, 0x5Cu, 0xC1u)
+INSN(k_mulpd, 0x66u, 0x0Fu, 0x59u, 0xC1u)
+INSN(k_divpd, 0x66u, 0x0Fu, 0x5Eu, 0xC1u)
+INSN(k_minpd, 0x66u, 0x0Fu, 0x5Du, 0xC1u)
+INSN(k_maxpd, 0x66u, 0x0Fu, 0x5Fu, 0xC1u)
+INSN(k_sqrtpd, 0x66u, 0x0Fu, 0x51u, 0xC1u)
+INSN(k_andpd, 0x66u, 0x0Fu, 0x54u, 0xC1u)
+INSN(k_andnpd, 0x66u, 0x0Fu, 0x55u, 0xC1u)
+INSN(k_orpd, 0x66u, 0x0Fu, 0x56u, 0xC1u)
+INSN(k_xorpd, 0x66u, 0x0Fu, 0x57u, 0xC1u)
+INSN(k_unpcklpd, 0x66u, 0x0Fu, 0x14u, 0xC1u)
+INSN(k_unpckhpd, 0x66u, 0x0Fu, 0x15u, 0xC1u)
+INSN(k_shufpd, 0x66u, 0x0Fu, 0xC6u, 0xC1u)
+INSN(k_cmppd, 0x66u, 0x0Fu, 0xC2u, 0xC1u)
+INSN(k_addsd, 0xF2u, 0x0Fu, 0x58u, 0xC1u)
+INSN(k_subsd, 0xF2u, 0x0Fu, 0x5Cu, 0xC1u)
+INSN(k_mulsd, 0xF2u, 0x0Fu, 0x59u, 0xC1u)
+INSN(k_divsd, 0xF2u, 0x0Fu, 0x5Eu, 0xC1u)
+INSN(k_minsd, 0xF2u, 0x0Fu, 0x5Du, 0xC1u)
+INSN(k_maxsd, 0xF2u, 0x0Fu, 0x5Fu, 0xC1u)
+INSN(k_sqrtsd, 0xF2u, 0x0Fu, 0x51u, 0xC1u)
+INSN(k_cmpsd, 0xF2u, 0x0Fu, 0xC2u, 0xC1u)
+INSN(k_movsd, 0xF2u, 0x0Fu, 0x10u, 0xC1u)
+INSN(k_comisd, 0x66u, 0x0Fu, 0x2Fu, 0xC1u)
+INSN(k_ucomisd, 0x66u, 0x0Fu, 0x2Eu, 0xC1u)
+INSN(k_comiss, 0x0Fu, 0x2Fu, 0xC1u)
+INSN(k_cvtps2pd, 0x0Fu, 0x5Au, 0xC1u)
+INSN(k_cvtpd2ps, 0x66u, 0x0Fu, 0x5Au, 0xC1u)
+INSN(k_cvtss2sd, 0xF3u, 0x0Fu, 0x5Au, 0xC1u)
+INSN(k_cvtsd2ss, 0xF2u, 0x0Fu, 0x5Au, 0xC1u)
+INSN(k_cvtdq2ps, 0x0Fu, 0x5Bu, 0xC1u)
+INSN(k_cvtps2dq, 0x66u, 0x0Fu, 0x5Bu, 0xC1u)
+INSN(k_cvttps2dq, 0xF3u, 0x0Fu, 0x5Bu, 0xC1u)
+INSN(k_cvtdq2pd, 0xF3u, 0x0Fu, 0xE6u, 0xC1u)
+INSN(k_cvtpd2dq, 0xF2u, 0x0Fu, 0xE6u, 0xC1u)
+INSN(k_cvttpd2dq, 0x66u, 0x0Fu, 0xE6u, 0xC1u)
+INSN(k_cvtsd2si, 0xF2u, 0x0Fu, 0x2Du, 0xC1u)
+INSN(k_cvttsd2si, 0xF2u, 0x0Fu, 0x2Cu, 0xC1u)
+INSN(k_cvtsi2sd, 0xF2u, 0x0Fu, 0x2Au, 0xC0u)
+INSN(k_movmskpd, 0x66u, 0x0Fu, 0x50u, 0xC1u)
+INSN(k_pshuflw, 0xF2u, 0x0Fu, 0x70u, 0xC1u)
+INSN(k_pshufhw, 0xF3u, 0x0Fu, 0x70u, 0xC1u)
+INSN(k_punpcklqdq, 0x66u, 0x0Fu, 0x6Cu, 0xC1u)
+INSN(k_punpckhqdq, 0x66u, 0x0Fu, 0x6Du, 0xC1u)
+INSN(k_pmuludq, 0x66u, 0x0Fu, 0xF4u, 0xC1u)
+INSN(k_pmuludq_mmx, 0x0Fu, 0xF4u, 0xC1u)
+INSN(k_pslldq, 0x66u, 0x0Fu, 0x73u, 0xF8u)
+INSN(k_psrldq, 0x66u, 0x0Fu, 0x73u, 0xD8u)
 
 #define C(n, o, f, b) {(n), (o), (f), (b), (unsigned)(sizeof(b))}
 
@@ -228,6 +287,55 @@ static const Case kCases[] = {
     C("MOVHLPS", kX86pSimdMovhlps, kFormXmm, k_movhlps),
     C("MOVLHPS", kX86pSimdMovlhps, kFormXmm, k_movlhps),
     C("MOVAPS", kX86pSimdMovaps, kFormXmm, k_movaps),
+    C("ADDPD", kX86pSimdAddpd, kFormXmm, k_addpd),
+    C("SUBPD", kX86pSimdSubpd, kFormXmm, k_subpd),
+    C("MULPD", kX86pSimdMulpd, kFormXmm, k_mulpd),
+    C("DIVPD", kX86pSimdDivpd, kFormXmm, k_divpd),
+    C("MINPD", kX86pSimdMinpd, kFormXmm, k_minpd),
+    C("MAXPD", kX86pSimdMaxpd, kFormXmm, k_maxpd),
+    C("SQRTPD", kX86pSimdSqrtpd, kFormXmm, k_sqrtpd),
+    C("ANDPD", kX86pSimdAndps, kFormXmm, k_andpd),
+    C("ANDNPD", kX86pSimdAndnps, kFormXmm, k_andnpd),
+    C("ORPD", kX86pSimdOrps, kFormXmm, k_orpd),
+    C("XORPD", kX86pSimdXorps, kFormXmm, k_xorpd),
+    C("UNPCKLPD", kX86pSimdPunpcklqdq, kFormXmm, k_unpcklpd),
+    C("UNPCKHPD", kX86pSimdPunpckhqdq, kFormXmm, k_unpckhpd),
+    C("SHUFPD", kX86pSimdShufpd, kFormXmmImm, k_shufpd),
+    C("CMPPD", kX86pSimdCmppd, kFormXmmImm, k_cmppd),
+    C("ADDSD", kX86pSimdAddsd, kFormXmm, k_addsd),
+    C("SUBSD", kX86pSimdSubsd, kFormXmm, k_subsd),
+    C("MULSD", kX86pSimdMulsd, kFormXmm, k_mulsd),
+    C("DIVSD", kX86pSimdDivsd, kFormXmm, k_divsd),
+    C("MINSD", kX86pSimdMinsd, kFormXmm, k_minsd),
+    C("MAXSD", kX86pSimdMaxsd, kFormXmm, k_maxsd),
+    C("SQRTSD", kX86pSimdSqrtsd, kFormXmm, k_sqrtsd),
+    C("CMPSD", kX86pSimdCmpsd, kFormXmmImm, k_cmpsd),
+    C("MOVSD", kX86pSimdMovsd, kFormXmm, k_movsd),
+    C("COMISD", kX86pSimdComisd, kFormFlags, k_comisd),
+    C("UCOMISD", kX86pSimdUcomisd, kFormFlags, k_ucomisd),
+    C("COMISS", kX86pSimdComiss, kFormFlags, k_comiss),
+    C("CVTPS2PD", kX86pSimdCvtps2pd, kFormXmm, k_cvtps2pd),
+    C("CVTPD2PS", kX86pSimdCvtpd2ps, kFormXmm, k_cvtpd2ps),
+    C("CVTSS2SD", kX86pSimdCvtss2sd, kFormXmm, k_cvtss2sd),
+    C("CVTSD2SS", kX86pSimdCvtsd2ss, kFormXmm, k_cvtsd2ss),
+    C("CVTDQ2PS", kX86pSimdCvtdq2ps, kFormXmm, k_cvtdq2ps),
+    C("CVTPS2DQ", kX86pSimdCvtps2dq, kFormXmm, k_cvtps2dq),
+    C("CVTTPS2DQ", kX86pSimdCvttps2dq, kFormXmm, k_cvttps2dq),
+    C("CVTDQ2PD", kX86pSimdCvtdq2pd, kFormXmm, k_cvtdq2pd),
+    C("CVTPD2DQ", kX86pSimdCvtpd2dq, kFormXmm, k_cvtpd2dq),
+    C("CVTTPD2DQ", kX86pSimdCvttpd2dq, kFormXmm, k_cvttpd2dq),
+    C("CVTSD2SI", kX86pSimdCvtsd2si, kFormToGpr, k_cvtsd2si),
+    C("CVTTSD2SI", kX86pSimdCvttsd2si, kFormToGpr, k_cvttsd2si),
+    C("CVTSI2SD", kX86pSimdCvtsi2sd, kFormFromGpr, k_cvtsi2sd),
+    C("MOVMSKPD", kX86pSimdMovmskpd, kFormToGpr, k_movmskpd),
+    C("PSHUFLW", kX86pSimdPshuflw, kFormXmmImm, k_pshuflw),
+    C("PSHUFHW", kX86pSimdPshufhw, kFormXmmImm, k_pshufhw),
+    C("PUNPCKLQDQ", kX86pSimdPunpcklqdq, kFormXmm, k_punpcklqdq),
+    C("PUNPCKHQDQ", kX86pSimdPunpckhqdq, kFormXmm, k_punpckhqdq),
+    C("PMULUDQ", kX86pSimdPmuludq, kFormXmm, k_pmuludq),
+    C("PMULUDQ mmx", kX86pSimdPmuludq, kFormMmx, k_pmuludq_mmx),
+    C("PSLLDQ", kX86pSimdPslldq, kFormXmmShift, k_pslldq),
+    C("PSRLDQ", kX86pSimdPsrldq, kFormXmmShift, k_psrldq),
 };
 
 /*
@@ -264,14 +372,33 @@ static const uint8_t kInputs[][32] = {
      0x02, 0x00, 0xC0, 0xFF, 0x03, 0x00, 0xC0, 0xFF, 0x05, 0x00, 0x80, 0xFF, 0x00, 0x00, 0x00, 0x00},
 };
 
+/*
+ * Binary64 inputs, as destination lanes 0-1 then source lanes 0-1: ordinary
+ * values, NaNs against each other (quiet in the destination, signalling in the
+ * source), signed zeros, a denormal, ties for nearest-even rounding, and
+ * conversions at and just past the int32 range.
+ */
+static const uint64_t kDoubleInputs[][4] = {
+    {0x3FF0000000000000u, 0xC004000000000000u, 0x4008000000000000u, 0x3FB999999999999Au}, /* 1, -2.5 | 3, 0.1 */
+    {0x7FF8000000000001u, 0x7FF0000000000000u, 0x7FF0000000000002u, 0x8000000000000000u}, /* qNaN, inf | sNaN, -0 */
+    {0x41DFFFFFFFE00000u, 0xC1E0000000100000u, 0x41E0000000000000u, 0x7E37E43C8800759Cu}, /* 2^31-0.5.. | 2^31, 1e300 */
+    {0x0000000000000001u, 0x8000000000000000u, 0x3FF8000000000000u, 0x4004000000000000u}, /* denormal, -0 | 1.5, 2.5 */
+    {0x0000000000000000u, 0x8000000000000000u, 0x8000000000000000u, 0x0000000000000000u}, /* 0, -0 | -0, 0 */
+    {0x4014000000000000u, 0x4014000000000000u, 0x4014000000000000u, 0xC014000000000000u}, /* 5, 5 | 5, -5 */
+    {0xFFF8000000000000u, 0x3FF0000000000000u, 0x3FF0000000000000u, 0x7FF4000000000000u}, /* -qNaN, 1 | 1, sNaN */
+};
+
 #if HAVE_ORACLE
 static JcCodeRegion g_code_region;
+
+/* The arithmetic flags COMISS/COMISD define: ZF, PF and CF set, OF, SF, AF clear. */
+static const uint32_t kResultFlags = 0x8D5u;
 
 /* in[0..15] destination, in[16..31] source; out receives the destination. */
 static void oracle(const Case *c, uint8_t imm, const uint8_t *in, uint8_t *out) {
   unsigned n = 0;
   int mmx = (c->form == kFormMmx || c->form == kFormMmxImm);
-  int has_imm = (c->form == kFormMmxImm || c->form == kFormXmmImm);
+  int has_imm = has_imm_form(c->form);
   void (*fn)(const uint8_t *, uint8_t *);
 
   uint8_t *g_code = oracle_code_write(&g_code_region);
@@ -299,12 +426,28 @@ static void oracle(const Case *c, uint8_t imm, const uint8_t *in, uint8_t *out) 
     g_code[n++] = 0x4Fu;
     g_code[n++] = 0x10u;
   }
+  if (c->form == kFormFromGpr) {
+    /* mov eax,[rdi+16] */
+    g_code[n++] = 0x8Bu;
+    g_code[n++] = 0x47u;
+    g_code[n++] = 0x10u;
+  }
   memcpy(g_code + n, c->bytes, c->len);
   n += c->len;
   if (has_imm) {
     g_code[n++] = imm;
   }
-  if (mmx) {
+  if (c->form == kFormToGpr) {
+    /* mov [rsi],eax */
+    g_code[n++] = 0x89u;
+    g_code[n++] = 0x06u;
+  } else if (c->form == kFormFlags) {
+    /* pushfq ; pop rax ; mov [rsi],eax */
+    g_code[n++] = 0x9Cu;
+    g_code[n++] = 0x58u;
+    g_code[n++] = 0x89u;
+    g_code[n++] = 0x06u;
+  } else if (mmx) {
     /* movq [rsi],mm0 ; emms */
     g_code[n++] = 0x0Fu;
     g_code[n++] = 0x7Fu;
@@ -333,7 +476,8 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
   X86pCpu cpu;
   X86pInsn insn;
   unsigned bytes = (c->form == kFormMmx || c->form == kFormMmxImm) ? 8u : 16u;
-  int has_imm = (c->form == kFormMmxImm || c->form == kFormXmmImm);
+  int has_imm = has_imm_form(c->form);
+  unsigned compared = (c->form == kFormToGpr || c->form == kFormFlags) ? 4u : bytes;
 
   oracle(c, imm, in, real);
 
@@ -347,10 +491,23 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
   insn.operand[1].kind = insn.operand[0].kind;
   insn.operand[1].reg = 1;
   insn.operand[1].size = (uint8_t)bytes;
-  if (has_imm) {
+  if (c->form == kFormXmmShift) {
+    insn.operands = 2;
+    insn.operand[1].kind = (uint8_t)kX86pOperandImm;
+    insn.operand[1].imm = imm;
+    insn.operand[1].size = 1;
+  } else if (has_imm) {
     insn.operand[2].kind = (uint8_t)kX86pOperandImm;
     insn.operand[2].imm = imm;
     insn.operand[2].size = 1;
+  }
+  if (c->form == kFormToGpr) {
+    insn.operand[0].kind = (uint8_t)kX86pOperandReg;
+    insn.operand[0].size = 4;
+  } else if (c->form == kFormFromGpr) {
+    insn.operand[1].kind = (uint8_t)kX86pOperandReg;
+    insn.operand[1].reg = 0;
+    insn.operand[1].size = 4;
   }
 
   x86p_cpu_reset(&cpu);
@@ -367,6 +524,7 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
   } else {
     memcpy(cpu.xmm[0], in, 16);
     memcpy(cpu.xmm[1], in + 16, 16);
+    memcpy(&cpu.reg[0], in + 16, 4);
   }
 
   g_checks++;
@@ -377,7 +535,16 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
   }
 
   memset(got, 0, sizeof got);
-  if (bytes == 8u) {
+  if (c->form == kFormToGpr) {
+    memcpy(got, &cpu.reg[0], 4);
+  } else if (c->form == kFormFlags) {
+    uint32_t e = x86p_eflags(&cpu.flags) & kResultFlags;
+    uint32_t h;
+    memcpy(&h, real, 4);
+    h &= kResultFlags;
+    memcpy(real, &h, 4);
+    memcpy(got, &e, 4);
+  } else if (bytes == 8u) {
     uint64_t q = 0u;
     (void)x86p_x87_mmx_read(&cpu.x87, 0, &q);
     memcpy(got, &q, 8);
@@ -386,15 +553,15 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
   }
 
   g_checks++;
-  if (memcmp(real, got, bytes) != 0) {
+  if (memcmp(real, got, compared) != 0) {
     unsigned i;
     g_failed++;
     printf("    FAIL %s imm=%02X\n      cpu   =", c->name, imm);
-    for (i = 0; i < bytes; i++) {
+    for (i = 0; i < compared; i++) {
       printf(" %02X", real[i]);
     }
     printf("\n      model =");
-    for (i = 0; i < bytes; i++) {
+    for (i = 0; i < compared; i++) {
       printf(" %02X", got[i]);
     }
     printf("\n      in    =");
@@ -417,7 +584,7 @@ static void run_case(const Case *c, uint8_t imm, const uint8_t *in) {
 int main(void) {
   unsigned i;
   unsigned v;
-  static const uint8_t kImms[] = {0x00u, 0x1Bu, 0x93u, 0xE4u, 0x01u, 0x07u};
+  static const uint8_t kImms[] = {0x00u, 0x1Bu, 0x93u, 0xE4u, 0x01u, 0x07u, 0x02u, 0x05u, 0x06u, 0x08u, 0x0Fu, 0x10u};
 
   printf("test MMX and SSE against the host CPU\n");
   for (i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
@@ -425,8 +592,19 @@ int main(void) {
       unsigned m;
       for (m = 0; m < sizeof kImms / sizeof kImms[0]; m++) {
         run_case(&kCases[i], kImms[m], kInputs[v]);
-        if (kCases[i].form == kFormMmx || kCases[i].form == kFormXmm) {
+        if (!has_imm_form(kCases[i].form)) {
           break; /* the immediate is not part of the instruction */
+        }
+      }
+    }
+    for (v = 0; v < sizeof kDoubleInputs / sizeof kDoubleInputs[0]; v++) {
+      uint8_t in[32];
+      unsigned m;
+      memcpy(in, kDoubleInputs[v], sizeof in);
+      for (m = 0; m < sizeof kImms / sizeof kImms[0]; m++) {
+        run_case(&kCases[i], kImms[m], in);
+        if (!has_imm_form(kCases[i].form)) {
+          break;
         }
       }
     }

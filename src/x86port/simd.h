@@ -18,6 +18,8 @@
  *     flush-to-zero bit -- an instruction whose result would depend on it is
  *     computed at the default setting, which is what every process this
  *     targets uses.
+ *   - SSE2 double precision is IEEE-754 binary64 on the host's `double`, in
+ *     simd_double.c, under the same MXCSR limits.
  *   - 3DNow! is deliberately not IEEE-754 and has its own module. This one
  *     calls it rather than restating it.
  *
@@ -47,16 +49,19 @@ extern "C" {
  */
 typedef enum X86pSimdOp {
   /* ---- movement ---- */
-  kX86pSimdMovq = 0, /* MOVQ    64 bits, MMX register or memory */
-  kX86pSimdMovd,     /* MOVD    32 bits between an MMX/XMM register and r/m32 */
-  kX86pSimdMovaps,   /* MOVAPS/MOVUPS/MOVDQA/MOVDQU: 128 bits, either way */
-  kX86pSimdMovss,    /* MOVSS   the low float only, or a zeroing load */
-  kX86pSimdMovlps,   /* MOVLPS/MOVLPD  the low 64 bits */
-  kX86pSimdMovhps,   /* MOVHPS/MOVHPD  the high 64 bits */
-  kX86pSimdMovhlps,  /* MOVHLPS xmm.low <- src.high */
-  kX86pSimdMovlhps,  /* MOVLHPS xmm.high <- src.low */
-  kX86pSimdMovmskps, /* MOVMSKPS  four sign bits into a general register */
-  kX86pSimdPmovmskb, /* PMOVMSKB  sign bit of each byte */
+  kX86pSimdMovq = 0,   /* MOVQ    64 bits, MMX register or memory */
+  kX86pSimdMovd,       /* MOVD    32 bits between an MMX/XMM register and r/m32 */
+  kX86pSimdMovaps,     /* MOVAPS/MOVUPS/MOVDQA/MOVDQU: 128 bits, either way */
+  kX86pSimdMovss,      /* MOVSS   the low float only, or a zeroing load */
+  kX86pSimdMovlps,     /* MOVLPS/MOVLPD  the low 64 bits */
+  kX86pSimdMovhps,     /* MOVHPS/MOVHPD  the high 64 bits */
+  kX86pSimdMovhlps,    /* MOVHLPS xmm.low <- src.high */
+  kX86pSimdMovlhps,    /* MOVLHPS xmm.high <- src.low */
+  kX86pSimdMovmskps,   /* MOVMSKPS  four sign bits into a general register */
+  kX86pSimdMovmskpd,   /* MOVMSKPD  two sign bits into a general register */
+  kX86pSimdMovsd,      /* MOVSD (SSE2) the low double only, or a zeroing load */
+  kX86pSimdMaskmovdqu, /* MASKMOVDQU  byte-masked store to [EDI] */
+  kX86pSimdPmovmskb,   /* PMOVMSKB  sign bit of each byte */
 
   /* ---- MMX / SSE integer ---- */
   kX86pSimdPand,
@@ -117,6 +122,13 @@ typedef enum X86pSimdOp {
   kX86pSimdPinsrw,
   kX86pSimdPshufw,
   kX86pSimdPshufd,
+  kX86pSimdPshuflw,
+  kX86pSimdPshufhw,
+  kX86pSimdPslldq,
+  kX86pSimdPsrldq,
+  kX86pSimdPunpcklqdq, /* and UNPCKLPD */
+  kX86pSimdPunpckhqdq, /* and UNPCKHPD */
+  kX86pSimdPmuludq,
 
   /* ---- SSE single precision ---- */
   kX86pSimdAddps,
@@ -150,6 +162,43 @@ typedef enum X86pSimdOp {
   kX86pSimdCvtpi2ps,
   kX86pSimdCvtps2pi,
   kX86pSimdCvttps2pi,
+  kX86pSimdCvtdq2ps,
+  kX86pSimdCvtps2dq,
+  kX86pSimdCvttps2dq,
+
+  /* ---- SSE2 double precision, evaluated by simd_double.c ---- */
+  kX86pSimdAddpd,
+  kX86pSimdSubpd,
+  kX86pSimdMulpd,
+  kX86pSimdDivpd,
+  kX86pSimdMinpd,
+  kX86pSimdMaxpd,
+  kX86pSimdSqrtpd,
+  kX86pSimdAddsd,
+  kX86pSimdSubsd,
+  kX86pSimdMulsd,
+  kX86pSimdDivsd,
+  kX86pSimdMinsd,
+  kX86pSimdMaxsd,
+  kX86pSimdSqrtsd,
+  kX86pSimdCmppd,
+  kX86pSimdCmpsd,
+  kX86pSimdComisd,
+  kX86pSimdUcomisd,
+  kX86pSimdShufpd,
+  kX86pSimdCvtps2pd,
+  kX86pSimdCvtpd2ps,
+  kX86pSimdCvtss2sd,
+  kX86pSimdCvtsd2ss,
+  kX86pSimdCvtdq2pd,
+  kX86pSimdCvtpd2dq,
+  kX86pSimdCvttpd2dq,
+  kX86pSimdCvtsi2sd,
+  kX86pSimdCvtsd2si,
+  kX86pSimdCvttsd2si,
+  kX86pSimdCvtpi2pd,
+  kX86pSimdCvtpd2pi,
+  kX86pSimdCvttpd2pi,
 
   /* ---- 3DNow!, evaluated by three_dnow.c ---- */
   kX86pSimdPf,
@@ -178,6 +227,18 @@ typedef enum X86pSimdStatus {
 } X86pSimdStatus;
 
 X86pSimdStatus x86p_simd_execute(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr);
+
+/* The same, with the instruction's memory operand at `memory`: host bytes a
+   translated block has already bounds-checked for x86p_simd_memory_bytes. */
+X86pSimdStatus x86p_simd_execute_host(X86pCpu *cpu, uint8_t *memory, const X86pInsn *insn);
+
+/* COMISS, UCOMISS, COMISD and UCOMISD: the forms that write EFLAGS (and no
+   register). */
+int x86p_simd_writes_flags(X86pSimdOp op);
+
+/* How many bytes the instruction reads or writes at its memory operand, or 0
+   when it accesses none. */
+unsigned x86p_simd_memory_bytes(const X86pInsn *insn);
 
 /* Map a disassembler's spelling to an operation. Returns 0 when this framework
    has no name for it, which is a different fact from having no semantics. */

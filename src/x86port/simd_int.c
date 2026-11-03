@@ -408,6 +408,47 @@ int x86p_simd_int(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t imm
     }
     r.bytes = 16u;
     break;
+  case kX86pSimdPshuflw:
+  case kX86pSimdPshufhw: {
+    /* One half is shuffled by the immediate and the other copied from the source. */
+    unsigned half = (op == kX86pSimdPshufhw) ? 4u : 0u;
+    r = *b;
+    r.bytes = 16u;
+    for (i = 0; i < 4u; i++) {
+      vec_set_u16(&r, half + i, vec_u16(b, half + (unsigned)((imm >> (i * 2u)) & 3u)));
+    }
+    break;
+  }
+  case kX86pSimdPslldq:
+  case kX86pSimdPsrldq: {
+    /* A byte shift of the whole register; the count is the immediate in b. */
+    unsigned c = vec_u8(b, 0);
+    r.bytes = 16u;
+    for (i = 0; i < 16u && c < 16u; i++) {
+      if (op == kX86pSimdPslldq && i >= c) {
+        r.b[i] = a->b[i - c];
+      } else if (op == kX86pSimdPsrldq && i + c < 16u) {
+        r.b[i] = a->b[i + c];
+      }
+    }
+    break;
+  }
+  case kX86pSimdPunpcklqdq:
+    vec_set_u64(&r, 0, vec_u64(a, 0));
+    vec_set_u64(&r, 1, vec_u64(b, 0));
+    r.bytes = 16u;
+    break;
+  case kX86pSimdPunpckhqdq:
+    vec_set_u64(&r, 0, vec_u64(a, 1));
+    vec_set_u64(&r, 1, vec_u64(b, 1));
+    r.bytes = 16u;
+    break;
+  case kX86pSimdPmuludq:
+    n = a->bytes / 8u;
+    for (i = 0; i < n; i++) {
+      vec_set_u64(&r, i, (uint64_t)vec_u32(a, i * 2u) * (uint64_t)vec_u32(b, i * 2u));
+    }
+    break;
 
   default:
     return 0;
