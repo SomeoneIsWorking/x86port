@@ -214,6 +214,8 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FILD_M32(d) 0xDB, 0x43, (d)           /* DB /0 */
 #define FILD_M64(d) 0xDF, 0x6B, (d)           /* DF /5 */
 #define FLDCW(d) 0xD9, 0x6B, (d)              /* D9 /5 */
+#define FNSTCW(d) 0xD9, 0x7B, (d)             /* D9 /7 */
+#define FWAIT 0x9B                            /* 9B */
 #define FADD_M32(d) 0xD8, 0x43, (d)           /* D8 /0 */
 #define FMUL_M64(d) 0xDC, 0x4B, (d)           /* DC /1 */
 #define FMUL_M32(d) 0xD8, 0x4B, (d)           /* D8 /1 */
@@ -372,6 +374,13 @@ static const Case kCases[] = {
      CODE(FLDCW(16), FLD_M32(0), FDIV_M32(4), FADD_M32(4), FSTP_M64(24)),
      5,
      {F32_ONE, F32_THREE, 0, 0, CW_SINGLE},
+     0},
+
+    /* Control-word moves and FWAIT call nothing: the value they leave cached is still flushed. */
+    {"FNSTCW, FLDCW and FWAIT over a cached value",
+     CODE(FLD_M32(0), FMUL_M64(8), FNSTCW(20), FLDCW(16), FWAIT, SETB_CL, FSTP_M32(4)),
+     7,
+     {F32_THREE, 0, 0, 0x40000000u, CW_TRUNCATE},
      0},
 
     /* Stack faults. */

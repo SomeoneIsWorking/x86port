@@ -476,11 +476,12 @@ static void emit_x87_register_inline(BlockCtx *c, const X86pInsn *insn) {
  * One X87 instruction. The forms with an inline path keep the host-stack
  * mirror (jit_x64_x87_inline.h) across themselves, and pop it themselves when
  * a shape has no inline form; the rest call a helper, so the mirror is popped
- * first. FWAIT emits nothing and keeps it.
+ * first. FWAIT emits nothing, and FLDCW/FNSTCW only move a word, so both keep it.
  */
 void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (insn->x87 == kX86pX87InsnWait) {
     /* The synchronous, masked-exception model has no pending work. */
+    c->x87_kept = 1;
     return;
   }
   if (x87_arith_is_emittable(insn)) {
@@ -505,6 +506,7 @@ void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     /* FLDCW/FNSTCW move a word and call nothing. A new guest control word
        sends the inline forms after it to their slow paths by itself. */
     emit_x87_control(c, insn, insn_eip);
+    c->x87_kept = 1;
   } else {
     x87_cache_flush(c);
     if (x87_fn_is_emittable(insn)) {
