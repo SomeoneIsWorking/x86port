@@ -63,6 +63,15 @@ int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index) {
   f->status &= (uint16_t)~X86P_X87_C1;
   return 1;
 }
+void x86p_x87_compare_flags_pop(X86pX87 *f, X86pFlags *flags, int index, unsigned pops) {
+  unsigned i;
+  if (!x86p_x87_compare_flags(f, flags, index)) {
+    return;
+  }
+  for (i = 0; i < pops; i++) {
+    x86p_x87_pop(f, NULL);
+  }
+}
 void x86p_x87_free(X86pX87 *f, int index) {
   if (!f || index < 0 || index >= X86P_X87_REGS) {
     return;

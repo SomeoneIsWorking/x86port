@@ -169,9 +169,12 @@ void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
  */
 enum { kShapeKindBits = 4, kShapeRegBits = 3 };
 
+/* MMX registers alias the x87 file; SIMD does not keep the x87 mirror, so the
+   block has flushed it and the helper finds the register file complete. */
 static int call_operand_ok(const X86pOperand *o) {
   switch (o->kind) {
   case kX86pOperandXmm:
+  case kX86pOperandMmx:
     return o->reg >= 0 && o->reg < 8;
   case kX86pOperandReg:
     return o->reg >= 0 && o->reg < 8 && o->size == 4;
@@ -180,7 +183,7 @@ static int call_operand_ok(const X86pOperand *o) {
   case kX86pOperandImm:
     return 1;
   default:
-    return 0; /* MMX aliases the x87 file, which a block may hold on the host stack */
+    return 0;
   }
 }
 

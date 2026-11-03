@@ -19,5 +19,6 @@ int x87_store_mem_is_emittable(const X86pInsn *insn);
 int x87_constant_is_emittable(const X86pInsn *insn);
 int x87_status_ax_is_emittable(const X86pInsn *insn);
 int x87_clear_exceptions_is_emittable(const X86pInsn *insn);
+int x87_compare_flags_is_emittable(const X86pInsn *insn);
 
 #endif

@@ -248,6 +248,13 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FCOMP_M64(d) 0xDC, 0x5B, (d) /* DC /3 */
 #define FICOM_M32(d) 0xDA, 0x53, (d) /* DA /2 */
 #define FNSTSW_AX 0xDF, 0xE0
+#define FCOMI_ST(i) 0xDB, (0xF0 + (i))
+#define FUCOMI_ST(i) 0xDB, (0xE8 + (i))
+#define FCOMIP_ST(i) 0xDF, (0xF0 + (i))
+#define FUCOMIP_ST(i) 0xDF, (0xE8 + (i))
+/* EFLAGS to [ebx+d8], where the data-page comparison sees it. */
+#define FLAGS_TO_M(d) 0x9C, 0x58, 0x89, 0x43, (d)
+#define SETB_CL 0x0F, 0x92, 0xC1
 #define MOV_M_EAX(d) 0x89, 0x43, (d) /* mov [ebx+d8], eax */
 #define FLD_ST(i) 0xD9, (0xC0 + (i))
 #define FST_ST(i) 0xDD, (0xD0 + (i))
@@ -630,6 +637,30 @@ static const Case kCases[] = {
           FNSTSW_AX),
      15,
      {F32_ONE, F32_THREE},
+     0},
+    {"flag compares",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FCOMI_ST(1),
+          FLAGS_TO_M(32),
+          FXCH_ST(1),
+          ADD_EAX_EBX, /* CF clear, so a condition read from its flags is wrong */
+          FUCOMI_ST(1),
+          SETB_CL,
+          FLAGS_TO_M(36),
+          FLD_ST(0),
+          FCOMIP_ST(1),
+          FLAGS_TO_M(40),
+          FUCOMIP_ST(1),
+          FLAGS_TO_M(44),
+          FSTP_M32(48)),
+     23,
+     {F32_ONE, F32_THREE},
+     0},
+    {"unordered and empty flag compares",
+     CODE(FLD_M32(0), FLD_M32(4), FUCOMIP_ST(1), FLAGS_TO_M(32), FCOMI_ST(3), FLAGS_TO_M(36)),
+     10,
+     {F32_ONE, F32_QNAN},
      0},
     {"an unordered register compare",
      CODE(FLD_M32(0), FLD_M32(4), FUCOMPP, FNSTSW_AX, MOV_M_EAX(32), FLD_M32(4), FCOM_ST(3)),

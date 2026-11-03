@@ -338,7 +338,7 @@ static int can_emit(const X86pInsn *insn) {
            (insn->x87 == kX86pX87InsnWait && insn->operands == 0) || x87_load_is_emittable(insn) ||
            x87_arith_is_emittable(insn) || x87_store_reg_is_emittable(insn) || x87_store_mem_is_emittable(insn) ||
            x87_compare_mem_is_emittable(insn) || x87_constant_is_emittable(insn) || x87_status_ax_is_emittable(insn) ||
-           x87_clear_exceptions_is_emittable(insn);
+           x87_clear_exceptions_is_emittable(insn) || x87_compare_flags_is_emittable(insn);
   default:
     return 0;
   }
@@ -1045,6 +1045,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnX87:
       emit_x87(&ctx, &insn, pc);
+      if (insn.x87 == (uint8_t)kX86pX87InsnCompareInt) {
+        last_kind = -1;
+        last_w = -1;
+      }
       break;
     case kX86pInsnPush:
       emit_push(&ctx, &insn, pc);

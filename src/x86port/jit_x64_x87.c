@@ -434,6 +434,19 @@ void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   }
 }
 
+static void x87_compare_flags_call(X86pCpu *cpu, uint32_t index, uint32_t pops) {
+  x86p_x87_compare_flags_pop(&cpu->x87, &cpu->flags, (int)index, pops);
+}
+
+/* FCOMI/FUCOMI(P): a helper call; the caller records the flags as unknown. */
+static void emit_x87_compare_flags(BlockCtx *c, const X86pInsn *insn) {
+  const int index = insn->operands == 2 ? insn->operand[1].reg : insn->operand[0].reg;
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, (uint32_t)index);
+  x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG2, insn->x87_pops);
+  x87_call(c->e, (const void *)&x87_compare_flags_call);
+}
+
 void emit_x87_fn(BlockCtx *c, const X86pInsn *insn) {
   x87_lea_self(c->e);
   x86p_emit_mov_r32_imm32(c->e, X86P_JIT_HOST_ARG1, insn->x87_fn);
@@ -496,6 +509,8 @@ void emit_x87(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
     x87_cache_flush(c);
     if (x87_fn_is_emittable(insn)) {
       emit_x87_fn(c, insn);
+    } else if (x87_compare_flags_is_emittable(insn)) {
+      emit_x87_compare_flags(c, insn);
     } else {
       emit_x87_clear_exceptions(c);
     }

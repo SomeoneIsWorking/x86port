@@ -353,9 +353,7 @@ static void execute(Ctx *c) {
     const int index = in->operands == 2                                   ? in->operand[1].reg
                       : (in->operands == 1 && o0->kind == kX86pOperandSt) ? o0->reg
                                                                           : 1;
-    if (x86p_x87_compare_flags(f, &c->cpu->flags, index)) {
-      do_pops(c, in->x87_pops);
-    }
+    x86p_x87_compare_flags_pop(f, &c->cpu->flags, index, in->x87_pops);
     return;
   }
 

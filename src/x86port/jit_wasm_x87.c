@@ -38,9 +38,7 @@ int x86p_wasm_x87_accepts(const X86pInsn *insn) {
   case kX86pX87InsnFree:
     return insn->operands == 1 && stack_operand(&insn->operand[0]);
   case kX86pX87InsnCompareInt:
-    return x87_values_are_emittable() && ((insn->operands == 1 && stack_operand(&insn->operand[0])) ||
-                                          (insn->operands == 2 && stack_operand(&insn->operand[0]) &&
-                                           insn->operand[0].reg == 0 && stack_operand(&insn->operand[1])));
+    return x87_compare_flags_is_emittable(insn);
   case kX86pX87InsnCmov:
     return x87_values_are_emittable() && insn->operands == 2 && stack_operand(&insn->operand[0]) &&
            insn->operand[0].reg == 0 && stack_operand(&insn->operand[1]) && insn->cond < kX86pCondCount;

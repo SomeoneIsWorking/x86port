@@ -158,3 +158,18 @@ int x87_status_ax_is_emittable(const X86pInsn *insn) {
 int x87_clear_exceptions_is_emittable(const X86pInsn *insn) {
   return insn->x87 == (uint8_t)kX86pX87InsnClearExc && insn->operands == 0;
 }
+
+/* FCOMI, FUCOMI and their popping forms: ST(0) against ST(i), written as
+   "ST(i)" or "ST(0), ST(i)". */
+int x87_compare_flags_is_emittable(const X86pInsn *insn) {
+  const X86pOperand *o0 = &insn->operand[0];
+  const X86pOperand *o1 = &insn->operand[1];
+  if (!x87_values_are_emittable() || insn->x87 != (uint8_t)kX86pX87InsnCompareInt) {
+    return 0;
+  }
+  if (insn->operands == 1) {
+    return o0->kind == kX86pOperandSt && o0->reg >= 0 && o0->reg < X86P_X87_REGS;
+  }
+  return insn->operands == 2 && o0->kind == kX86pOperandSt && o0->reg == 0 && o1->kind == kX86pOperandSt &&
+         o1->reg >= 0 && o1->reg < X86P_X87_REGS;
+}
