@@ -67,10 +67,11 @@ static void seed(X86pCpu *cpu) {
 static void load_case(const Case *k) {
   memset(g_guest, 0x90, GUEST_SIZE);
   memcpy(g_guest, k->code, k->code_len);
-  /* RCPPS XMM0, XMM0: decodable and refused by name, so the block stops here. */
+  /* PFRCP MM0, MM0: decodable and refused by name, so the block stops here. */
   g_guest[k->code_len] = 0x0Fu;
-  g_guest[k->code_len + 1u] = 0x53u;
+  g_guest[k->code_len + 1u] = 0x0Fu;
   g_guest[k->code_len + 2u] = 0xC0u;
+  g_guest[k->code_len + 3u] = 0x96u;
   memcpy(g_guest + DATA_OFF, k->data, sizeof k->data);
 }
 

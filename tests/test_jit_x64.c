@@ -1568,13 +1568,9 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
  * runs a single instruction between two identical states, so a failure names
  * the shape that is wrong and nothing else.
  *
- * The terminator is RCPPS (0F 53 C0): decodable, NAMED, and deliberately
- * without semantics -- its result comes from a hardware table to about twelve
- * mantissa bits, and simd.c refuses it rather than writing 1.0f/x. That makes
- * it the stable choice for a stopper: an instruction merely not implemented
- * YET stops being one the day it is implemented, and this test has already
- * had to move twice for that reason. It still checks the block length rather
- * than trusting the arrangement.
+ * The terminator is PFRCP (0F 0F C0 96): decodable, named, and refused by
+ * design on every host, so it stays a stopper. The test still checks the block
+ * length rather than trusting the arrangement.
  */
 static unsigned long g_single_compares;
 
@@ -1634,10 +1630,11 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
         continue;
       }
     }
-    /* RCPPS XMM0, XMM0 -- decodable, refused on purpose, stops the block. */
+    /* PFRCP MM0, MM0 -- decodable, refused on purpose, stops the block. */
     g_guest[len] = 0x0Fu;
-    g_guest[len + 1u] = 0x53u;
+    g_guest[len + 1u] = 0x0Fu;
     g_guest[len + 2u] = 0xC0u;
+    g_guest[len + 3u] = 0x96u;
 
     seed_cpu(&ci, seed);
     seed_cpu(&cj, seed);
@@ -1724,10 +1721,11 @@ static void test_unsupported_at_entry_produces_no_block(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* RCPPS XMM0, XMM0 -- decodes, and is refused on purpose. */
+  /* PFRCP MM0, MM0 -- decodes, and is refused on purpose. */
   g_guest[0] = 0x0Fu;
-  g_guest[1] = 0x53u;
+  g_guest[1] = 0x0Fu;
   g_guest[2] = 0xC0u;
+  g_guest[3] = 0x96u;
 
   memset(&blk, 0xEE, sizeof blk);
   reason[0] = '\0';
@@ -1735,7 +1733,7 @@ static void test_unsupported_at_entry_produces_no_block(void) {
   CHECK(st == kX86pJitUnsupportedAtEntry);
   /* The refusal NAMES the instruction. "Unsupported" without a mnemonic makes
      the unmodelled set a number instead of a work list. */
-  CHECK(strstr(reason, "RCPPS") != NULL);
+  CHECK(strstr(reason, "PFRCP") != NULL);
   jit_x64_harness_code_free(code, 4096);
 }
 
@@ -1753,12 +1751,13 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
     return;
   }
   memset(g_guest, 0, GUEST_SIZE);
-  /* MOV EAX, 0x11223344 ; RCPPS XMM0, XMM0 */
+  /* MOV EAX, 0x11223344 ; PFRCP MM0, MM0 */
   g_guest[0] = 0xB8u;
   put_u32(g_guest + 1, 0x11223344u);
   g_guest[5] = 0x0Fu;
-  g_guest[6] = 0x53u;
+  g_guest[6] = 0x0Fu;
   g_guest[7] = 0xC0u;
+  g_guest[8] = 0x96u;
 
   st = jit_x64_harness_translate(&mem, GUEST_BASE, code, 4096, &blk, reason, sizeof reason);
   CHECK(st == kX86pJitOk);
@@ -1768,7 +1767,7 @@ static void test_block_stops_at_unsupported_with_eip_on_it(void) {
   }
   CHECK(blk.insns == 1u);
   CHECK(blk.guest_len == 5u);
-  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "RCPPS") == 0);
+  CHECK(blk.stopper != NULL && strcmp(blk.stopper, "PFRCP") == 0);
 
   seed_cpu(&cpu, 99u);
   exit = x86p_jit_enter(&blk, &cpu);

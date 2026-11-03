@@ -882,10 +882,11 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   char reason[256];
 
   memset(g_guest, 0x90, sizeof g_guest);
-  /* RCPPS remains a named unsupported instruction in both backends. */
+  /* PFRCP remains a named unsupported instruction in both backends. */
   g_guest[0] = 0x0F;
-  g_guest[1] = 0x53;
+  g_guest[1] = 0x0F;
   g_guest[2] = 0xC0;
+  g_guest[3] = 0x96;
 
   reason[0] = '\0';
   eng = x86p_jit_engine_create(&mem, 1u << 16, 256u, reason, sizeof reason);
@@ -897,7 +898,7 @@ static void test_unsupported_instruction_is_a_product_refusal(void) {
   before = cpu;
   CHECK(x86p_jit_engine_run(eng, &cpu, NULL, 100u, reason, sizeof reason) == kX86pRunUnsupported);
   CHECK(x86p_cpu_diff(&cpu, &before, NULL, NULL) == 0u);
-  CHECK(strstr(reason, "RCPPS") != NULL);
+  CHECK(strstr(reason, "PFRCP") != NULL);
   x86p_jit_engine_stats(eng, &stats);
   CHECK(stats.blocks_entered == 0u);
   CHECK(stats.translate_refusals == 1u);

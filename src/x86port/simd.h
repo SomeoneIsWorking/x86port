@@ -25,12 +25,10 @@
  *
  * WHAT IS REFUSED BY NAME, and why refusing is the honest answer:
  * RCPPS, RCPSS, RSQRTPS, RSQRTSS and the 3DNow! approximation family produce
- * results from hardware tables to a specified number of mantissa bits. Writing
- * 1.0f/x agrees to about six digits and differs in the low bits, and a fast
- * reciprocal that is subtly wrong surfaces as drift a thousand frames later.
- * They return a named refusal, and the count of them is published rather than
- * buried: 100% coverage that included a guess would be worth less than 99.99%
- * that does not.
+ * results from hardware tables. Writing 1.0f/x differs in the low bits, so the
+ * SSE four run as the host's own instruction where the host is x86
+ * (simd_approx.h) and are refused by name elsewhere; the 3DNow! family is
+ * refused by name everywhere.
  */
 #ifndef X86PORT_SIMD_H
 #define X86PORT_SIMD_H

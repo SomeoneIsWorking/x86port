@@ -16,12 +16,9 @@
  *   - MXCSR's rounding-control field is likewise not honoured. The same
  *     applies, and CVTTSS2SI -- which truncates regardless of it -- is the one
  *     conversion that is right either way.
- *   - RCPPS, RCPSS, RSQRTPS and RSQRTSS are NOT here. They produce results
- *     from a hardware table to about twelve mantissa bits, and `1.0f / x`
- *     agrees to six digits and differs below that. They are refused by name in
- *     simd.c, which is the honest answer: a wrong reciprocal surfaces as
- *     geometry drift a thousand frames later, and the test that would catch it
- *     is the one nobody writes.
+ *   - RCPPS, RCPSS, RSQRTPS and RSQRTSS come from a hardware table, so only
+ *     the host's own instruction reproduces them (simd_approx.c); a host
+ *     without it refuses them by name in simd.c.
  *
  * MIN AND MAX ARE NOT COMMUTATIVE, and that is architectural rather than an
  * implementation detail: MINPS returns the SECOND operand when the two are
@@ -29,6 +26,7 @@
  * values and wrong for every NaN, which is precisely the case a shader-adjacent
  * math library produces.
  */
+#include "simd_approx.h"
 #include "simd_internal.h"
 #include "simd_packed.h"
 
@@ -92,6 +90,19 @@ int x86p_simd_float(X86pSimdOp op, const X86pVec *a, const X86pVec *b, uint8_t i
     for (i = 0; i < n; i++) {
       vec_set_f32(&r, i, x86p_sse_nan_result(vec_f32(b, i), vec_f32(b, i), sqrtf(vec_f32(b, i))));
     }
+    break;
+
+  case kX86pSimdRcpps:
+    x86p_simd_rcpps(r.b, b->b);
+    break;
+  case kX86pSimdRsqrtps:
+    x86p_simd_rsqrtps(r.b, b->b);
+    break;
+  case kX86pSimdRcpss:
+    vec_set_f32(&r, 0, x86p_simd_rcpss(vec_f32(b, 0)));
+    break;
+  case kX86pSimdRsqrtss:
+    vec_set_f32(&r, 0, x86p_simd_rsqrtss(vec_f32(b, 0)));
     break;
 
   /* ---- scalar: lane 0 only, the rest of the destination untouched ---- */

@@ -134,6 +134,8 @@ INSN(k_divps, 0x0Fu, 0x5Eu, 0xC1u)
 INSN(k_minps, 0x0Fu, 0x5Du, 0xC1u)
 INSN(k_maxps, 0x0Fu, 0x5Fu, 0xC1u)
 INSN(k_sqrtps, 0x0Fu, 0x51u, 0xC1u)
+INSN(k_rsqrtps, 0x0Fu, 0x52u, 0xC1u)
+INSN(k_rcpps, 0x0Fu, 0x53u, 0xC1u)
 INSN(k_andps, 0x0Fu, 0x54u, 0xC1u)
 INSN(k_andnps, 0x0Fu, 0x55u, 0xC1u)
 INSN(k_orps, 0x0Fu, 0x56u, 0xC1u)
@@ -150,6 +152,8 @@ INSN(k_divss, 0xF3u, 0x0Fu, 0x5Eu, 0xC1u)
 INSN(k_minss, 0xF3u, 0x0Fu, 0x5Du, 0xC1u)
 INSN(k_maxss, 0xF3u, 0x0Fu, 0x5Fu, 0xC1u)
 INSN(k_sqrtss, 0xF3u, 0x0Fu, 0x51u, 0xC1u)
+INSN(k_rsqrtss, 0xF3u, 0x0Fu, 0x52u, 0xC1u)
+INSN(k_rcpss, 0xF3u, 0x0Fu, 0x53u, 0xC1u)
 INSN(k_movss, 0xF3u, 0x0Fu, 0x10u, 0xC1u)
 INSN(k_movhlps, 0x0Fu, 0x12u, 0xC1u)
 INSN(k_movlhps, 0x0Fu, 0x16u, 0xC1u)
@@ -268,6 +272,8 @@ static const Case kCases[] = {
     C("MINPS", kX86pSimdMinps, kFormXmm, k_minps),
     C("MAXPS", kX86pSimdMaxps, kFormXmm, k_maxps),
     C("SQRTPS", kX86pSimdSqrtps, kFormXmm, k_sqrtps),
+    C("RSQRTPS", kX86pSimdRsqrtps, kFormXmm, k_rsqrtps),
+    C("RCPPS", kX86pSimdRcpps, kFormXmm, k_rcpps),
     C("ANDPS", kX86pSimdAndps, kFormXmm, k_andps),
     C("ANDNPS", kX86pSimdAndnps, kFormXmm, k_andnps),
     C("ORPS", kX86pSimdOrps, kFormXmm, k_orps),
@@ -283,6 +289,8 @@ static const Case kCases[] = {
     C("MINSS", kX86pSimdMinss, kFormXmm, k_minss),
     C("MAXSS", kX86pSimdMaxss, kFormXmm, k_maxss),
     C("SQRTSS", kX86pSimdSqrtss, kFormXmm, k_sqrtss),
+    C("RSQRTSS", kX86pSimdRsqrtss, kFormXmm, k_rsqrtss),
+    C("RCPSS", kX86pSimdRcpss, kFormXmm, k_rcpss),
     C("MOVSS", kX86pSimdMovss, kFormXmm, k_movss),
     C("MOVHLPS", kX86pSimdMovhlps, kFormXmm, k_movhlps),
     C("MOVLHPS", kX86pSimdMovlhps, kFormXmm, k_movlhps),

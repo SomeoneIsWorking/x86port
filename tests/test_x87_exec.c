@@ -498,11 +498,9 @@ static void test_faulting_store_does_not_pop(void) {
  * no report.
  */
 static void test_unmodelled_x87_is_named(void) {
-  /* RCPPS, not FSIN: FSIN now runs on the host's own x87 unit. See the same
-     case in test_exec.c for why a refused-by-decision instruction is the right
-     subject for a test of the refusal path. */
-  static const uint8_t code[] = {0x0f, 0x53, 0xc0, 0xf4}; /* RCPPS XMM0,XMM0 / HLT */
-  static const char *const asm_[] = {"RCPPS", "HLT"};
+  /* A refused-by-decision instruction, as in test_exec.c. */
+  static const uint8_t code[] = {0x0f, 0x0f, 0xc0, 0x96, 0xf4}; /* PFRCP MM0,MM0 / HLT */
+  static const char *const asm_[] = {"PFRCP", "HLT"};
   X86pCpu cpu;
   X86pMem m = arena();
   X86pStepReport rep;
@@ -513,8 +511,8 @@ static void test_unmodelled_x87_is_named(void) {
   cpu.eip = CODE_BASE;
 
   CHECK_EQ_U(x86p_step(&cpu, &m, &rep), kX86pStepUnsupported);
-  CHECK(strcmp(rep.mnemonic, "RCPPS") == 0);
-  CHECK_EQ_U(rep.length, 3u); /* it DECODED; only the semantics are refused */
+  CHECK(strcmp(rep.mnemonic, "PFRCP") == 0);
+  CHECK_EQ_U(rep.length, 4u); /* it DECODED; only the semantics are refused */
   CHECK_EQ_U(cpu.eip, CODE_BASE);
 }
 

@@ -142,6 +142,7 @@ add_library(x86port_runtime STATIC
   src/x86port/bit_ops.c
   src/x86port/simd.c
   src/x86port/simd_int.c
+  src/x86port/simd_approx.c
   src/x86port/simd_float.c
   src/x86port/simd_double.c
   src/x86port/simd_packed.c

@@ -66,11 +66,12 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
   X86pJitEngineStats stats;
   X86pJitRunStatus status;
 
-  /* RCPPS remains a named unsupported instruction in both backends. */
+  /* PFRCP remains a named unsupported instruction in both backends. */
   guest[0] = 0x0Fu;
-  guest[1] = 0x53u;
+  guest[1] = 0x0Fu;
   guest[2] = 0xC0u;
-  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + 3u);
+  guest[3] = 0x96u;
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + 4u);
   x86p_cpu_reset(cpu);
   cpu->eip = kGuestBase;
   cpu->reg[kX86pEsp] = kGuestBase + 0x800u;
@@ -80,8 +81,8 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
   return expect(status == kX86pRunUnsupported, "unsupported instruction did not return the product refusal") &&
          expect(cpu->eip == kGuestBase, "unsupported instruction changed EIP") &&
          expect(cpu->reg[kX86pEsp] == kGuestBase + 0x800u, "unsupported instruction changed guest state") &&
-         expect(strstr(reason, "RCPPS") != NULL, "entry refusal omitted the decoded mnemonic") &&
-         expect(strstr(reason, "0f 53 c0") != NULL, "entry refusal omitted the instruction bytes") &&
+         expect(strstr(reason, "PFRCP") != NULL, "entry refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "0f 0f c0 96") != NULL, "entry refusal omitted the instruction bytes") &&
          expect(stats.translate_refusals == 1u, "unsupported translation was not counted");
 }
 
@@ -96,8 +97,9 @@ static int setz_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
       0x94,
       0xC2, /* SETZ DL */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -115,8 +117,8 @@ static int setz_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
          expect(cpu->eip == kGuestBase + 8u, "product did not execute through SETZ") &&
          expect(cpu->reg[kX86pEax] == 42u, "translated prefix did not execute before refusal") &&
          expect(cpu->reg[kX86pEdx] == 0x11223300u, "SETZ DL did not preserve the upper register bytes") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-SETZ refusal omitted the decoded mnemonic") &&
-         expect(strstr(reason, "0f 53 c0") != NULL, "post-SETZ refusal omitted the instruction bytes") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-SETZ refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "0f 0f c0 96") != NULL, "post-SETZ refusal omitted the instruction bytes") &&
          expect(stats.translate_refusals == 2u, "post-SETZ refusal was not counted");
 }
 
@@ -136,8 +138,9 @@ static int cdq_and_div_execute_before_a_named_refusal(X86pJitEngine *engine, X86
       0xF7,
       0xF1, /* DIV ECX */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -155,8 +158,8 @@ static int cdq_and_div_execute_before_a_named_refusal(X86pJitEngine *engine, X86
          expect(cpu->eip == kGuestBase + 13u, "product did not execute through CDQ and DIV") &&
          expect(cpu->reg[kX86pEax] == 6u, "DIV did not write the quotient") &&
          expect(cpu->reg[kX86pEdx] == 0u, "DIV did not write the remainder") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-DIV refusal omitted the decoded mnemonic") &&
-         expect(strstr(reason, "0f 53 c0") != NULL, "post-DIV refusal omitted the instruction bytes") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-DIV refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "0f 0f c0 96") != NULL, "post-DIV refusal omitted the instruction bytes") &&
          expect(stats.translate_refusals == 3u, "post-DIV refusal was not counted");
 }
 
@@ -176,8 +179,9 @@ static int idiv_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
       0xF7,
       0xF9, /* IDIV ECX */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -194,7 +198,7 @@ static int idiv_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *
          expect(cpu->eip == kGuestBase + 13u, "product did not execute through IDIV") &&
          expect(cpu->reg[kX86pEax] == 0xFFFFFFFEu, "IDIV did not write the signed quotient") &&
          expect(cpu->reg[kX86pEdx] == 0xFFFFFFFFu, "IDIV did not write the signed remainder") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-IDIV refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-IDIV refusal omitted the decoded mnemonic") &&
          expect(stats.translate_refusals == 4u, "post-IDIV refusal was not counted");
 }
 
@@ -210,8 +214,9 @@ static int imul_memory_executes_before_a_named_refusal(X86pJitEngine *engine, X8
       0x4D,
       0x0C, /* IMUL ECX, dword [EBP+0x0C] */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -229,7 +234,7 @@ static int imul_memory_executes_before_a_named_refusal(X86pJitEngine *engine, X8
   return expect(status == kX86pRunUnsupported, "post-IMUL refusal did not return the product status") &&
          expect(cpu->eip == kGuestBase + 9u, "product did not execute through IMUL") &&
          expect(cpu->reg[kX86pEcx] == 21u, "IMUL did not write its low 32-bit product") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-IMUL refusal omitted the decoded mnemonic") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-IMUL refusal omitted the decoded mnemonic") &&
          expect(stats.translate_refusals == 5u, "post-IMUL refusal was not counted");
 }
 
@@ -244,8 +249,9 @@ static int imul_immediate_alias_executes_before_a_named_refusal(X86pJitEngine *e
       0xF6,
       0x38, /* IMUL ESI, ESI, 56 */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -261,7 +267,7 @@ static int imul_immediate_alias_executes_before_a_named_refusal(X86pJitEngine *e
   return expect(status == kX86pRunUnsupported, "post-IMUL-immediate refusal did not return the product status") &&
          expect(cpu->eip == kGuestBase + 8u, "product did not execute through IMUL immediate") &&
          expect(cpu->reg[kX86pEsi] == 168u, "IMUL immediate did not preserve source aliasing") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-IMUL-immediate refusal omitted the mnemonic") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-IMUL-immediate refusal omitted the mnemonic") &&
          expect(stats.translate_refusals == 6u, "post-IMUL-immediate refusal was not counted");
 }
 
@@ -269,8 +275,9 @@ static int xchg_eax_esp_executes_before_a_named_refusal(X86pJitEngine *engine, X
   static const uint8_t program[] = {
       0x94, /* XCHG EAX, ESP */
       0x0F,
-      0x53,
-      0xC0 /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96 /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -289,7 +296,7 @@ static int xchg_eax_esp_executes_before_a_named_refusal(X86pJitEngine *engine, X
          expect(cpu->eip == kGuestBase + 1u, "product did not execute through XCHG") &&
          expect(cpu->reg[kX86pEax] == 0x89ABCDEFu, "XCHG did not write EAX") &&
          expect(cpu->reg[kX86pEsp] == 0x12345678u, "XCHG did not write ESP") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-XCHG refusal omitted the mnemonic") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-XCHG refusal omitted the mnemonic") &&
          expect(stats.translate_refusals == 7u, "post-XCHG refusal was not counted");
 }
 
@@ -298,8 +305,9 @@ static int fnclex_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu
       0xDB,
       0xE2, /* FNCLEX */
       0x0F,
-      0x53,
-      0xC0, /* RCPPS XMM0, XMM0: stable named refusal. */
+      0x0F,
+      0xC0,
+      0x96, /* PFRCP MM0, MM0: stable named refusal. */
   };
   char reason[256] = {0};
   X86pJitEngineStats stats;
@@ -337,7 +345,7 @@ static int fnclex_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu
          expect(cpu->reg[kX86pEax] == UINT32_C(0xA5A5A5A5), "FNCLEX changed a general register") &&
          expect(cpu->flags.kind == (uint8_t)kX86pFlagsExplicit && cpu->flags.a == UINT32_C(0x000008D5),
                 "FNCLEX changed integer flags") &&
-         expect(strstr(reason, "RCPPS") != NULL, "post-FNCLEX refusal omitted the mnemonic") &&
+         expect(strstr(reason, "PFRCP") != NULL, "post-FNCLEX refusal omitted the mnemonic") &&
          expect(stats.translate_refusals == 8u, "post-FNCLEX refusal was not counted");
 }
 

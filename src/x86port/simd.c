@@ -15,6 +15,7 @@
  */
 #include "simd.h"
 
+#include "simd_approx.h"
 #include "simd_internal.h"
 #include "three_dnow.h"
 #include "x87.h"
@@ -228,7 +229,8 @@ static const SimdName kNames[] = {
  * this file can report rather than a property scattered through a switch.
  */
 static int is_refused(X86pSimdOp op) {
-  return op == kX86pSimdRcpps || op == kX86pSimdRcpss || op == kX86pSimdRsqrtps || op == kX86pSimdRsqrtss;
+  return !x86p_simd_approx_available() &&
+         (op == kX86pSimdRcpps || op == kX86pSimdRcpss || op == kX86pSimdRsqrtps || op == kX86pSimdRsqrtss);
 }
 
 int x86p_simd_writes_flags(X86pSimdOp op) {
@@ -489,6 +491,8 @@ static void generic_widths(X86pSimdOp op, const X86pOperand *s, unsigned w, unsi
   case kX86pSimdMinss:
   case kX86pSimdMaxss:
   case kX86pSimdSqrtss:
+  case kX86pSimdRcpss:
+  case kX86pSimdRsqrtss:
   case kX86pSimdCmpss:
   case kX86pSimdComiss:
   case kX86pSimdUcomiss:

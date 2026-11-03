@@ -479,20 +479,9 @@ static void test_memory_fault_is_named(void) {
    not advance EIP. Silence here would make "the interpreter ran it" and "the
    interpreter skipped it" the same run. */
 static void test_unsupported_is_named_and_does_not_advance(void) {
-  /*
-   * RCPPS. This was FLD, then FSIN, and each stopped testing anything the day
-   * its subject acquired semantics -- FSIN now runs on the host's own x87
-   * unit, which is exact rather than an approximation, so the reasoning that
-   * made it a good choice stopped applying and the test failed and asked to be
-   * updated, exactly as its comment said it would.
-   *
-   * RCPPS is the stable choice. Its result comes from a hardware table to
-   * about twelve mantissa bits; there is no exact way to compute it here and
-   * `1.0f / x` would be wrong below the sixth digit, so simd.c refuses it on
-   * purpose. It is unmodelled by DECISION rather than by not having got to it
-   * yet, which is what a test of the refusal path needs.
-   */
-  static const uint8_t code[] = {0x0f, 0x53, 0xc0}; /* RCPPS XMM0, XMM0 */
+  /* PFRCP: its result comes from AMD's 3DNow! table, which no host reproduces, so it is refused by
+     decision on every host -- what a test of the refusal path needs. */
+  static const uint8_t code[] = {0x0f, 0x0f, 0xc0, 0x96}; /* PFRCP MM0, MM0 */
   X86pCpu cpu;
   X86pMem m = arena();
   X86pStepReport rep;
@@ -501,8 +490,8 @@ static void test_unsupported_is_named_and_does_not_advance(void) {
   cpu.eip = CODE_BASE;
 
   CHECK_EQ_U(x86p_step(&cpu, &m, &rep), kX86pStepUnsupported);
-  CHECK(strcmp(rep.mnemonic, "RCPPS") == 0);
-  CHECK_EQ_U(rep.length, 3u); /* it DECODED; only the semantics are refused */
+  CHECK(strcmp(rep.mnemonic, "PFRCP") == 0);
+  CHECK_EQ_U(rep.length, 4u); /* it DECODED; only the semantics are refused */
   CHECK_EQ_U(rep.op, kX86pInsnSimd);
   CHECK_EQ_U(cpu.eip, CODE_BASE);
 }

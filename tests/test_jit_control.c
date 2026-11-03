@@ -121,8 +121,9 @@ static X86pCpu explicit_cpu(unsigned bits) {
 
 static void append_stopper(uint8_t *at) {
   at[0] = 0x0Fu;
-  at[1] = 0x53u;
-  at[2] = 0xC0u; /* RCPPS XMM0, XMM0: stable named refusal. */
+  at[1] = 0x0Fu;
+  at[2] = 0xC0u;
+  at[3] = 0x96u; /* PFRCP MM0, MM0: refused by design on every host. */
 }
 
 static int flags_equal(const X86pFlags *left, const X86pFlags *right) {
@@ -153,7 +154,7 @@ static int compare_one_success_result(
   }
   CHECK(block.insns == 1u);
   CHECK(block.guest_len == instruction_len);
-  CHECK(block.stopper != NULL && strcmp(block.stopper, "RCPPS") == 0);
+  CHECK(block.stopper != NULL && strcmp(block.stopper, "PFRCP") == 0);
   exit = x86p_jit_enter(&block, &jit);
   CHECK(exit == kX86pJitExitUnsupported);
   CHECK(x86p_cpu_diff(&oracle, &jit, NULL, NULL) == 0u);
