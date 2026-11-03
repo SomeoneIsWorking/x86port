@@ -208,7 +208,7 @@ static uint32_t emit_simd_form(uint8_t *p, uint64_t r, unsigned dst, unsigned sr
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 141u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 143u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -926,6 +926,17 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
     p[3] = memdisp;
     return 4;
+  case 141: /* BSF/BSR r32, r32 -- 0F BC/BD /r; a zero source leaves the destination */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0xBCu + ((r >> 12) & 1u));
+    p[2] = (uint8_t)(0xC0u | (dst << 3) | src);
+    return 3;
+  case 142: /* BSF/BSR r32, [base+disp8] */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0xBCu + ((r >> 12) & 1u));
+    p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
+    p[3] = memdisp;
+    return 4;
   case 138: /* An SSE/SSE2 form run through the SIMD semantics owner. */
   case 139:
   case 140:
@@ -1357,7 +1368,8 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
         }
         span += di.length;
         if ((di.op == (uint8_t)kX86pInsnAlu && di.alu >= (uint8_t)kX86pAluShl && di.alu <= (uint8_t)kX86pAluSar) ||
-            di.op == (uint8_t)kX86pInsnImul || di.op == (uint8_t)kX86pInsnBit ||
+            di.op == (uint8_t)kX86pInsnImul || di.op == (uint8_t)kX86pInsnBit || di.op == (uint8_t)kX86pInsnBsf ||
+            di.op == (uint8_t)kX86pInsnBsr ||
             (di.op == (uint8_t)kX86pInsnSimd && x86p_simd_writes_flags((X86pSimdOp)di.simd)) ||
             (di.op == (uint8_t)kX86pInsnString &&
              (di.str == (uint8_t)kX86pStringScas || di.str == (uint8_t)kX86pStringCmps))) {
@@ -1658,6 +1670,14 @@ static void test_jit_matches_interpreter_one_instruction_at_a_time(void) {
     memcpy(g_after_interp, g_guest, GUEST_SIZE);
     memcpy(g_guest, g_before, GUEST_SIZE);
     jit_exit = x86p_jit_enter(&blk, &cj);
+    /* A store into the program itself is dropped and counted, as in the block differential. */
+    {
+      const size_t covered = (size_t)len + 3u > blk.guest_len ? (size_t)len + 3u : (size_t)blk.guest_len;
+      if (memcmp(g_after_interp, g_before, covered) != 0 || memcmp(g_guest, g_before, covered) != 0) {
+        g_self_modified++;
+        continue;
+      }
+    }
     g_single_compares++;
     g_checks++;
     if (!exit_agrees(jit_exit, interp_st, blk.stopper)) {

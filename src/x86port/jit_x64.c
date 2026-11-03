@@ -228,6 +228,9 @@ static int can_emit(const X86pInsn *insn) {
     return double_shift_is_emittable(insn);
   case kX86pInsnBit:
     return bit_is_emittable(insn);
+  case kX86pInsnBsf:
+  case kX86pInsnBsr:
+    return bit_scan_is_emittable(insn);
   case kX86pInsnCmovcc:
     return x86p_x64_cmovcc_is_emittable(insn);
   case kX86pInsnXadd:
@@ -961,6 +964,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnBit:
       emit_bit(&ctx, &insn, pc);
+      last_kind = -1;
+      last_w = -1;
+      break;
+    case kX86pInsnBsf:
+    case kX86pInsnBsr:
+      emit_bit_scan(&ctx, &insn, pc);
       last_kind = -1;
       last_w = -1;
       break;

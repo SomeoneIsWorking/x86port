@@ -363,6 +363,8 @@ int double_shift_is_emittable(const X86pInsn *insn);
 void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 int bit_is_emittable(const X86pInsn *insn);
 void emit_bit(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+int bit_scan_is_emittable(const X86pInsn *insn);
+void emit_bit_scan(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 int exchange_rmw_is_emittable(const X86pInsn *insn);
 void emit_exchange_rmw(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 

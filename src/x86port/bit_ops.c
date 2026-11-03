@@ -42,6 +42,15 @@ uint32_t x86p_bit_apply(X86pBitOp op, uint32_t value, unsigned bit, uint32_t *ef
   }
 }
 
+uint32_t x86p_bit_scan(int reverse, uint32_t source, int w, uint32_t destination, uint32_t *eflags) {
+  const uint32_t value = source & width_mask(w);
+  set_bit(eflags, X86P_ZF, value == 0u);
+  if (value == 0u) {
+    return destination;
+  }
+  return reverse ? 31u - (uint32_t)__builtin_clz(value) : (uint32_t)__builtin_ctz(value);
+}
+
 int x86p_double_shift(
     int left, uint32_t dst, uint32_t src, unsigned count, int w, uint32_t *result, uint32_t *eflags, int *defined) {
   const unsigned bits = (unsigned)(w * 8);

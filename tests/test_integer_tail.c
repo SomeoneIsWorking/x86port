@@ -573,11 +573,14 @@ static void sweep_addr16(const char *what, const uint8_t *code, unsigned len) {
 /* Two-operand sweeps for the shifts and bit tests, over values chosen to cross
    every boundary these instructions have: a sign bit, a zero result, a count
    at each end of its range. */
-typedef enum FlagRule { kFlagsDoubleShift, kFlagsBitTest, kFlagsArithmetic } FlagRule;
+typedef enum FlagRule { kFlagsDoubleShift, kFlagsBitTest, kFlagsArithmetic, kFlagsBitScan } FlagRule;
 
 static uint32_t two_defined_flags(FlagRule rule, uint32_t count, unsigned bits) {
   if (rule == kFlagsBitTest) {
     return X86P_CF;
+  }
+  if (rule == kFlagsBitScan) {
+    return X86P_ZF;
   }
   if (rule == kFlagsArithmetic) {
     return COMPARED_FLAGS;
@@ -763,6 +766,10 @@ int main(void) {
   INSN(k_bts_m, 0x0Fu, 0xABu, 0x03u)
   INSN(k_btr_m, 0x0Fu, 0xB3u, 0x03u)
   INSN(k_btc_m, 0x0Fu, 0xBBu, 0x03u)
+  INSN(k_bsf, 0x0Fu, 0xBCu, 0xC2u)          /* BSF EAX, EDX */
+  INSN(k_bsr, 0x0Fu, 0xBDu, 0xC2u)          /* BSR EAX, EDX */
+  INSN(k_bsf16, 0x66u, 0x0Fu, 0xBCu, 0xC2u) /* BSF AX, DX */
+  INSN(k_bsr16, 0x66u, 0x0Fu, 0xBDu, 0xC2u)
   INSN(k_xadd, 0x0Fu, 0xC1u, 0xD1u)          /* XADD ECX, EDX */
   INSN(k_xadd_same, 0x0Fu, 0xC1u, 0xD2u)     /* XADD EDX, EDX */
   INSN(k_xadd8, 0x0Fu, 0xC0u, 0xF1u)         /* XADD CL, DH */
@@ -842,6 +849,12 @@ int main(void) {
   RMW(cmpxchg8);
   RMW(cmpxchg16);
 #undef RMW
+#define SCAN(x) sweep_two(#x, k_##x, (unsigned)sizeof k_##x, kFlagsBitScan)
+  SCAN(bsf);
+  SCAN(bsr);
+  SCAN(bsf16);
+  SCAN(bsr16);
+#undef SCAN
 #undef SHIFT
 #define STRING(x) sweep_bit_string(#x, k_##x, (unsigned)sizeof k_##x)
   STRING(bt_m);

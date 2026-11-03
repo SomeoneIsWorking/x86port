@@ -308,6 +308,8 @@ void x86p_cpu_double_shift32(X86pCpu *cpu, void *destination, uint32_t source, u
  * 4-byte register or memory destination, the bit index taken modulo its width.
  * Only BT leaves the destination unwritten; every operation sets CF. */
 void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operation, uint32_t width);
+/* BSF or BSR (`reverse`) of `source` into the 2- or 4-byte register `reg`. */
+void x86p_cpu_bit_scan(X86pCpu *cpu, uint32_t reg, uint32_t source, uint32_t reverse, uint32_t width);
 /* XADD and CMPXCHG on a prevalidated 1-, 2- or 4-byte destination, with
  * `source` a register index at that width that the destination does not alias. The destination is updated with
  * one host atomic, so the guest's LOCK holds across host threads. */

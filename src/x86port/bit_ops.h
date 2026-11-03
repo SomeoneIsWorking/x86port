@@ -47,6 +47,14 @@ const char *x86p_bit_op_name(X86pBitOp op);
 uint32_t x86p_bit_apply(X86pBitOp op, uint32_t value, unsigned bit, uint32_t *eflags);
 
 /*
+ * BSF (`reverse` 0) and BSR: the index of the lowest or highest set bit of
+ * `source`, `w` bytes wide. ZF is set, and `destination` returned unchanged,
+ * when no bit is set; the SDM leaves the destination and the other five flags
+ * undefined there, and this keeps them, as the hardware does.
+ */
+uint32_t x86p_bit_scan(int reverse, uint32_t source, int w, uint32_t destination, uint32_t *eflags);
+
+/*
  * SHLD and SHRD: shift `dst` by `count`, feeding in the bits of `src` from the
  * other end. `w` is 2 or 4 bytes.
  *

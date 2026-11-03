@@ -262,6 +262,8 @@ typedef enum X86pInsnOp {
      and may write the accumulator its width names. */
   kX86pInsnXadd,
   kX86pInsnCmpxchg,
+  kX86pInsnBsf,
+  kX86pInsnBsr,
   kX86pInsnOpCount /* MUST stay last */
 } X86pInsnOp;
 

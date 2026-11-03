@@ -35,6 +35,7 @@ typedef enum X86pPeDirectory {
   kX86pPeDirExport = 0,
   kX86pPeDirImport = 1,
   kX86pPeDirBaseRelocation = 5,
+  kX86pPeDirTls = 9,
   kX86pPeDirDelayImport = 13,
   kX86pPeDirCount = 16,
 } X86pPeDirectory;
@@ -97,6 +98,20 @@ X86pPeStatus x86p_pe_export_by_name(
     const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, const char *symbol, X86pPeExport *out);
 X86pPeStatus x86p_pe_export_by_ordinal(
     const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, uint16_t ordinal, X86pPeExport *out);
+
+/* An image's static TLS directory. Every field is a guest VA as the mapped (and relocated) image
+ * holds it. */
+typedef struct X86pPeTls {
+  uint32_t template_start; /* the initialised data each thread's block starts as */
+  uint32_t template_end;
+  uint32_t zero_fill;  /* bytes of zeros after the template */
+  uint32_t index_slot; /* where the loader stores the image's TLS index */
+  uint32_t callbacks;  /* NULL-terminated array of callback VAs, or 0 */
+} X86pPeTls;
+
+/* kX86pPeNotFound when the image has no TLS directory; kX86pPeMalformed when the directory or a
+ * range it names lies outside the image. */
+X86pPeStatus x86p_pe_tls(const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, X86pPeTls *out);
 
 #ifdef __cplusplus
 }

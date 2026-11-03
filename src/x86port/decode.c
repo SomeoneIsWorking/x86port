@@ -52,14 +52,15 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  * decision rather than a tidiness preference.
  */
 
-static const char *kOpNames[] = {
-    "unsupported", "alu",   "alu-unary", "mov",    "movzx", "movsx",   "lea",      "push",    "pop",   "xchg",
-    "jmp",         "jcc",   "setcc",     "cmovcc", "call",  "ret",     "call-far", "jmp-far", "retf",  "leave",
-    "nop",         "cdq",   "cwde",      "mul",    "imul",  "div",     "idiv",     "pushfd",  "popfd", "x87",
-    "string",      "simd",  "cld",       "std",    "bcd",   "bit",     "shld",     "shrd",    "sahf",  "lahf",
-    "stc",         "clc",   "cmc",       "salc",   "xlat",  "pushad",  "popad",    "enter",   "loop",  "loope",
-    "loopne",      "jecxz", "int3",      "int1",   "int",   "into",    "iretd",    "bound",   "arpl",  "sldt",
-    "lfp",         "hlt",   "wbinvd",    "cli",    "sti",   "port-io", "cpuid",    "rdtsc",   "xadd",  "cmpxchg"};
+static const char *kOpNames[] = {"unsupported", "alu",     "alu-unary", "mov",    "movzx", "movsx",   "lea",    "push",
+                                 "pop",         "xchg",    "jmp",       "jcc",    "setcc", "cmovcc",  "call",   "ret",
+                                 "call-far",    "jmp-far", "retf",      "leave",  "nop",   "cdq",     "cwde",   "mul",
+                                 "imul",        "div",     "idiv",      "pushfd", "popfd", "x87",     "string", "simd",
+                                 "cld",         "std",     "bcd",       "bit",    "shld",  "shrd",    "sahf",   "lahf",
+                                 "stc",         "clc",     "cmc",       "salc",   "xlat",  "pushad",  "popad",  "enter",
+                                 "loop",        "loope",   "loopne",    "jecxz",  "int3",  "int1",    "int",    "into",
+                                 "iretd",       "bound",   "arpl",      "sldt",   "lfp",   "hlt",     "wbinvd", "cli",
+                                 "sti",         "port-io", "cpuid",     "rdtsc",  "xadd",  "cmpxchg", "bsf",    "bsr"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
@@ -366,6 +367,8 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_XCHG, kX86pInsnXchg);
     SIMPLE(ZYDIS_MNEMONIC_XADD, kX86pInsnXadd);
     SIMPLE(ZYDIS_MNEMONIC_CMPXCHG, kX86pInsnCmpxchg);
+    SIMPLE(ZYDIS_MNEMONIC_BSF, kX86pInsnBsf);
+    SIMPLE(ZYDIS_MNEMONIC_BSR, kX86pInsnBsr);
     /*
      * The three control transfers that have a far form, which Zydis spells
      * with the SAME mnemonic and distinguishes by branch type -- so the near

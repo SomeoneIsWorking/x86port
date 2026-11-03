@@ -190,6 +190,13 @@ void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operat
   x86p_flags_set_explicit(&cpu->flags, flags);
 }
 
+void x86p_cpu_bit_scan(X86pCpu *cpu, uint32_t reg, uint32_t source, uint32_t reverse, uint32_t width) {
+  uint32_t flags = x86p_eflags(&cpu->flags);
+  const uint32_t old = x86p_reg_read(cpu, (int)reg, (int)width);
+  x86p_reg_write(cpu, (int)reg, (int)width, x86p_bit_scan((int)reverse, source, (int)width, old, &flags));
+  x86p_flags_set_explicit(&cpu->flags, flags);
+}
+
 static uint32_t atomic_fetch_add_w(void *destination, uint32_t addend, uint32_t width) {
   switch (width) {
   case 1:

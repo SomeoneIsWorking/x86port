@@ -64,8 +64,10 @@ static void build(int with_relocations) {
   put32(opt + 96 + 1 * 8 + 4, 40);
   if (with_relocations) {
     put32(opt + 96 + 5 * 8, 0x1180);
-    put32(opt + 96 + 5 * 8 + 4, 12);
+    put32(opt + 96 + 5 * 8 + 4, 20);
   }
+  put32(opt + 96 + 9 * 8, 0x1300); /* TLS */
+  put32(opt + 96 + 9 * 8 + 4, 24);
   put32(opt + 96 + 13 * 8, 0x1200); /* delay import */
   put32(opt + 96 + 13 * 8 + 4, 64);
   const uint32_t section = opt + 0xe0;
@@ -104,9 +106,21 @@ static void build(int with_relocations) {
   sec_text(0x1166, "Beta");
   sec_text(0x1170, "NTDLL.RtlBeta");
 
-  sec32(0x1180, 0x1000); /* one HIGHLOW at RVA 0x1000, one ABSOLUTE pad */
-  sec32(0x1184, 12);
+  sec32(0x1180, 0x1000); /* HIGHLOW at RVA 0x1000 and at the five TLS directory VAs */
+  sec32(0x1184, 20);
   put16(kRaw + 0x188, 0x3000);
+  put16(kRaw + 0x18a, 0x3300);
+  put16(kRaw + 0x18c, 0x3304);
+  put16(kRaw + 0x18e, 0x3308);
+  put16(kRaw + 0x190, 0x330c);
+  put16(kRaw + 0x192, 0x3360);
+
+  sec32(0x1300, kPreferred + 0x1340); /* TLS: 8 template bytes, 16 zero-fill, index slot, one callback */
+  sec32(0x1304, kPreferred + 0x1348);
+  sec32(0x1308, kPreferred + 0x1350);
+  sec32(0x130c, kPreferred + 0x1360);
+  sec32(0x1310, 16);
+  sec32(0x1360, kPreferred + 0x1000);
 
   sec32(0x1200, 1); /* PHYS.dll, RVA-based delay descriptor */
   sec32(0x1204, 0x1240);
@@ -173,6 +187,13 @@ static void map_and_walk(uint32_t base) {
         "export by ordinal");
   check(x86p_pe_export_by_name(&mem, base, &headers, "Gamma", &out) == kX86pPeNotFound, "missing export");
   check(x86p_pe_export_by_ordinal(&mem, base, &headers, 4, &out) == kX86pPeNotFound, "ordinal below base");
+
+  X86pPeTls tls;
+  check(x86p_pe_tls(&mem, base, &headers, &tls) == kX86pPeOk && tls.template_start == base + 0x1340 &&
+            tls.template_end == base + 0x1348 && tls.zero_fill == 16 && tls.index_slot == base + 0x1350 &&
+            tls.callbacks == base + 0x1360,
+        "TLS directory, relocated");
+  check(x86p_mem_read(&mem, base + 0x1360, 4, &value) && value == base + 0x1000, "TLS callback relocated");
 }
 
 static void refusals(void) {
@@ -199,6 +220,18 @@ static void refusals(void) {
   X86pMem small = {.host = image, .lo = kPreferred, .size = 0x100};
   check(x86p_pe_map(&small, file, sizeof file, &headers, kPreferred) == kX86pPeGuestMemory,
         "image larger than guest memory");
+  build(1);
+  X86pPeTls tls;
+  memset(wide, 0, sizeof wide);
+  check(x86p_pe_parse(file, sizeof file, &headers) == kX86pPeOk &&
+            x86p_pe_map(&roomy, file, sizeof file, &headers, kPreferred) == kX86pPeOk,
+        "map for TLS refusals");
+  put32(0x1308 - 0x1000 + kRaw, kPreferred + kImageSize);
+  check(x86p_pe_map(&roomy, file, sizeof file, &headers, kPreferred) == kX86pPeOk &&
+            x86p_pe_tls(&roomy, kPreferred, &headers, &tls) == kX86pPeMalformed,
+        "TLS index slot past the image");
+  headers.directories[kX86pPeDirTls].size = 0;
+  check(x86p_pe_tls(&roomy, kPreferred, &headers, &tls) == kX86pPeNotFound, "no TLS directory");
 }
 
 int main(void) {

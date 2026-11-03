@@ -378,3 +378,30 @@ X86pPeStatus x86p_pe_export_by_ordinal(
   }
   return export_at(&image, headers, &table, ordinal - table.ordinal_base, out);
 }
+
+/* Whether the VA range [va, va + size) lies inside the image. */
+static int image_holds(const Image *image, uint32_t va, uint32_t size) {
+  return va >= image->base && va - image->base <= image->size && image->size - (va - image->base) >= size;
+}
+
+X86pPeStatus x86p_pe_tls(const X86pMem *mem, uint32_t base, const X86pPeHeaders *headers, X86pPeTls *out) {
+  const Image image = {mem, base, headers->size_of_image};
+  const X86pPeDataDirectory tls = headers->directories[kX86pPeDirTls];
+  memset(out, 0, sizeof *out);
+  if (tls.rva == 0 || tls.size == 0) {
+    return kX86pPeNotFound;
+  }
+  if (!rva32(&image, tls.rva, &out->template_start) || !rva32(&image, tls.rva + 4, &out->template_end) ||
+      !rva32(&image, tls.rva + 8, &out->index_slot) || !rva32(&image, tls.rva + 12, &out->callbacks) ||
+      !rva32(&image, tls.rva + 16, &out->zero_fill)) {
+    return kX86pPeMalformed;
+  }
+  const int template_ok = out->template_start == out->template_end ||
+                          (out->template_end > out->template_start &&
+                           image_holds(&image, out->template_start, out->template_end - out->template_start));
+  if (!template_ok || !image_holds(&image, out->index_slot, 4) ||
+      (out->callbacks != 0 && !image_holds(&image, out->callbacks, 4))) {
+    return kX86pPeMalformed;
+  }
+  return kX86pPeOk;
+}

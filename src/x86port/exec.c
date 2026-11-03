@@ -360,6 +360,20 @@ static void execute(Ctx *c) {
     return;
   }
 
+  case kX86pInsnBsf:
+  case kX86pInsnBsr: {
+    const uint32_t source = read_operand(c, o1);
+    if (c->fault) {
+      return;
+    }
+    if (o0->kind != kX86pOperandReg) {
+      c->fault = kX86pStepUnsupported;
+      return;
+    }
+    x86p_cpu_bit_scan(cpu, (uint32_t)o0->reg, source, in->op == (uint8_t)kX86pInsnBsr, (uint32_t)o0->size);
+    return;
+  }
+
   case kX86pInsnXadd: {
     /* A memory destination is stored first, at the address the old registers
        give; a register destination last, so XADD r, r leaves the sum. */
