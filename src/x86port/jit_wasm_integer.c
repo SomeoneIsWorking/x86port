@@ -32,12 +32,11 @@ int x86p_wasm_string(X86pCpu *cpu, const X86pMem *mem, uint32_t operation, uint3
 }
 
 uint32_t x86p_wasm_get_flags(X86pCpu *cpu) {
-  return x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u);
+  return x86p_cpu_eflags(cpu);
 }
 
 uint32_t x86p_wasm_set_flags(X86pCpu *cpu, uint32_t value) {
-  x86p_flags_set_explicit(&cpu->flags, value);
-  cpu->df = (value & X86P_DF) != 0u;
+  x86p_cpu_set_eflags(cpu, value);
   return value;
 }
 

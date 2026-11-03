@@ -291,6 +291,12 @@ const char *x86p_reg_name(int index, int w);
    divergence report can never be explained away by uninitialised state. */
 void x86p_cpu_reset(X86pCpu *cpu);
 
+/* The EFLAGS word PUSHFD stores, DF included, and the state POPFD loads from
+   one. The six arithmetic flags and DF are held apart, so both halves must
+   cross together or a saved and restored context loses its direction flag. */
+uint32_t x86p_cpu_eflags(const X86pCpu *cpu);
+void x86p_cpu_set_eflags(X86pCpu *cpu, uint32_t eflags);
+
 /* Push/pop a dword, moving ESP. Return 1 on success; on a memory fault they
    return 0 having changed NOTHING, so a faulting push does not leave ESP moved
    past a value it never stored. */

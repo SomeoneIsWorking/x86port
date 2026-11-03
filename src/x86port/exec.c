@@ -666,15 +666,8 @@ static void execute(Ctx *c) {
     }
   }
 
-  /*
-   * PUSHFD and POPFD are where the two representations of EFLAGS meet: the six
-   * arithmetic flags are derived from the lazy (kind, a, b, r) record, and DF
-   * is held apart because nothing computes it. Both halves have to cross here
-   * or a guest that saves and restores its flags loses its direction flag --
-   * silently, and only visibly in a string loop that then runs backwards.
-   */
   case kX86pInsnPushfd:
-    if (!x86p_push32(cpu, c->mem, x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u))) {
+    if (!x86p_push32(cpu, c->mem, x86p_cpu_eflags(cpu))) {
       c->fault = kX86pStepMemoryFault;
       c->fault_addr = cpu->reg[kX86pEsp] - 4u;
     }
@@ -687,8 +680,7 @@ static void execute(Ctx *c) {
       c->fault_addr = cpu->reg[kX86pEsp];
       return;
     }
-    x86p_flags_set_explicit(&cpu->flags, v);
-    cpu->df = (v & X86P_DF) ? 1u : 0u;
+    x86p_cpu_set_eflags(cpu, v);
     return;
   }
 
@@ -1023,8 +1015,7 @@ static void execute(Ctx *c) {
       return;
     }
     cpu->seg[kX86pSegCs] = (uint16_t)cs_v;
-    x86p_flags_set_explicit(&cpu->flags, fl_v);
-    cpu->df = (fl_v & X86P_DF) ? 1u : 0u;
+    x86p_cpu_set_eflags(cpu, fl_v);
     c->next_eip = eip_v;
     return;
   }

@@ -190,6 +190,15 @@ void x86p_cpu_bit(X86pCpu *cpu, void *destination, uint32_t bit, uint32_t operat
   x86p_flags_set_explicit(&cpu->flags, flags);
 }
 
+uint32_t x86p_cpu_eflags(const X86pCpu *cpu) {
+  return x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u);
+}
+
+void x86p_cpu_set_eflags(X86pCpu *cpu, uint32_t eflags) {
+  x86p_flags_set_explicit(&cpu->flags, eflags);
+  cpu->df = (eflags & X86P_DF) ? 1u : 0u;
+}
+
 void x86p_cpu_bit_scan(X86pCpu *cpu, uint32_t reg, uint32_t source, uint32_t reverse, uint32_t width) {
   uint32_t flags = x86p_eflags(&cpu->flags);
   const uint32_t old = x86p_reg_read(cpu, (int)reg, (int)width);

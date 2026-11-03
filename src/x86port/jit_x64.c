@@ -634,25 +634,9 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   gpr_store(c, o->reg, kX64Rsi, 4);
 }
 
-/*
- * PUSHFD and POPFD are where the two representations of EFLAGS meet: the six
- * arithmetic flags are derived from the lazy (kind, a, b, r) record, and DF is
- * held apart because nothing computes it (see X86pCpu::df). Both halves cross
- * through one call each, matching exec.c's interpreter path exactly rather
- * than reproducing that merge as a second authority here.
- */
-static uint32_t jit_pushfd_value(X86pCpu *cpu) {
-  return x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u);
-}
-
-static void jit_popfd_apply(X86pCpu *cpu, uint32_t v) {
-  x86p_flags_set_explicit(&cpu->flags, v);
-  cpu->df = (v & X86P_DF) ? 1u : 0u;
-}
-
 static void emit_pushfd(BlockCtx *c, uint32_t insn_eip) {
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_pushfd_value);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_eflags);
   x86p_emit_call_r64(c->e, kX64Rax);
   x86p_emit_mov_r32_r32(c->e, kX64Rsi, kX64Rax);
   emit_push_rsi(c, insn_eip);
@@ -662,7 +646,7 @@ static void emit_popfd(BlockCtx *c, uint32_t insn_eip) {
   emit_pop_rsi(c, insn_eip);
   x86p_emit_mov_r32_r32(c->e, X86P_JIT_HOST_ARG1, kX64Rsi);
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
-  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&jit_popfd_apply);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_set_eflags);
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 

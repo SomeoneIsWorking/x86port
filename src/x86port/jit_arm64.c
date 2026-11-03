@@ -503,26 +503,9 @@ static void emit_pop(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   x86p_a64_emit_store32(c->e, CPU_REG, reg_off(o->reg), kA64X0);
 }
 
-/*
- * PUSHFD and POPFD are where the two representations of EFLAGS meet: the six
- * arithmetic flags are derived from the lazy (kind, a, b, r) record, and DF is
- * held apart because nothing computes it (see X86pCpu::df). Both halves cross
- * through one call each, matching exec.c's interpreter path and jit_x64.c's
- * identical jit_pushfd_value/jit_popfd_apply exactly rather than reproducing
- * that merge as a second authority here.
- */
-static uint32_t jit_pushfd_value(X86pCpu *cpu) {
-  return x86p_eflags(&cpu->flags) | (cpu->df ? X86P_DF : 0u);
-}
-
-static void jit_popfd_apply(X86pCpu *cpu, uint32_t v) {
-  x86p_flags_set_explicit(&cpu->flags, v);
-  cpu->df = (v & X86P_DF) ? 1u : 0u;
-}
-
 static void emit_pushfd(BlockCtx *c, uint32_t insn_eip) {
   x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
-  emit_call(c->e, (void *)&jit_pushfd_value);
+  emit_call(c->e, (void *)&x86p_cpu_eflags);
   /* The return is a uint32_t (W0); emit_push_x0's store32 reads only W0, so
      whatever the ABI left in X0's upper half is irrelevant here. */
   emit_push_x0(c, insn_eip);
@@ -532,7 +515,7 @@ static void emit_popfd(BlockCtx *c, uint32_t insn_eip) {
   emit_pop_x0(c, insn_eip); /* X0 = popped value, already the second AAPCS64 arg */
   x86p_a64_emit_mov_w_w(c->e, kA64X1, kA64X0);
   x86p_a64_emit_mov_x_x(c->e, kA64X0, CPU_REG);
-  emit_call(c->e, (void *)&jit_popfd_apply);
+  emit_call(c->e, (void *)&x86p_cpu_set_eflags);
 }
 
 static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
