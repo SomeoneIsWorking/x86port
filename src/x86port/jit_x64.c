@@ -14,6 +14,7 @@
 #include "jit_x64_x87_inline.h"
 #include "multiply.h"
 #include "simd.h"
+#include "stack_ops.h"
 #include "string_ops.h"
 #include "three_dnow.h"
 
@@ -304,6 +305,9 @@ static int can_emit(const X86pInsn *insn) {
     /* RET, or RET imm16 which also releases the caller's arguments. */
     return insn->operands == 0 || (insn->operands == 1 && operand_is_imm(&insn->operand[0]));
   case kX86pInsnLeave:
+    return insn->operands == 0;
+  case kX86pInsnPushad:
+  case kX86pInsnPopad:
     return insn->operands == 0;
   case kX86pInsnCdq:
     return insn->operands == 0;
@@ -648,6 +652,21 @@ static void emit_popfd(BlockCtx *c, uint32_t insn_eip) {
   x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
   x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_set_eflags);
   x86p_emit_call_r64(c->e, kX64Rax);
+}
+
+/* PUSHAD and POPAD through the stack owner; the call drops the register cache. */
+static void emit_stack_all(BlockCtx *c, X86pInsnOp op, uint32_t insn_eip) {
+  X86pEmitSite failed;
+
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_imm64(c->e, X86P_JIT_HOST_ARG1, (uint64_t)(uintptr_t)c->mem);
+  x86p_emit_mov_r64_imm64(c->e, X86P_JIT_HOST_ARG2, 0u);
+  x86p_emit_mov_r64_imm64(
+      c->e, kX64Rax, (uint64_t)(uintptr_t)(op == kX86pInsnPushad ? &x86p_stack_pushad : &x86p_stack_popad));
+  x86p_emit_call_r64(c->e, kX64Rax);
+  x86p_emit_test_r32_r32(c->e, kX64Rax, kX64Rax);
+  failed = x86p_emit_jcc_rel32(c->e, (unsigned)kX86pCondZ);
+  note_fault(c, failed, insn_eip);
 }
 
 static void emit_mov(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
@@ -1067,6 +1086,10 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
         last_kind = (int)kX86pFlagsExplicit;
         last_w = -1;
       }
+      break;
+    case kX86pInsnPushad:
+    case kX86pInsnPopad:
+      emit_stack_all(&ctx, (X86pInsnOp)insn.op, pc);
       break;
     case kX86pInsnPushfd:
       emit_pushfd(&ctx, pc);

@@ -208,7 +208,7 @@ static uint32_t emit_simd_form(uint8_t *p, uint64_t r, unsigned dst, unsigned sr
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 143u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 145u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -937,6 +937,12 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
     p[2] = (uint8_t)(0x40u | (dst << 3) | membase);
     p[3] = memdisp;
     return 4;
+  case 143: /* PUSHAD -- 60. The ESP it saves is the one before its first push. */
+    p[0] = 0x60u;
+    return 1;
+  case 144: /* POPAD -- 61. Skips the saved ESP. */
+    p[0] = 0x61u;
+    return 1;
   case 138: /* An SSE/SSE2 form run through the SIMD semantics owner. */
   case 139:
   case 140:
