@@ -76,6 +76,7 @@ static unsigned long g_guest_insns;
 static unsigned long g_state_compares;
 static unsigned long g_branch_blocks;
 static unsigned long g_refused;
+static unsigned long g_mmx_after_x87;
 static unsigned long g_self_modified;
 static unsigned long g_helper_calls;
 static unsigned long g_cond_inline;
@@ -208,7 +209,7 @@ static uint32_t emit_simd_form(uint8_t *p, uint64_t r, unsigned dst, unsigned sr
 }
 
 static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
-  unsigned pick = (unsigned)(r % 145u); /* not a power of two: pick must not fix the operand fields */
+  unsigned pick = (unsigned)(r % 146u); /* not a power of two: pick must not fix the operand fields */
   unsigned dst = (unsigned)((r >> 3) & 7u);
   unsigned src = (unsigned)((r >> 6) & 7u);
   unsigned aluop = (unsigned)((r >> 9) & 7u);
@@ -943,6 +944,12 @@ static uint32_t emit_guest_insn(uint8_t *p, uint64_t r) {
   case 144: /* POPAD -- 61. Skips the saved ESP. */
     p[0] = 0x61u;
     return 1;
+  case 145: /* BT/BTS/BTR/BTC [base+disp8], r32 -- 0F A3/AB/B3/BB /r: a signed bit string. */
+    p[0] = 0x0Fu;
+    p[1] = (uint8_t)(0xA3u + ((r >> 12) & 3u) * 8u);
+    p[2] = (uint8_t)(0x40u | (src << 3) | membase);
+    p[3] = memdisp;
+    return 4;
   case 138: /* An SSE/SSE2 form run through the SIMD semantics owner. */
   case 139:
   case 140:
@@ -1282,6 +1289,29 @@ static int exit_agrees(X86pJitExit got, X86pStepStatus interp, const char *stopp
 
 /* ---- the differential ---------------------------------------------------- */
 
+/* An MMX instruction marks every x87 slot valid, so an empty slot's unspecified value
+   (x87.h) would be compared; the interpreter and the JIT may hold different ones. */
+static int mmx_follows_x87(uint32_t insns) {
+  const uint8_t *at = g_guest;
+  int seen_x87 = 0;
+  uint32_t i;
+  for (i = 0; i < insns; i++) {
+    X86pInsn di;
+    int k;
+    if (!x86p_decode(at, X86P_MAX_INSN_LEN, &di)) {
+      return 0;
+    }
+    for (k = 0; k < di.operands; k++) {
+      if (seen_x87 && di.operand[k].kind == kX86pOperandMmx) {
+        return 1;
+      }
+    }
+    seen_x87 |= di.op == (uint8_t)kX86pInsnX87;
+    at += di.length;
+  }
+  return 0;
+}
+
 static void test_jit_matches_interpreter_on_generated_programs(void) {
   void *code = jit_x64_harness_code_alloc(65536);
   uint64_t rng = 0x5EED1234ABCDull;
@@ -1311,6 +1341,11 @@ static void test_jit_matches_interpreter_on_generated_programs(void) {
     seed = rng;
     pr = generate(&rng, 1u + (uint32_t)(rng % 24u));
     if (pr.insns == 0) {
+      continue;
+    }
+
+    if (mmx_follows_x87(pr.insns)) {
+      g_mmx_after_x87++;
       continue;
     }
 
@@ -2167,6 +2202,7 @@ int main(void) {
          g_guest_insns,
          g_state_compares);
   printf("%lu of %lu block(s) ended in a translated branch\n", g_branch_blocks, g_programs);
+  printf("%lu round(s) skipped for MMX after x87\n", g_mmx_after_x87);
   printf("%lu single-instruction comparison(s), %lu round(s) skipped on a named refusal, %lu on a store into\n"
          "the program itself;\n%lu carry-in helper call(s) over %lu block(s)\n",
          g_single_compares,

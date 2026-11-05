@@ -541,19 +541,32 @@ int double_shift_is_emittable(const X86pInsn *insn) {
           (count->kind == kX86pOperandReg && count->reg == kX86pEcx && count->size == 1));
 }
 /* A register bit offset into memory addresses a signed bit string beyond the
-   operand (exec.c); that form waits for an emitter of its address rule. */
+   operand (exec.c): emitted at 32 bits, where the offset is the whole register. */
 int bit_is_emittable(const X86pInsn *insn) {
   const X86pOperand *dst = &insn->operand[0], *index = &insn->operand[1];
   return insn->operands == 2 && insn->bit < (uint8_t)kX86pBitOpCount && (dst->size == 2 || dst->size == 4) &&
          ((dst->kind == kX86pOperandReg && dst->reg >= 0 && dst->reg < 8) ||
           (dst->kind == kX86pOperandMem && !dst->addr16)) &&
-         (index->kind == kX86pOperandImm ||
-          (index->kind == kX86pOperandReg && index->reg >= 0 && index->reg < 8 && dst->kind == kX86pOperandReg));
+         (index->kind == kX86pOperandImm || (index->kind == kX86pOperandReg && index->reg >= 0 && index->reg < 8 &&
+                                             (dst->kind == kX86pOperandReg || dst->size == 4)));
+}
+
+/* The operand a signed bit offset lands in: whole dwords from the computed address. */
+static void emit_bit_string_prepare(BlockCtx *c, const X86pOperand *dst, const X86pOperand *index, uint32_t pc) {
+  emit_effective_address(c, dst);
+  gpr_load(c, ADDR_TMP, index->reg, 4);
+  x86p_emit_shift_r32_imm8(c->e, kX64Sar, ADDR_TMP, 5u);
+  x86p_emit_shift_r32_imm8(c->e, kX64Shl, ADDR_TMP, 2u);
+  x86p_emit_alu_r32_r32(c->e, kX64Add, EA_REG, ADDR_TMP);
+  emit_bounds_check(c, 4, pc);
+  emit_host_pointer(c->e, &c->plan);
 }
 
 void emit_bit(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   const X86pOperand *dst = &insn->operand[0], *index = &insn->operand[1];
-  if (dst->kind == kX86pOperandMem) {
+  if (dst->kind == kX86pOperandMem && index->kind == kX86pOperandReg) {
+    emit_bit_string_prepare(c, dst, index, pc);
+  } else if (dst->kind == kX86pOperandMem) {
     emit_mem_prepare_w(c, dst, pc, dst->size);
   } else {
     x86p_emit_lea64(c->e, HOSTPTR_REG, CPU_REG, reg_off(dst->reg));
