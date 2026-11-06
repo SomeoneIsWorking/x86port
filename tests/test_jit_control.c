@@ -337,6 +337,34 @@ static void test_bswap_reverses_each_register(Fixture *fixture) {
   }
 }
 
+static void test_cmpxchg8b_swaps_only_on_a_match(Fixture *fixture) {
+  unsigned match;
+
+  for (match = 0u; match < 2u; match++) {
+    X86pCpu initial = explicit_cpu(match);
+    X86pCpu result = initial;
+
+    memset(fixture->guest, 0x90, sizeof fixture->guest);
+    fixture->guest[0] = 0xF0u; /* LOCK CMPXCHG8B [disp32] */
+    fixture->guest[1] = 0x0Fu;
+    fixture->guest[2] = 0xC7u;
+    fixture->guest[3] = 0x0Du;
+    put_u32(fixture->guest + 4u, kGuestBase + kDataOffset);
+    append_stopper(fixture->guest + 8u);
+    put_u32(fixture->guest + kDataOffset, 0x11111111u);
+    put_u32(fixture->guest + kDataOffset + 4u, 0x22222222u);
+    initial.reg[kX86pEax] = match ? 0x11111111u : 0x33333333u;
+    initial.reg[kX86pEdx] = 0x22222222u;
+    initial.reg[kX86pEbx] = 0x44444444u;
+    initial.reg[kX86pEcx] = 0x55555555u;
+    if (compare_one_success_result(fixture, initial, 8u, 0, &result)) {
+      CHECK(x86p_flag_zf(&result.flags) == (int)match);
+      CHECK(result.reg[kX86pEax] == 0x11111111u);
+      CHECK(result.reg[kX86pEdx] == 0x22222222u);
+    }
+  }
+}
+
 static void test_mul32_register_memory_alias_and_fault(Fixture *fixture) {
   static const struct {
     uint32_t eax;
@@ -1066,6 +1094,7 @@ int main(void) {
   test_leave_success_and_fault(&fixture);
   test_cdq_sign_edges(&fixture);
   test_bswap_reverses_each_register(&fixture);
+  test_cmpxchg8b_swaps_only_on_a_match(&fixture);
   test_mul32_register_memory_alias_and_fault(&fixture);
   test_div32_success_and_faults(&fixture);
   test_idiv32_success_and_faults(&fixture);

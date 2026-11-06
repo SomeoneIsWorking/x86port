@@ -367,5 +367,6 @@ int bit_scan_is_emittable(const X86pInsn *insn);
 void emit_bit_scan(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 int exchange_rmw_is_emittable(const X86pInsn *insn);
 void emit_exchange_rmw(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
+void emit_cmpxchg8b(BlockCtx *c, const X86pInsn *insn, uint32_t pc);
 
 #endif /* X86PORT_JIT_X64_INTERNAL_H */

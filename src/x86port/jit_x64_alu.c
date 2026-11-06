@@ -640,6 +640,14 @@ void emit_exchange_rmw(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   x86p_emit_call_r64(c->e, kX64Rax);
 }
 
+void emit_cmpxchg8b(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
+  emit_mem_prepare_w(c, &insn->operand[0], pc, 8);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG0, CPU_REG);
+  x86p_emit_mov_r64_r64(c->e, X86P_JIT_HOST_ARG1, HOSTPTR_REG);
+  x86p_emit_mov_r64_imm64(c->e, kX64Rax, (uint64_t)(uintptr_t)&x86p_cpu_cmpxchg8b);
+  x86p_emit_call_r64(c->e, kX64Rax);
+}
+
 void emit_double_shift(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
   const X86pOperand *dst = &insn->operand[0], *src = &insn->operand[1], *count = &insn->operand[2];
   if (dst->kind == kX86pOperandMem) {

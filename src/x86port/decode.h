@@ -264,6 +264,7 @@ typedef enum X86pInsnOp {
      and may write the accumulator its width names. */
   kX86pInsnXadd,
   kX86pInsnCmpxchg,
+  kX86pInsnCmpxchg8b, /* operand[0] is the quadword; EDX:EAX and ECX:EBX are implicit */
   kX86pInsnBsf,
   kX86pInsnBsr,
   kX86pInsnOpCount /* MUST stay last */

@@ -421,6 +421,26 @@ static void execute(Ctx *c) {
     return;
   }
 
+  case kX86pInsnCmpxchg8b: {
+    /* The locked cycle always writes, so a read-only page faults either way. */
+    const uint32_t addr = effective_address(c, o0);
+    const uint32_t eax = cpu->reg[kX86pEax], edx = cpu->reg[kX86pEdx];
+    const X86pFlags flags = cpu->flags;
+    uint64_t quad = 0u;
+    if (!x86p_mem_read_bytes(c->mem, addr, &quad, sizeof quad)) {
+      c->fault = kX86pStepMemoryFault;
+      return;
+    }
+    x86p_cpu_cmpxchg8b(cpu, &quad);
+    if (!x86p_mem_write_bytes(c->mem, addr, &quad, sizeof quad)) {
+      cpu->reg[kX86pEax] = eax;
+      cpu->reg[kX86pEdx] = edx;
+      cpu->flags = flags;
+      c->fault = kX86pStepMemoryFault;
+    }
+    return;
+  }
+
   case kX86pInsnJmp: {
     uint32_t t = branch_target(c, o0);
     if (c->fault) {

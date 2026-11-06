@@ -493,6 +493,37 @@ static void test_bswap_reverses_bytes(void) {
   CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEcx, 4), 0xefcdab89u);
 }
 
+static void test_cmpxchg8b_stores_ecx_ebx_on_a_match(void) {
+  static const uint8_t code[] = {0xb8, 0x11, 0x11, 0x11, 0x11,          /* mov eax, 0x11111111 */
+                                 0xba, 0x22, 0x22, 0x22, 0x22,          /* mov edx, 0x22222222 */
+                                 0xbb, 0x44, 0x44, 0x44, 0x44,          /* mov ebx, 0x44444444 */
+                                 0xb9, 0x55, 0x55, 0x55, 0x55,          /* mov ecx, 0x55555555 */
+                                 0x0f, 0xc7, 0x0d, 0,    0,    0,    0, /* cmpxchg8b [quad] */
+                                 0xf4,                                  /* hlt */
+                                 0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22};
+  uint8_t patched[sizeof code];
+  const uint32_t quad = CODE_BASE + 28u;
+  uint32_t low = 0u, high = 0u;
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+
+  memcpy(patched, code, sizeof code);
+  memcpy(&patched[23], &quad, sizeof quad);
+  load(patched, sizeof patched);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
+
+  CHECK_EQ_U(run(&cpu, &m, 10, &steps, &rep), kX86pStepProtectionFault);
+  CHECK_EQ_U(x86p_mem_read(&m, quad, 4, &low), 1);
+  CHECK_EQ_U(x86p_mem_read(&m, quad + 4u, 4, &high), 1);
+  CHECK_EQ_U(low, 0x44444444u);
+  CHECK_EQ_U(high, 0x55555555u);
+  CHECK_EQ_U(x86p_flag_zf(&cpu.flags), 1);
+}
+
 /* ---- the failure paths, which are the point of naming them ---- */
 
 /* A divide by zero is delivered as a status with nothing written, because the
@@ -626,6 +657,7 @@ int main(void) {
   RUN(test_program_divide_setcc_cmovcc);
   RUN(test_xlat_indexes_by_al);
   RUN(test_bswap_reverses_bytes);
+  RUN(test_cmpxchg8b_stores_ecx_ebx_on_a_match);
   RUN(test_divide_error_is_delivered);
   RUN(test_memory_fault_is_named);
   RUN(test_unsupported_is_named_and_does_not_advance);

@@ -257,6 +257,21 @@ void x86p_cpu_cmpxchg(X86pCpu *cpu, void *destination, uint32_t source, uint32_t
   }
 }
 
+void x86p_cpu_cmpxchg8b(X86pCpu *cpu, void *destination) {
+  uint64_t seen = ((uint64_t)cpu->reg[kX86pEdx] << 32) | cpu->reg[kX86pEax];
+  const uint64_t desired = ((uint64_t)cpu->reg[kX86pEcx] << 32) | cpu->reg[kX86pEbx];
+  const int equal =
+      __atomic_compare_exchange_n((uint64_t *)destination, &seen, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+  uint32_t flags = x86p_eflags(&cpu->flags) & ~X86P_ZF;
+  if (equal) {
+    flags |= X86P_ZF;
+  } else {
+    cpu->reg[kX86pEax] = (uint32_t)seen;
+    cpu->reg[kX86pEdx] = (uint32_t)(seen >> 32);
+  }
+  x86p_flags_set_explicit(&cpu->flags, flags);
+}
+
 /* LOOP preserves flags and the upper half of ECX for address-size 16. */
 int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition) {
   const uint32_t mask = width == 16 ? 0xFFFFu : UINT32_MAX;

@@ -21,9 +21,8 @@
  * WHAT IS DELIBERATELY NOT CLAIMED, and why each one would be a lie that
  * surfaced far from here:
  *
- *  - CX8 (bit 8). CMPXCHG8B is not implemented. It is what lock-free guest
- *    code compiles to, so claiming it would fail exactly where failure is
- *    least debuggable.
+ *  - CX8 (bit 8). CMPXCHG8B runs on the x64 backend and the reference only,
+ *    and CPUID answers the same for every backend.
  *  - FXSR (bit 24). FXSAVE and FXRSTOR are not implemented. On real hardware
  *    the SSE bit implies this one, and the gap is tolerable for the specific
  *    reason that the facility exists for saving state ACROSS CONTEXT SWITCHES:

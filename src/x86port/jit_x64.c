@@ -237,6 +237,8 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnXadd:
   case kX86pInsnCmpxchg:
     return exchange_rmw_is_emittable(insn);
+  case kX86pInsnCmpxchg8b:
+    return insn->operands == 1 && insn->operand[0].kind == kX86pOperandMem && !insn->operand[0].addr16;
   case kX86pInsnSimd:
     return simd_bits_is_emittable(insn) || simd_call_is_emittable(insn);
   case kX86pInsnMov:
@@ -1000,6 +1002,11 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       emit_exchange_rmw(&ctx, &insn, pc);
       last_kind = insn.op == (uint8_t)kX86pInsnXadd ? (int)kX86pFlagsAdd : (int)kX86pFlagsSub;
       last_w = insn.operand[0].size;
+      break;
+    case kX86pInsnCmpxchg8b:
+      emit_cmpxchg8b(&ctx, &insn, pc);
+      last_kind = -1;
+      last_w = -1;
       break;
     case kX86pInsnSimd:
       if (simd_bits_is_emittable(&insn)) {

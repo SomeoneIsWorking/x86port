@@ -53,14 +53,14 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  */
 
 static const char *kOpNames[] = {
-    "unsupported", "alu",    "alu-unary", "mov",   "movzx",  "movsx",  "lea",     "push",     "pop",
-    "xchg",        "jmp",    "jcc",       "setcc", "cmovcc", "call",   "ret",     "call-far", "jmp-far",
-    "retf",        "leave",  "nop",       "cdq",   "cwde",   "bswap",  "mul",     "imul",     "div",
-    "idiv",        "pushfd", "popfd",     "x87",   "string", "simd",   "cld",     "std",      "bcd",
-    "bit",         "shld",   "shrd",      "sahf",  "lahf",   "stc",    "clc",     "cmc",      "salc",
-    "pushad",      "popad",  "enter",     "loop",  "loope",  "loopne", "jecxz",   "int3",     "int1",
-    "int",         "into",   "iretd",     "bound", "arpl",   "sldt",   "lfp",     "hlt",      "wbinvd",
-    "cli",         "sti",    "port-io",   "cpuid", "rdtsc",  "xadd",   "cmpxchg", "bsf",      "bsr"};
+    "unsupported", "alu",    "alu-unary", "mov",    "movzx", "movsx",   "lea",      "push",    "pop",    "xchg",
+    "jmp",         "jcc",    "setcc",     "cmovcc", "call",  "ret",     "call-far", "jmp-far", "retf",   "leave",
+    "nop",         "cdq",    "cwde",      "bswap",  "mul",   "imul",    "div",      "idiv",    "pushfd", "popfd",
+    "x87",         "string", "simd",      "cld",    "std",   "bcd",     "bit",      "shld",    "shrd",   "sahf",
+    "lahf",        "stc",    "clc",       "cmc",    "salc",  "pushad",  "popad",    "enter",   "loop",   "loope",
+    "loopne",      "jecxz",  "int3",      "int1",   "int",   "into",    "iretd",    "bound",   "arpl",   "sldt",
+    "lfp",         "hlt",    "wbinvd",    "cli",    "sti",   "port-io", "cpuid",    "rdtsc",   "xadd",   "cmpxchg",
+    "cmpxchg8b",   "bsf",    "bsr"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
@@ -371,6 +371,7 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_XCHG, kX86pInsnXchg);
     SIMPLE(ZYDIS_MNEMONIC_XADD, kX86pInsnXadd);
     SIMPLE(ZYDIS_MNEMONIC_CMPXCHG, kX86pInsnCmpxchg);
+    SIMPLE(ZYDIS_MNEMONIC_CMPXCHG8B, kX86pInsnCmpxchg8b);
     SIMPLE(ZYDIS_MNEMONIC_BSF, kX86pInsnBsf);
     SIMPLE(ZYDIS_MNEMONIC_BSR, kX86pInsnBsr);
     /*
@@ -803,7 +804,8 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
          pair of limits, and the offset-and-selector that the far-pointer
          loads and the indirect far transfers both read. */
       const int wide_ok = out->op == kX86pInsnX87 || out->op == kX86pInsnSimd || out->op == kX86pInsnBound ||
-                          out->op == kX86pInsnLfp || out->op == kX86pInsnCallFar || out->op == kX86pInsnJmpFar;
+                          out->op == kX86pInsnLfp || out->op == kX86pInsnCallFar || out->op == kX86pInsnJmpFar ||
+                          out->op == kX86pInsnCmpxchg8b;
       if (!map_operand(&insn, &ops[i], &out->operand[i], wide_ok)) {
         /* One unmodelled operand makes the whole instruction unsupported.
            A half-filled operand is how an engine executes against a base

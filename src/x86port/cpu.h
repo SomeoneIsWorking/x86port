@@ -321,6 +321,8 @@ void x86p_cpu_bit_scan(X86pCpu *cpu, uint32_t reg, uint32_t source, uint32_t rev
  * one host atomic, so the guest's LOCK holds across host threads. */
 void x86p_cpu_xadd(X86pCpu *cpu, void *destination, uint32_t source, uint32_t width);
 void x86p_cpu_cmpxchg(X86pCpu *cpu, void *destination, uint32_t source, uint32_t width);
+/* CMPXCHG8B on a prevalidated quadword: only ZF changes among the flags. */
+void x86p_cpu_cmpxchg8b(X86pCpu *cpu, void *destination);
 void x86p_cpu_cpuid(X86pCpu *cpu);
 int x86p_cpu_loop(X86pCpu *cpu, uint32_t width, int zf_condition);
 void x86p_cpu_sahf(X86pCpu *cpu);
