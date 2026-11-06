@@ -254,6 +254,12 @@ void x86p_emit_shift_r32_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, ui
   put(e, count);
 }
 
+void x86p_emit_bswap_r32(X86pEmit *e, X86pHostReg dst) {
+  rex(e, 0, kX64Rax, dst);
+  put(e, 0x0Fu);
+  put(e, (uint8_t)(0xC8u | ((unsigned)dst & 7u)));
+}
+
 /* D3 /digit. */
 /* REX.W C1 /digit ib. */
 void x86p_emit_shift_r64_imm8(X86pEmit *e, X86pHostShift op, X86pHostReg dst, uint8_t count) {

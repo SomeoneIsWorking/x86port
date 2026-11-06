@@ -306,6 +306,19 @@ void emit_cdq(X86pA64Emit *e) {
   x86p_a64_emit_store32(e, CPU_REG, reg_off(kX86pEdx), kA64X0);
 }
 
+void emit_cwde(X86pA64Emit *e) {
+  x86p_a64_emit_load32(e, kA64X0, CPU_REG, reg_off(kX86pEax));
+  x86p_a64_emit_shl_w_imm(e, kA64X0, 16u);
+  x86p_a64_emit_sar_w_imm(e, kA64X0, 16u);
+  x86p_a64_emit_store32(e, CPU_REG, reg_off(kX86pEax), kA64X0);
+}
+
+void emit_bswap(X86pA64Emit *e, int reg) {
+  x86p_a64_emit_load32(e, kA64X0, CPU_REG, reg_off(reg));
+  x86p_a64_emit_rev_w(e, kA64X0);
+  x86p_a64_emit_store32(e, CPU_REG, reg_off(reg), kA64X0);
+}
+
 /* This helper owns only one already-decoded operation's value semantics --
    identical to jit_x64.c's jit_div32. */
 static int jit_div32(X86pCpu *cpu, uint32_t divisor, uint32_t signed_divide) {

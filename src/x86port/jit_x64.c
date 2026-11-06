@@ -310,7 +310,10 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnPopad:
     return insn->operands == 0;
   case kX86pInsnCdq:
+  case kX86pInsnCwde:
     return insn->operands == 0;
+  case kX86pInsnBswap:
+    return operand_is_reg32(&insn->operand[0]);
   case kX86pInsnDiv:
   case kX86pInsnIdiv:
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
@@ -411,6 +414,8 @@ static int keeps_x87_mirror(const X86pInsn *insn) {
   case kX86pInsnPop:
   case kX86pInsnXchg:
   case kX86pInsnCdq:
+  case kX86pInsnCwde:
+  case kX86pInsnBswap:
   case kX86pInsnLeave:
   case kX86pInsnAluUnary:
     return 1;
@@ -469,6 +474,19 @@ static void emit_cdq(BlockCtx *c) {
   gpr_load(c, kX64Rax, kX86pEax, 4);
   x86p_emit_shift_r32_imm8(c->e, kX64Sar, kX64Rax, 31u);
   gpr_store(c, kX86pEdx, kX64Rax, 4);
+}
+
+static void emit_cwde(BlockCtx *c) {
+  gpr_load(c, kX64Rax, kX86pEax, 4);
+  x86p_emit_shift_r32_imm8(c->e, kX64Shl, kX64Rax, 16u);
+  x86p_emit_shift_r32_imm8(c->e, kX64Sar, kX64Rax, 16u);
+  gpr_store(c, kX86pEax, kX64Rax, 4);
+}
+
+static void emit_bswap(BlockCtx *c, const X86pInsn *insn) {
+  gpr_load(c, kX64Rax, insn->operand[0].reg, 4);
+  x86p_emit_bswap_r32(c->e, kX64Rax);
+  gpr_store(c, insn->operand[0].reg, kX64Rax, 4);
 }
 
 /* This helper owns only one already-decoded operation's value semantics. It
@@ -1032,6 +1050,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnCdq:
       emit_cdq(&ctx);
+      break;
+    case kX86pInsnCwde:
+      emit_cwde(&ctx);
+      break;
+    case kX86pInsnBswap:
+      emit_bswap(&ctx, &insn);
       break;
     case kX86pInsnDiv:
       emit_div32(&ctx, &insn, pc, 0);

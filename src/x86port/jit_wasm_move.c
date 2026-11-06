@@ -293,6 +293,25 @@ void x86p_wasm_cwde_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   x86p_wasm_state_store_reg(&l->state, kX86pEax, 4, kX86pWasmLocalR);
 }
 
+/* Wasm has no byte swap: rotate each byte pair into place and merge them. */
+void x86p_wasm_bswap_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
+  const int reg = insn->operand[0].reg;
+  (void)pc;
+  x86p_wasm_state_load_reg(&l->state, reg, 4);
+  x86p_wasm_i32_const(l->e, 8);
+  x86p_wasm_i32_op(l->e, kWasmI32Rotl);
+  x86p_wasm_i32_const(l->e, 0x00FF00FF);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  x86p_wasm_state_load_reg(&l->state, reg, 4);
+  x86p_wasm_i32_const(l->e, 8);
+  x86p_wasm_i32_op(l->e, kWasmI32Rotr);
+  x86p_wasm_i32_const(l->e, (int32_t)0xFF00FF00u);
+  x86p_wasm_i32_op(l->e, kWasmI32And);
+  x86p_wasm_i32_op(l->e, kWasmI32Or);
+  x86p_wasm_local_set(l->e, (uint32_t)kX86pWasmLocalR);
+  x86p_wasm_state_store_reg(&l->state, reg, 4, kX86pWasmLocalR);
+}
+
 void x86p_wasm_cld_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
   (void)insn;
   (void)pc;

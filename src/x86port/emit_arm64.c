@@ -417,6 +417,10 @@ static void bitfield(X86pA64Emit *e, unsigned opc, X86pA64Reg dst, X86pA64Reg sr
   put32(e, word);
 }
 
+void x86p_a64_emit_rev_w(X86pA64Emit *e, X86pA64Reg dst) {
+  put32(e, 0x5AC00800u | ((uint32_t)dst << 5) | (uint32_t)dst);
+}
+
 void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count) {
   /* LSL Wd, Wn, #s == UBFM Wd, Wn, #(-s mod 32), #(31-s). */
   unsigned s = count & 31u;

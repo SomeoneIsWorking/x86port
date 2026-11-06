@@ -470,6 +470,29 @@ static void test_xlat_indexes_by_al(void) {
   CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 0x77777740u);
 }
 
+static void test_bswap_reverses_bytes(void) {
+  static const uint8_t code[] = {0xb9,
+                                 0xef,
+                                 0xcd,
+                                 0xab,
+                                 0x89, /* mov ecx, 0x89abcdef */
+                                 0x0f,
+                                 0xc9,  /* bswap ecx */
+                                 0xf4}; /* hlt */
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+
+  load(code, sizeof code);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
+
+  CHECK_EQ_U(run(&cpu, &m, 10, &steps, &rep), kX86pStepProtectionFault);
+  CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEcx, 4), 0xefcdab89u);
+}
+
 /* ---- the failure paths, which are the point of naming them ---- */
 
 /* A divide by zero is delivered as a status with nothing written, because the
@@ -602,6 +625,7 @@ int main(void) {
   RUN(test_program_memory_and_extension);
   RUN(test_program_divide_setcc_cmovcc);
   RUN(test_xlat_indexes_by_al);
+  RUN(test_bswap_reverses_bytes);
   RUN(test_divide_error_is_delivered);
   RUN(test_memory_fault_is_named);
   RUN(test_unsupported_is_named_and_does_not_advance);

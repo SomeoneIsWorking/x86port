@@ -561,6 +561,13 @@ static void execute(Ctx *c) {
     x86p_reg_write(cpu, kX86pEax, 4, x86p_sign_extend(x86p_reg_read(cpu, kX86pEax, 2), 2));
     return;
 
+  case kX86pInsnBswap: {
+    uint32_t value = x86p_reg_read(cpu, o0->reg, 4);
+    x86p_reg_write(
+        cpu, o0->reg, 4, (value >> 24) | ((value >> 8) & 0xFF00u) | ((value << 8) & 0xFF0000u) | (value << 24));
+    return;
+  }
+
   case kX86pInsnMul:
   case kX86pInsnImul: {
     int w = o0->size;

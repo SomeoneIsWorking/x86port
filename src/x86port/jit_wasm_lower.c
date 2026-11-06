@@ -262,6 +262,7 @@ static const X86pWasmOpEntry kTable[kX86pInsnOpCount] = {
     [kX86pInsnLeave] = {NULL, x86p_wasm_leave_lower, 0},
     [kX86pInsnCdq] = {NULL, x86p_wasm_cdq_lower, 0},
     [kX86pInsnCwde] = {NULL, x86p_wasm_cwde_lower, 0},
+    [kX86pInsnBswap] = {NULL, x86p_wasm_bswap_lower, 0},
     [kX86pInsnCld] = {NULL, x86p_wasm_cld_lower, 0},
     [kX86pInsnStd] = {NULL, x86p_wasm_std_lower, 0},
     [kX86pInsnJmp] = {x86p_wasm_jmp_accepts, x86p_wasm_jmp_lower, 1},

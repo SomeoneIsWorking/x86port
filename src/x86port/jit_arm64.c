@@ -241,7 +241,10 @@ static int can_emit(const X86pInsn *insn) {
   case kX86pInsnLeave:
     return insn->operands == 0;
   case kX86pInsnCdq:
+  case kX86pInsnCwde:
     return insn->operands == 0;
+  case kX86pInsnBswap:
+    return operand_is_reg32(&insn->operand[0]);
   case kX86pInsnDiv:
   case kX86pInsnIdiv:
     return insn->operands == 1 && (operand_is_reg32(&insn->operand[0]) || operand_is_mem32(&insn->operand[0]));
@@ -882,6 +885,12 @@ X86pJitStatus x86p_jit_translate_bounded(const X86pMem *mem,
       break;
     case kX86pInsnCdq:
       emit_cdq(&e);
+      break;
+    case kX86pInsnCwde:
+      emit_cwde(&e);
+      break;
+    case kX86pInsnBswap:
+      emit_bswap(&e, insn.operand[0].reg);
       break;
     case kX86pInsnDiv:
       emit_div32(&ctx, &insn, pc, 0);

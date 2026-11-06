@@ -285,6 +285,8 @@ void x86p_emit_alu_r64_mem(X86pEmit *e, X86pHostAlu op, X86pHostReg dst, X86pHos
  * entirely plausible in a disassembly. Callers use AL or CL.
  */
 void x86p_emit_setcc_r8(X86pEmit *e, unsigned cc, X86pHostReg dst);
+/* BSWAP r32 -- 0F C8+r. */
+void x86p_emit_bswap_r32(X86pEmit *e, X86pHostReg dst);
 
 /* mov byte [base + disp], r8 -- same RAX..RBX restriction as setcc. */
 void x86p_emit_store8_reg(X86pEmit *e, X86pHostReg base, int32_t disp, X86pHostReg src);

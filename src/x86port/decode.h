@@ -180,6 +180,7 @@ typedef enum X86pInsnOp {
   kX86pInsnNop,
   kX86pInsnCdq,  /* sign-extend EAX into EDX:EAX */
   kX86pInsnCwde, /* sign-extend AX into EAX */
+  kX86pInsnBswap,
   kX86pInsnMul,
   kX86pInsnImul,
   kX86pInsnDiv,

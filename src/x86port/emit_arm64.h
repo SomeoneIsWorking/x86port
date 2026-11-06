@@ -205,6 +205,8 @@ void x86p_a64_emit_alu_x_x(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, X86pA6
 /* add/sub x(dst), x(dst), #imm (0..4095) -- host pointer/stack adjustment. */
 void x86p_a64_emit_alu_x_imm(X86pA64Emit *e, X86pA64Alu op, X86pA64Reg dst, uint32_t imm);
 
+/* rev w(dst), w(dst) */
+void x86p_a64_emit_rev_w(X86pA64Emit *e, X86pA64Reg dst);
 /* lsl w(dst), w(dst), #count */
 void x86p_a64_emit_shl_w_imm(X86pA64Emit *e, X86pA64Reg dst, uint8_t count);
 /* lsl w(dst), w(src), #count; a count of 0 is a plain move, or nothing when

@@ -53,13 +53,14 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  */
 
 static const char *kOpNames[] = {
-    "unsupported", "alu",   "alu-unary", "mov",  "movzx", "movsx",    "lea",     "push", "pop",    "xchg",    "jmp",
-    "jcc",         "setcc", "cmovcc",    "call", "ret",   "call-far", "jmp-far", "retf", "leave",  "nop",     "cdq",
-    "cwde",        "mul",   "imul",      "div",  "idiv",  "pushfd",   "popfd",   "x87",  "string", "simd",    "cld",
-    "std",         "bcd",   "bit",       "shld", "shrd",  "sahf",     "lahf",    "stc",  "clc",    "cmc",     "salc",
-    "pushad",      "popad", "enter",     "loop", "loope", "loopne",   "jecxz",   "int3", "int1",   "int",     "into",
-    "iretd",       "bound", "arpl",      "sldt", "lfp",   "hlt",      "wbinvd",  "cli",  "sti",    "port-io", "cpuid",
-    "rdtsc",       "xadd",  "cmpxchg",   "bsf",  "bsr"};
+    "unsupported", "alu",    "alu-unary", "mov",   "movzx",  "movsx",  "lea",     "push",     "pop",
+    "xchg",        "jmp",    "jcc",       "setcc", "cmovcc", "call",   "ret",     "call-far", "jmp-far",
+    "retf",        "leave",  "nop",       "cdq",   "cwde",   "bswap",  "mul",     "imul",     "div",
+    "idiv",        "pushfd", "popfd",     "x87",   "string", "simd",   "cld",     "std",      "bcd",
+    "bit",         "shld",   "shrd",      "sahf",  "lahf",   "stc",    "clc",     "cmc",      "salc",
+    "pushad",      "popad",  "enter",     "loop",  "loope",  "loopne", "jecxz",   "int3",     "int1",
+    "int",         "into",   "iretd",     "bound", "arpl",   "sldt",   "lfp",     "hlt",      "wbinvd",
+    "cli",         "sti",    "port-io",   "cpuid", "rdtsc",  "xadd",   "cmpxchg", "bsf",      "bsr"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
@@ -392,6 +393,7 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_PAUSE, kX86pInsnNop);
     SIMPLE(ZYDIS_MNEMONIC_CDQ, kX86pInsnCdq);
     SIMPLE(ZYDIS_MNEMONIC_CWDE, kX86pInsnCwde);
+    SIMPLE(ZYDIS_MNEMONIC_BSWAP, kX86pInsnBswap);
     SIMPLE(ZYDIS_MNEMONIC_MUL, kX86pInsnMul);
     SIMPLE(ZYDIS_MNEMONIC_IMUL, kX86pInsnImul);
     SIMPLE(ZYDIS_MNEMONIC_DIV, kX86pInsnDiv);
@@ -809,6 +811,10 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
         out->op = kX86pInsnUnsupported;
         break;
       }
+    }
+    /* The 16-bit form is undefined. */
+    if (out->op == kX86pInsnBswap && out->operand[0].size != 4) {
+      out->op = kX86pInsnUnsupported;
     }
     /* Zydis lists XLAT's table before AL, the reverse of a MOV, and leaves AL
        out of the address. */

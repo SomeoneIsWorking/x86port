@@ -298,18 +298,42 @@ static void test_cdq_sign_edges(Fixture *fixture) {
       0xFFFFFFFEu,
       0xFFFFFFFFu,
       0xAAAAAAAAu,
+      0x00008000u,
+      0xFFFF7FFFu,
   };
+  static const uint8_t opcodes[] = {0x99u /* CDQ */, 0x98u /* CWDE */};
   unsigned index;
+  unsigned opcode;
 
-  for (index = 0u; index < sizeof values / sizeof values[0]; index++) {
-    X86pCpu initial = explicit_cpu(index & 31u);
+  for (opcode = 0u; opcode < sizeof opcodes; opcode++) {
+    for (index = 0u; index < sizeof values / sizeof values[0]; index++) {
+      X86pCpu initial = explicit_cpu(index & 31u);
 
+      memset(fixture->guest, 0x90, sizeof fixture->guest);
+      fixture->guest[0] = opcodes[opcode];
+      append_stopper(fixture->guest + 1u);
+      initial.reg[kX86pEax] = values[index];
+      initial.reg[kX86pEdx] = 0x13579BDFu;
+      compare_one_success(fixture, initial, 1u, 1);
+    }
+  }
+}
+
+static void test_bswap_reverses_each_register(Fixture *fixture) {
+  unsigned reg;
+
+  for (reg = 0u; reg < 8u; reg++) {
+    X86pCpu initial = explicit_cpu(reg);
+
+    if (reg == kX86pEsp) {
+      continue;
+    }
     memset(fixture->guest, 0x90, sizeof fixture->guest);
-    fixture->guest[0] = 0x99u;
-    append_stopper(fixture->guest + 1u);
-    initial.reg[kX86pEax] = values[index];
-    initial.reg[kX86pEdx] = 0x13579BDFu;
-    compare_one_success(fixture, initial, 1u, 1);
+    fixture->guest[0] = 0x0Fu;
+    fixture->guest[1] = (uint8_t)(0xC8u | reg);
+    append_stopper(fixture->guest + 2u);
+    initial.reg[reg] = 0x89ABCDEFu;
+    compare_one_success(fixture, initial, 2u, 1);
   }
 }
 
@@ -1041,6 +1065,7 @@ int main(void) {
   test_setcc_memory_fault_and_addr16_refusal(&fixture);
   test_leave_success_and_fault(&fixture);
   test_cdq_sign_edges(&fixture);
+  test_bswap_reverses_each_register(&fixture);
   test_mul32_register_memory_alias_and_fault(&fixture);
   test_div32_success_and_faults(&fixture);
   test_idiv32_success_and_faults(&fixture);

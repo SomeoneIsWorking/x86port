@@ -203,6 +203,7 @@ void x86p_wasm_setcc_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_leave_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_cdq_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_cwde_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
+void x86p_wasm_bswap_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_cld_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_std_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
 void x86p_wasm_nop_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc);
