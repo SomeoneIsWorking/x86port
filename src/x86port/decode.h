@@ -131,6 +131,8 @@ typedef struct X86pOperand {
    * wraps to a low address where `[EBX+0x8000]` does not.
    */
   uint8_t addr16;
+  /* The index is its register's low byte, zero-extended: XLAT's [EBX+AL]. */
+  uint8_t index_low_byte;
   /* A branch displacement is RELATIVE TO THE NEXT INSTRUCTION, not to the one
      it appears in. Carried as a flag rather than resolved at decode time
      because decode does not know where the instruction lives -- and folding
@@ -226,7 +228,6 @@ typedef enum X86pInsnOp {
   kX86pInsnClc,
   kX86pInsnCmc,
   kX86pInsnSalc, /* undocumented, but real silicon: AL = CF ? 0xFF : 0x00 */
-  kX86pInsnXlat, /* AL = [seg:EBX + AL] */
   kX86pInsnPushad,
   kX86pInsnPopad,
   kX86pInsnEnter, /* a stack frame, with the nesting level nobody uses */

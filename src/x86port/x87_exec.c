@@ -345,6 +345,9 @@ static void execute(Ctx *c) {
     x86p_x87_clear_exceptions(f);
     return;
 
+  case kX86pX87InsnExamine:
+    x86p_x87_examine(f);
+    return;
   case kX86pX87InsnTest:
     x86p_x87_test(f);
     return;

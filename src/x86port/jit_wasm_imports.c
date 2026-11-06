@@ -67,6 +67,7 @@ static const X86pWasmImportDesc kImports[kX86pWasmImportCount] = {
     [kX86pWasmImportX87Exchange] = {"x87_exchange", (X86pWasmImportFn)x86p_x87_exchange, 2, 0},
     [kX86pWasmImportX87Sign] = {"x87_sign", (X86pWasmImportFn)x86p_x87_sign, 2, 0},
     [kX86pWasmImportX87Test] = {"x87_test", (X86pWasmImportFn)x86p_x87_test, 1, 0},
+    [kX86pWasmImportX87Examine] = {"x87_examine", (X86pWasmImportFn)x86p_x87_examine, 1, 0},
     [kX86pWasmImportX87CompareFlags] = {"x87_compare_flags", (X86pWasmImportFn)x86p_x87_compare_flags, 3, 1},
     [kX86pWasmImportX87Free] = {"x87_free", (X86pWasmImportFn)x86p_x87_free, 2, 0},
     [kX86pWasmImportX87Emms] = {"x87_emms", (X86pWasmImportFn)x86p_x87_emms, 1, 0},

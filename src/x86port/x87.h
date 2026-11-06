@@ -412,6 +412,7 @@ typedef enum X86pX87Insn {
   kX86pX87InsnCmov,
   kX86pX87InsnSaveState,    /* FNSAVE/FSAVE: the whole unit to 108 bytes, then FNINIT */
   kX86pX87InsnRestoreState, /* FRSTOR: and back */
+  kX86pX87InsnExamine,      /* FXAM: classify ST(0) into C3 C2 C0, its sign into C1 */
   kX86pX87InsnCount         /* MUST stay last */
 } X86pX87Insn;
 
@@ -476,6 +477,7 @@ void x86p_x87_compare_register(X86pX87 *f, int index, unsigned pops);
 void x86p_x87_exchange(X86pX87 *f, int index);
 void x86p_x87_sign(X86pX87 *f, int absolute);
 void x86p_x87_test(X86pX87 *f);
+void x86p_x87_examine(X86pX87 *f);
 int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index);
 /* FCOMI/FUCOMI(P): the compare into EFLAGS, then `pops` pops unless an operand was empty. */
 void x86p_x87_compare_flags_pop(X86pX87 *f, X86pFlags *flags, int index, unsigned pops);

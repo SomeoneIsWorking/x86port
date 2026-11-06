@@ -156,6 +156,7 @@ void x87_inline_compare_mem(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast);
 
 /* FNSTSW AX, which calls nothing and so keeps the mirror. */
+void x87_inline_status_word(BlockCtx *c);
 void x87_inline_status_ax(BlockCtx *c);
 
 /* FST/FSTP ST(i). */

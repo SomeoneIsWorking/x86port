@@ -401,6 +401,32 @@ static void test_empty_register_is_not_zero(void) {
   CHECK((f.status & X86P_X87_SF) != 0);
 }
 
+static uint16_t fxam_of(long double value) {
+  X86pX87 f;
+  x86p_x87_reset(&f);
+  CHECK(x86p_x87_push(&f, value));
+  x86p_x87_examine(&f);
+  return (uint16_t)(f.status & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3));
+}
+
+/* Class codes from the instruction's own table, C3 C2 C0, with the sign in C1. */
+static void test_fxam_classifies_the_top(void) {
+  X86pX87 f;
+  x86p_x87_reset(&f);
+  f.status = X86P_X87_C1 | X86P_X87_C2;
+  x86p_x87_examine(&f);
+  CHECK((f.status & (X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3)) == (X86P_X87_C3 | X86P_X87_C0));
+  CHECK((f.status & X86P_X87_IE) == 0);
+  CHECK(fxam_of(1.5L) == X86P_X87_C2);
+  CHECK(fxam_of(-1.5L) == (X86P_X87_C2 | X86P_X87_C1));
+  CHECK(fxam_of(0.0L) == X86P_X87_C3);
+  CHECK(fxam_of(-0.0L) == (X86P_X87_C3 | X86P_X87_C1));
+  CHECK(fxam_of((long double)INFINITY) == (X86P_X87_C2 | X86P_X87_C0));
+  CHECK(fxam_of(-(long double)INFINITY) == (X86P_X87_C2 | X86P_X87_C1 | X86P_X87_C0));
+  CHECK(fxam_of((long double)NAN) == X86P_X87_C0);
+  CHECK(fxam_of(LDBL_MIN / 2.0L) == (X86P_X87_C3 | X86P_X87_C2));
+}
+
 /* Precision control rounds every RESULT, not just stores. */
 static void test_precision_control_rounds_results(void) {
   X86pX87 f;
@@ -998,6 +1024,7 @@ int main(void) {
   RUN(test_the_fused_arith_path_matches_the_long_one);
   RUN(test_every_store_zeroes_the_register_padding);
   RUN(test_empty_register_is_not_zero);
+  RUN(test_fxam_classifies_the_top);
   RUN(test_precision_control_rounds_results);
   RUN(test_fist_rounds_by_the_control_word);
   if (x86p_x87_precision_is_exact()) {

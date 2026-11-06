@@ -1100,9 +1100,9 @@ void x87_inline_constant(BlockCtx *c, const X86pInsn *insn, X87Inline *fast) {
 #endif
 }
 
-/* x86p_x87_status: the stored word with TOP merged into bits 11..13, written
-   to AX with EAX's upper half kept. */
-void x87_inline_status_ax(BlockCtx *c) {
+/* x86p_x87_status into ECX: the stored word with TOP merged into bits 11..13.
+   EAX is scratch. */
+void x87_inline_status_word(BlockCtx *c) {
   X86pEmit *e = c->e;
   const int32_t status = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, status));
   const int32_t top = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, top));
@@ -1112,6 +1112,11 @@ void x87_inline_status_ax(BlockCtx *c) {
   x86p_emit_alu_r32_imm32(e, kX64And, kX64Rax, 7u);
   x86p_emit_shift_r32_imm8(e, kX64Shl, kX64Rax, (uint8_t)X86P_X87_TOP_SHIFT);
   x86p_emit_alu_r32_r32(e, kX64Or, kX64Rcx, kX64Rax);
+}
+
+/* Written to AX with EAX's upper half kept. */
+void x87_inline_status_ax(BlockCtx *c) {
+  x87_inline_status_word(c);
   gpr_store(c, kX86pEax, kX64Rcx, 2);
   c->x87_kept = 1;
 }

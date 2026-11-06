@@ -247,6 +247,10 @@ static void run_case(const Case *k, void *code, X86pJitExit ok_exit) {
 #define FCOMP_ST(i) 0xD8, (0xD8 + (i))
 #define FCOMPP 0xDE, 0xD9
 #define FUCOMPP 0xDA, 0xE9
+#define FXAM 0xD9, 0xE5
+#define FNSTSW_M(d) 0xDD, 0x7B, (d) /* DD /7 */
+#define FUCOM_ST(i) 0xDD, (0xE0 + (i))
+#define FUCOMP_ST(i) 0xDD, (0xE8 + (i))
 #define FCOM_M32(d) 0xD8, 0x53, (d)  /* D8 /2 */
 #define FCOMP_M64(d) 0xDC, 0x5B, (d) /* DC /3 */
 #define FICOM_M32(d) 0xDA, 0x53, (d) /* DA /2 */
@@ -646,6 +650,27 @@ static const Case kCases[] = {
           FCOMPP,
           FNSTSW_AX),
      15,
+     {F32_ONE, F32_THREE},
+     0},
+    {"examine", CODE(FXAM, FNSTSW_AX, MOV_M_EAX(32), FLD_M32(0), FXAM, FNSTSW_AX), 6, {F32_ONE}, 0},
+    {"status to memory",
+     CODE(FLD_M32(0), FLD_M32(4), FCOM_ST(1), FNSTSW_M(32), FLD_ST(0), FNSTSW_M(36)),
+     6,
+     {F32_ONE, F32_THREE},
+     0},
+    {"unordered register compares",
+     CODE(FLD_M32(0),
+          FLD_M32(4),
+          FLD_ST(0),
+          FUCOM_ST(2),
+          FNSTSW_AX,
+          MOV_M_EAX(32),
+          FUCOMP_ST(2),
+          FNSTSW_AX,
+          MOV_M_EAX(36),
+          FUCOMP_ST(1),
+          FNSTSW_AX),
+     11,
      {F32_ONE, F32_THREE},
      0},
     {"flag compares",

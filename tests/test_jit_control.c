@@ -937,13 +937,10 @@ static void test_x87_memory_compare_status_pop_nan_and_fault(Fixture *fixture) {
   compare_x87_value_success(fixture, initial, 2u);
 }
 
-static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixture) {
+static void test_x87_store_status_ax_projection(Fixture *fixture) {
   X86pCpu initial;
   X86pCpu result;
   X86pInsn decoded;
-  X86pJitBlock block;
-  X86pJitStatus translation;
-  char reason[256] = {0};
   unsigned top;
 
   for (top = 0u; top < X86P_X87_REGS; top++) {
@@ -972,15 +969,6 @@ static void test_x87_store_status_ax_projection_and_memory_refusal(Fixture *fixt
       CHECK(x86p_cpu_diff(&x87_expected, &result, NULL, NULL) == 0u);
     }
   }
-
-  memset(fixture->guest, 0x90, sizeof fixture->guest);
-  fixture->guest[0] = 0xDDu;
-  fixture->guest[1] = 0x3Du; /* FNSTSW word [disp32]: not part of the AX milestone. */
-  put_u32(fixture->guest + 2u, kGuestBase + kDataOffset);
-  append_stopper(fixture->guest + 6u);
-  translation = translate(fixture, &block, reason, (unsigned)sizeof reason);
-  CHECK(translation == kX86pJitUnsupportedAtEntry);
-  CHECK(strstr(reason, "FNSTSW") != NULL);
 }
 
 static void test_x87_clear_exceptions_exact_state_and_neighbor_refusal(Fixture *fixture) {
@@ -1063,7 +1051,7 @@ int main(void) {
   test_xchg32_register_memory_alias_and_fault(&fixture);
   test_x87_constant_loads_and_full_stack(&fixture);
   test_x87_memory_compare_status_pop_nan_and_fault(&fixture);
-  test_x87_store_status_ax_projection_and_memory_refusal(&fixture);
+  test_x87_store_status_ax_projection(&fixture);
   test_x87_clear_exceptions_exact_state_and_neighbor_refusal(&fixture);
   jc_code_region_destroy(&fixture.code);
   CHECK(g_x87_value_cases == 16u);

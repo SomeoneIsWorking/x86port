@@ -7,6 +7,7 @@ void emit_x87_register(BlockCtx *c, const X86pInsn *insn) {
   const void *fn = insn->x87 == kX86pX87InsnCompare    ? (const void *)&x86p_x87_compare_register
                    : insn->x87 == kX86pX87InsnExchange ? (const void *)&x86p_x87_exchange
                    : insn->x87 == kX86pX87InsnTest     ? (const void *)&x86p_x87_test
+                   : insn->x87 == kX86pX87InsnExamine  ? (const void *)&x86p_x87_examine
                                                        : (const void *)&x86p_x87_sign;
   const unsigned arg =
       insn->x87 == kX86pX87InsnChangeSign || insn->x87 == kX86pX87InsnAbs ? insn->x87 == kX86pX87InsnAbs : index;

@@ -163,8 +163,8 @@ Ordered work:
    Numeric x87, XMM SIMD, double shifts, BCD/bit operations, multi-access
    stacks, flag transfers and architectural trap/protection exits now lower
    through shared arithmetic owners. Remaining families include far/segment
-   transfers, XLAT, IRETD, BOUND, ARPL, SLDT and LFP, plus 16-bit addressing
-   and stack forms. Raw MMX/3DNow! aliasing and raw x87 state remain refused.
+   transfers, IRETD, BOUND, ARPL, SLDT and LFP, plus 16-bit addressing and
+   stack forms. Raw MMX/3DNow! aliasing and raw x87 state remain refused.
 3. **Module lifetime is a correctness requirement, not tuning.** The product
    storage owner now releases module/table references after cache invalidation,
    resets the module arena after flushing the cache, and preserves other engine

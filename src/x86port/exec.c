@@ -52,7 +52,7 @@ static uint32_t effective_address(Ctx *c, const X86pOperand *o) {
     addr += x86p_reg_read(c->cpu, o->base, 4);
   }
   if (o->index >= 0) {
-    addr += x86p_reg_read(c->cpu, o->index, 4) * (uint32_t)o->scale;
+    addr += x86p_reg_read(c->cpu, o->index, o->index_low_byte ? 1 : 4) * (uint32_t)o->scale;
   }
   /*
    * A 16-bit address wraps within its sixteen bits, and it does so BEFORE the
@@ -827,28 +827,6 @@ static void execute(Ctx *c) {
        reached by something eventually. */
     x86p_reg_write(cpu, kX86pEax, 1, x86p_flag_cf(&cpu->flags) ? 0xFFu : 0x00u);
     return;
-
-  case kX86pInsnXlat: {
-    const uint32_t al = x86p_reg_read(cpu, kX86pEax, 1);
-    uint32_t addr = cpu->reg[kX86pEbx] + al;
-    uint32_t v = 0;
-    /* The segment is whatever prefix the encoding carried; Zydis reports it on
-       the implicit memory operand, which is the only place it exists. */
-    if (in->operands > 0 && o0->kind == kX86pOperandMem) {
-      if (o0->seg == (uint8_t)kX86pSegFs) {
-        addr += cpu->fs_base;
-      } else if (o0->seg == (uint8_t)kX86pSegGs) {
-        addr += cpu->gs_base;
-      }
-    }
-    if (!x86p_mem_read(c->mem, addr, 1, &v)) {
-      c->fault = kX86pStepMemoryFault;
-      c->fault_addr = addr;
-      return;
-    }
-    x86p_reg_write(cpu, kX86pEax, 1, v);
-    return;
-  }
 
   case kX86pInsnPushad:
     if (!x86p_stack_pushad(cpu, c->mem, &c->fault_addr)) {

@@ -155,6 +155,10 @@ void x86p_wasm_state_address_parts(X86pWasmState *s, const X86pOperand *o) {
   if (o->index >= 0) {
     unsigned shift = (o->scale == 8) ? 3u : (o->scale == 4) ? 2u : (o->scale == 2) ? 1u : 0u;
     x86p_wasm_state_load_reg(s, o->index, 4);
+    if (o->index_low_byte) {
+      x86p_wasm_i32_const(s->e, 0xFF);
+      x86p_wasm_i32_op(s->e, kWasmI32And);
+    }
     if (shift != 0u) {
       x86p_wasm_i32_const(s->e, (int32_t)shift);
       x86p_wasm_i32_op(s->e, kWasmI32Shl);

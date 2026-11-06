@@ -320,6 +320,10 @@ void x86p_wasm_x87_lower(X86pWasmLower *l, const X86pInsn *insn, uint32_t pc) {
     self(l);
     x86p_wasm_call_import(l, kX86pWasmImportX87Test);
     return;
+  case kX86pX87InsnExamine:
+    self(l);
+    x86p_wasm_call_import(l, kX86pWasmImportX87Examine);
+    return;
   case kX86pX87InsnClearExc:
   case kX86pX87InsnInit:
     self(l);

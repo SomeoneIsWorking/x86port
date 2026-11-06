@@ -428,9 +428,12 @@ void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (insn->x87 == kX86pX87InsnLoadControl) {
     x86p_emit_load16_zx(c->e, kX64Rdx, HOSTPTR_REG, 0);
     x86p_emit_store16_reg(c->e, CPU_REG, offset, kX64Rdx);
-  } else {
+  } else if (insn->x87 == kX86pX87InsnStoreControl) {
     x86p_emit_load16_zx(c->e, kX64Rdx, CPU_REG, offset);
     x86p_emit_store16_reg(c->e, HOSTPTR_REG, 0, kX64Rdx);
+  } else {
+    x87_inline_status_word(c);
+    x86p_emit_store16_reg(c->e, HOSTPTR_REG, 0, kX64Rcx);
   }
 }
 

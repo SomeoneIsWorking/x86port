@@ -25,6 +25,7 @@ int x87_register_is_emittable(const X86pInsn *insn) {
   case kX86pX87InsnChangeSign:
   case kX86pX87InsnAbs:
   case kX86pX87InsnTest:
+  case kX86pX87InsnExamine:
     return insn->operands == 0;
   default:
     return 0;
@@ -37,8 +38,10 @@ int x87_fn_is_emittable(const X86pInsn *insn) {
 }
 
 int x87_control_is_emittable(const X86pInsn *insn) {
-  return (insn->x87 == kX86pX87InsnLoadControl || insn->x87 == kX86pX87InsnStoreControl) && insn->operands == 1 &&
-         insn->operand[0].kind == kX86pOperandMem && insn->operand[0].size == 2 && !insn->operand[0].addr16;
+  return (insn->x87 == kX86pX87InsnLoadControl || insn->x87 == kX86pX87InsnStoreControl ||
+          insn->x87 == kX86pX87InsnStoreStatus) &&
+         insn->operands == 1 && insn->operand[0].kind == kX86pOperandMem && insn->operand[0].size == 2 &&
+         !insn->operand[0].addr16;
 }
 
 /* Shape and value admission are shared by every host emitter. Status/control

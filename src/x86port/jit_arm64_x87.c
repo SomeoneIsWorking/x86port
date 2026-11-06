@@ -98,14 +98,18 @@ void emit_x87_constant(BlockCtx *c, const X86pInsn *insn) {
    x86p_reg_write(..., width=2), and none of this touches the separate
    integer EFLAGS model. It is MSVC's float compare (`fcomp; fnstsw ax;
    test ah, imm; jcc`), so it ran as a call in almost every float branch. */
-void emit_x87_status_ax(BlockCtx *c) {
+static void x87_status_word(BlockCtx *c) {
   X86pA64Emit *e = c->e;
   const int32_t status = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, status));
   const int32_t top = (int32_t)(offsetof(X86pCpu, x87) + offsetof(X86pX87, top));
   x86p_a64_emit_load16_zx(e, kA64X0, CPU_REG, status);
   x86p_a64_emit_load8_zx(e, kA64X1, CPU_REG, top);
   x86p_a64_emit_bfi_w(e, kA64X0, kA64X1, X86P_X87_TOP_SHIFT, 3u);
-  x86p_a64_emit_store16_reg(e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kA64X0);
+}
+
+void emit_x87_status_ax(BlockCtx *c) {
+  x87_status_word(c);
+  x86p_a64_emit_store16_reg(c->e, CPU_REG, (int32_t)offsetof(X86pCpu, reg[kX86pEax]), kA64X0);
 }
 
 /* FNCLEX changes no integer flags or registers. The shared semantic owner
@@ -277,8 +281,11 @@ void emit_x87_control(BlockCtx *c, const X86pInsn *insn, uint32_t insn_eip) {
   if (insn->x87 == kX86pX87InsnLoadControl) {
     x86p_a64_emit_load16_zx(c->e, kA64X0, HOSTPTR_REG, 0);
     x86p_a64_emit_store16_reg(c->e, CPU_REG, offset, kA64X0);
-  } else {
+  } else if (insn->x87 == kX86pX87InsnStoreControl) {
     x86p_a64_emit_load16_zx(c->e, kA64X0, CPU_REG, offset);
+    x86p_a64_emit_store16_reg(c->e, HOSTPTR_REG, 0, kA64X0);
+  } else {
+    x87_status_word(c);
     x86p_a64_emit_store16_reg(c->e, HOSTPTR_REG, 0, kA64X0);
   }
 }

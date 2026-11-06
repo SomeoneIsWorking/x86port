@@ -8,6 +8,7 @@
  * never demonstrate that a byte sequence which is not an instruction is
  * reported as one rather than resynchronised into a plausible wrong answer.
  */
+#include "cpu.h"
 #include "decode.h"
 
 #include <stdio.h>
@@ -117,6 +118,33 @@ static void test_three_dnow_encodings_decode(void) {
  * instruction. This is the case a corpus of real code can never exercise, and
  * the one that separates "decoder" from "static analysis guessing at data".
  */
+static void test_unordered_compare_names_its_register(void) {
+  const uint8_t fucomp_st3[] = {0xDD, 0xEB};
+  X86pInsn insn;
+  CHECK_EQ_U(x86p_decode(fucomp_st3, sizeof fucomp_st3, &insn), 2u);
+  CHECK_EQ_U(insn.x87, kX86pX87InsnCompare);
+  CHECK_EQ_U(insn.x87_pops, 1u);
+  CHECK_EQ_U(insn.operands, 1u);
+  CHECK_EQ_U(insn.operand[0].kind, kX86pOperandSt);
+  CHECK_EQ_U(insn.operand[0].reg, 3u);
+}
+
+static void test_xlat_is_a_byte_move(void) {
+  const uint8_t xlat[] = {0xD7};
+  X86pInsn insn;
+  CHECK_EQ_U(x86p_decode(xlat, sizeof xlat, &insn), 1u);
+  CHECK_EQ_U(insn.op, kX86pInsnMov);
+  CHECK_EQ_U(insn.operands, 2u);
+  CHECK_EQ_U(insn.operand[0].kind, kX86pOperandReg);
+  CHECK_EQ_U(insn.operand[0].reg, kX86pEax);
+  CHECK_EQ_U(insn.operand[0].size, 1u);
+  CHECK_EQ_U(insn.operand[1].kind, kX86pOperandMem);
+  CHECK_EQ_U(insn.operand[1].base, kX86pEbx);
+  CHECK_EQ_U(insn.operand[1].index, kX86pEax);
+  CHECK_EQ_U(insn.operand[1].index_low_byte, 1u);
+  CHECK_EQ_U(insn.operand[1].size, 1u);
+}
+
 static void test_refusals(void) {
   static const uint8_t lock_nothing[] = {0xf0, 0xf0, 0xf0, 0xf0};
   static const uint8_t truncated[] = {0x0f, 0x0f}; /* 3DNow! with no modrm/imm */
@@ -177,6 +205,8 @@ static void test_decoder_is_identified(void) {
 int main(void) {
   RUN(test_known_encodings);
   RUN(test_three_dnow_encodings_decode);
+  RUN(test_unordered_compare_names_its_register);
+  RUN(test_xlat_is_a_byte_move);
   RUN(test_refusals);
   RUN(test_length_is_bounded_and_nonzero);
   RUN(test_decoder_is_identified);

@@ -90,6 +90,7 @@ typedef enum X86pWasmImport {
   kX86pWasmImportX87Exchange,
   kX86pWasmImportX87Sign,
   kX86pWasmImportX87Test,
+  kX86pWasmImportX87Examine,
   kX86pWasmImportX87CompareFlags,
   kX86pWasmImportX87Free,
   kX86pWasmImportX87Emms,

@@ -52,15 +52,14 @@ static const char *upper_mnemonic(ZydisMnemonic m) {
  * decision rather than a tidiness preference.
  */
 
-static const char *kOpNames[] = {"unsupported", "alu",     "alu-unary", "mov",    "movzx", "movsx",   "lea",    "push",
-                                 "pop",         "xchg",    "jmp",       "jcc",    "setcc", "cmovcc",  "call",   "ret",
-                                 "call-far",    "jmp-far", "retf",      "leave",  "nop",   "cdq",     "cwde",   "mul",
-                                 "imul",        "div",     "idiv",      "pushfd", "popfd", "x87",     "string", "simd",
-                                 "cld",         "std",     "bcd",       "bit",    "shld",  "shrd",    "sahf",   "lahf",
-                                 "stc",         "clc",     "cmc",       "salc",   "xlat",  "pushad",  "popad",  "enter",
-                                 "loop",        "loope",   "loopne",    "jecxz",  "int3",  "int1",    "int",    "into",
-                                 "iretd",       "bound",   "arpl",      "sldt",   "lfp",   "hlt",     "wbinvd", "cli",
-                                 "sti",         "port-io", "cpuid",     "rdtsc",  "xadd",  "cmpxchg", "bsf",    "bsr"};
+static const char *kOpNames[] = {
+    "unsupported", "alu",   "alu-unary", "mov",  "movzx", "movsx",    "lea",     "push", "pop",    "xchg",    "jmp",
+    "jcc",         "setcc", "cmovcc",    "call", "ret",   "call-far", "jmp-far", "retf", "leave",  "nop",     "cdq",
+    "cwde",        "mul",   "imul",      "div",  "idiv",  "pushfd",   "popfd",   "x87",  "string", "simd",    "cld",
+    "std",         "bcd",   "bit",       "shld", "shrd",  "sahf",     "lahf",    "stc",  "clc",    "cmc",     "salc",
+    "pushad",      "popad", "enter",     "loop", "loope", "loopne",   "jecxz",   "int3", "int1",   "int",     "into",
+    "iretd",       "bound", "arpl",      "sldt", "lfp",   "hlt",      "wbinvd",  "cli",  "sti",    "port-io", "cpuid",
+    "rdtsc",       "xadd",  "cmpxchg",   "bsf",  "bsr"};
 
 _Static_assert((int)(sizeof kOpNames / sizeof kOpNames[0]) == (int)kX86pInsnOpCount, "every X86pInsnOp needs a name");
 
@@ -358,6 +357,10 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     out->op = (uint8_t)(o);                                                                                            \
     return
     SIMPLE(ZYDIS_MNEMONIC_MOV, kX86pInsnMov);
+  case ZYDIS_MNEMONIC_XLAT: /* MOV AL, [EBX+AL]; both operands are implicit */
+    out->op = kX86pInsnMov;
+    out->operands = 2;
+    return;
     SIMPLE(ZYDIS_MNEMONIC_MOVNTI, kX86pInsnMov); /* a non-temporal hint on a plain store */
     SIMPLE(ZYDIS_MNEMONIC_MOVZX, kX86pInsnMovzx);
     SIMPLE(ZYDIS_MNEMONIC_MOVSX, kX86pInsnMovsx);
@@ -405,7 +408,6 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     SIMPLE(ZYDIS_MNEMONIC_CLC, kX86pInsnClc);
     SIMPLE(ZYDIS_MNEMONIC_CMC, kX86pInsnCmc);
     SIMPLE(ZYDIS_MNEMONIC_SALC, kX86pInsnSalc);
-    SIMPLE(ZYDIS_MNEMONIC_XLAT, kX86pInsnXlat);
     SIMPLE(ZYDIS_MNEMONIC_PUSHAD, kX86pInsnPushad);
     SIMPLE(ZYDIS_MNEMONIC_POPAD, kX86pInsnPopad);
     SIMPLE(ZYDIS_MNEMONIC_ENTER, kX86pInsnEnter);
@@ -609,6 +611,7 @@ static void map_mnemonic(const ZydisDecodedInstruction *insn, X86pInsn *out) {
     FP(ZYDIS_MNEMONIC_FWAIT, kX86pX87InsnWait);
     FP(ZYDIS_MNEMONIC_FNCLEX, kX86pX87InsnClearExc);
     FP(ZYDIS_MNEMONIC_FTST, kX86pX87InsnTest);
+    FP(ZYDIS_MNEMONIC_FXAM, kX86pX87InsnExamine);
     FP(ZYDIS_MNEMONIC_FLDL2E, kX86pX87InsnConstLog2E);
     FP(ZYDIS_MNEMONIC_FLDL2T, kX86pX87InsnConstLog2T);
     FP(ZYDIS_MNEMONIC_FLDLN2, kX86pX87InsnConstLn2);
@@ -806,6 +809,22 @@ uint32_t x86p_decode(const uint8_t *bytes, size_t len, X86pInsn *out) {
         out->op = kX86pInsnUnsupported;
         break;
       }
+    }
+    /* Zydis lists XLAT's table before AL, the reverse of a MOV, and leaves AL
+       out of the address. */
+    if (insn.mnemonic == ZYDIS_MNEMONIC_XLAT && out->op == kX86pInsnMov) {
+      const X86pOperand table = out->operand[0];
+      out->operand[0] = out->operand[1];
+      out->operand[1] = table;
+      out->operand[1].index = kX86pEax;
+      out->operand[1].scale = 1;
+      out->operand[1].index_low_byte = 1;
+    }
+    /* Zydis spells FUCOM(P) ST(i) with ST(0) first; every consumer takes the
+       one-operand shape FCOM(P) ST(i) arrives in. */
+    if (out->op == kX86pInsnX87 && out->x87 == (uint8_t)kX86pX87InsnCompare && out->operands == 2) {
+      out->operand[0] = out->operand[1];
+      out->operands = 1;
     }
   }
   return insn.length;

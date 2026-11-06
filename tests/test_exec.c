@@ -434,6 +434,42 @@ static void test_program_divide_setcc_cmovcc(void) {
   CHECK_EQ_U(steps, 8);
 }
 
+/* The index is AL alone: EAX's upper bytes must not reach the address. */
+static void test_xlat_indexes_by_al(void) {
+  static const uint8_t code[] = {0xbb,
+                                 0x00,
+                                 0x00,
+                                 0x00,
+                                 0x00, /* mov ebx, table */
+                                 0xb8,
+                                 0x03,
+                                 0x77,
+                                 0x77,
+                                 0x77, /* mov eax, 0x77777703 */
+                                 0xd7, /* xlat */
+                                 0xf4, /* hlt */
+                                 0x10,
+                                 0x20,
+                                 0x30,
+                                 0x40};
+  uint8_t patched[sizeof code];
+  const uint32_t table = CODE_BASE + 12u;
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+
+  memcpy(patched, code, sizeof code);
+  memcpy(&patched[1], &table, sizeof table);
+  load(patched, sizeof patched);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
+
+  CHECK_EQ_U(run(&cpu, &m, 10, &steps, &rep), kX86pStepProtectionFault);
+  CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 0x77777740u);
+}
+
 /* ---- the failure paths, which are the point of naming them ---- */
 
 /* A divide by zero is delivered as a status with nothing written, because the
@@ -565,6 +601,7 @@ int main(void) {
   RUN(test_program_call_and_frame);
   RUN(test_program_memory_and_extension);
   RUN(test_program_divide_setcc_cmovcc);
+  RUN(test_xlat_indexes_by_al);
   RUN(test_divide_error_is_delivered);
   RUN(test_memory_fault_is_named);
   RUN(test_unsupported_is_named_and_does_not_advance);

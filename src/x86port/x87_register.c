@@ -45,6 +45,35 @@ void x86p_x87_test(X86pX87 *f) {
   }
 }
 
+void x86p_x87_examine(X86pX87 *f) {
+  long double v;
+  f->status &= (uint16_t)~(X86P_X87_C0 | X86P_X87_C1 | X86P_X87_C2 | X86P_X87_C3);
+  if (!x86p_x87_get(f, 0, &v)) {
+    f->status |= X86P_X87_C3 | X86P_X87_C0;
+    return;
+  }
+  if (signbit(v)) {
+    f->status |= X86P_X87_C1;
+  }
+  switch (fpclassify(v)) {
+  case FP_NAN:
+    f->status |= X86P_X87_C0;
+    break;
+  case FP_INFINITE:
+    f->status |= X86P_X87_C2 | X86P_X87_C0;
+    break;
+  case FP_ZERO:
+    f->status |= X86P_X87_C3;
+    break;
+  case FP_SUBNORMAL:
+    f->status |= X86P_X87_C3 | X86P_X87_C2;
+    break;
+  default:
+    f->status |= X86P_X87_C2;
+    break;
+  }
+}
+
 int x86p_x87_compare_flags(X86pX87 *f, X86pFlags *flags, int index) {
   long double x, y;
   uint32_t result = X86P_EFLAGS_FIXED;

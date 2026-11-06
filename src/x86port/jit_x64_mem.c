@@ -66,6 +66,9 @@ void emit_address_parts(BlockCtx *c, const X86pOperand *o) {
       break;
     }
     gpr_load(c, ADDR_TMP, o->index, 4);
+    if (o->index_low_byte) {
+      x86p_emit_alu_r32_imm32(e, kX64And, ADDR_TMP, 0xFFu);
+    }
     if (shift) {
       x86p_emit_shift_r32_imm8(e, kX64Shl, ADDR_TMP, (uint8_t)shift);
     }

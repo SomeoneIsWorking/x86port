@@ -291,16 +291,24 @@ static unsigned scale_shift(uint8_t scale) {
   }
 }
 
+static void load_index(X86pA64Emit *e, X86pA64Reg to, const X86pOperand *o) {
+  if (o->index_low_byte) {
+    x86p_a64_emit_load8_zx(e, to, CPU_REG, reg_off(o->index));
+  } else {
+    x86p_a64_emit_load32(e, to, CPU_REG, reg_off(o->index));
+  }
+}
+
 static void emit_address_parts(X86pA64Emit *e, const X86pOperand *o) {
   const unsigned shift = scale_shift(o->scale);
   if (o->base >= 0) {
     x86p_a64_emit_load32(e, EA_REG, CPU_REG, reg_off(o->base));
     if (o->index >= 0) {
-      x86p_a64_emit_load32(e, ADDR_TMP, CPU_REG, reg_off(o->index));
+      load_index(e, ADDR_TMP, o);
       x86p_a64_emit_alu_w_w_lsl(e, kA64Add, EA_REG, EA_REG, ADDR_TMP, shift);
     }
   } else if (o->index >= 0) {
-    x86p_a64_emit_load32(e, EA_REG, CPU_REG, reg_off(o->index));
+    load_index(e, EA_REG, o);
     if (shift) {
       x86p_a64_emit_shl_w_imm(e, EA_REG, (uint8_t)shift);
     }
