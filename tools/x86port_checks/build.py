@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-JIT_COMMON_REVISION = "8a0e9534d9a1345a53d991fc35fdb5043547a156"
+JIT_COMMON_REVISION = "b2218bb51d3f5b877015d06ea8ca6187fc4f2a11"
 
 
 def verify(
