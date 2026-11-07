@@ -74,3 +74,5 @@ project-state inventory; CI retains the corresponding runtime tests.
 
 This is a library, not a runnable game, so it has no `run.sh`. A consuming title
 owns provisioning, packaging, and its default launcher.
+
+Built with AI assistance (Claude and other LLMs).
