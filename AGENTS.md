@@ -1,7 +1,7 @@
 # x86port — agent guidance
 
 `x86port` is the title-neutral x86-32 runtime used by native/dynarec game
-ports. Read the local authorities before changing it:
+ports. Local authorities:
 
 - `docs/project-goals.md` — durable outcomes and non-goals;
 - `docs/project-state.md` — what is verified, partial, or missing now;
@@ -10,42 +10,24 @@ ports. Read the local authorities before changing it:
 - `shared/jit-common/docs/migration.md` — the portfolio contract this project
   implements.
 
-The local documents replace the previous static-recompiler migration story.
-Do not recreate that story in source comments, tests, plans, or compatibility
-options.
+## Execution
 
-## Product execution contract
+Execution policy is in the `dynarec-port` and `dynarec-runtime` skills. Here:
 
-- A gameplay product has one guest execution path: native overrides where the
-  title owns behavior, and runtime JIT/dynarec translation for every remaining
-  guest instruction.
-- The zero-argument product starts in dynarec mode and offers every cold block
-  to the JIT. A bounded interpreter fallback may run only after typed failed or
-  unsupported compilation, or when executing emitted code would be unsafe, and
-  returns to JIT dispatch.
-- A gameplay build has no explicit interpreter selector, environment switch,
-  profiling-first interpretation, missing-backend fallback, or silent
-  instruction-step escape. Interpreter-only execution lives in a separately
-  built diagnostic target. Pure semantic helpers remain shared owners rather
-  than duplicated implementations.
-- There is no `Substrate` engine and no offline guest-code generation. Build,
-  install, provisioning, and release paths must not emit guest C/C++, object
-  files, precompiled guest bodies, seed tables, or generated dispatch maps.
-- A runtime-populated code cache is disposable user data. It is never a
-  fresh-install prerequisite or a checked-in product input.
-- x64 and ARM64 lowering backends exist, but instruction and host conformance
-  remain partial. Shared x87 value admission accepts native ext80 and binary128
-  hosts using software ext80 arithmetic/conversion, and retains the user-approved
-  Apple ARM64 binary64 path with an explicit precision limitation. Raw MMX alias
-  operations still require native ext80 object layout; other binary64 hosts
-  refuse value-bearing forms. Lack of a backend never permits whole-product
-  interpretation.
-
-The product/test link boundary now satisfies this contract at framework level:
-`x86port_runtime` has no interpreter selector or interpreter dispatch edge, and
-unsupported instructions return a named refusal. Treat `docs/project-state.md`
-as authoritative for the remaining emitter, architecture, and real-consumer
-conformance gaps.
+- `x86port_runtime` is the consumer-facing library. It starts in dynarec mode,
+  offers every cold block to the JIT, and has no interpreter selector,
+  environment switch or interpreter dispatch edge; unsupported instructions
+  return a named refusal.
+- The bounded fallback runs only after a typed failed or unsupported
+  compilation, or when executing emitted code would be unsafe, and returns to
+  JIT dispatch. Interpreter-only execution is a separately built diagnostic
+  target; pure semantic helpers are shared by both.
+- x64 and ARM64 lowering backends exist; instruction and host conformance are
+  partial (`docs/project-state.md`). Shared x87 value admission accepts native
+  ext80 and binary128 hosts using software ext80 arithmetic/conversion, and
+  retains the user-approved Apple ARM64 binary64 path with an explicit precision
+  limitation. Raw MMX alias operations still require native ext80 object
+  layout; other binary64 hosts refuse value-bearing forms.
 
 ## Ownership boundaries
 
@@ -54,64 +36,43 @@ conformance gaps.
   title-neutral native-call boundary.
 - Consumers own game identity, title addresses, native implementations, Win32
   service policy, graphics presentation, audio, input, saves, and packaging.
-  Do not add title-specific addresses or behavior here.
+  No title-specific addresses or behavior here.
 - Zydis owns instruction decoding only. Guest semantics remain in `x86port`.
-- `jit-common` owns only contracts already demonstrated by at least two platform
-  frameworks. Its current code-memory and block-cache primitives may be
-  consumed; do not move an x86-only interface there speculatively.
-- A missing reusable abstraction is implemented and proven locally first. It
-  moves to `jit-common` only after a second real framework needs the same
-  semantics.
+- `jit-common` takes only contracts at least two platform frameworks share (its
+  `AGENTS.md`). Its code-memory and block-cache primitives may be consumed; an
+  x86-only interface stays here.
 
-## Self-contained engineering guardrails
+## Library constraints
 
-- The repository's structure, configuration, and diagnostics are defined here;
-  no other game project is an architectural template or runtime dependency.
-- Split by responsibility before extending a large source file. First-party
-  source files must stay below 1,200 lines; a file already beyond that limit is
-  extraction territory and must not grow. Do not replace a monolith with
-  numbered fragments or catch-all utility modules.
-- Runtime configuration is explicit, typed, instance-owned, and passed through
-  APIs. Product behavior must not depend on process-global state or environment
-  parsing. Standalone tests and tools may parse their own command line or
-  environment at their boundary.
-- The library has one configurable diagnostic sink boundary. Library code must
-  not scatter `printf`/`fprintf`, silently log-and-continue, or select behavior
-  through logging. Tests and tools may write their own reports; consuming games
-  adapt the library sink to their project logger.
-- Failures preserve valid state and are returned with a named status and useful
-  context. Unknown instructions and unsafe emitted execution may enter only the
-  bounded, counted fallback; unavailable host backends, invalid mappings, and
-  executable-memory publication failures remain refusals.
-- C11 is the library baseline. Agent verification uses Clang, all touched C/C++
-  is formatted with the tracked `.clang-format`, and the normal verifier must
-  include format, clang-tidy, structure, portability, and tests without
-  weakening diagnostics.
+- C11 is the library baseline.
+- `tools/x86port_checks/source_policy.py` caps first-party source files at
+  1,200 lines; a file already beyond that must not grow.
+- The library reads no environment and holds no process-global state:
+  configuration is typed, instance-owned and passed through its APIs.
+  Standalone tests and tools parse their own command line or environment.
+- Diagnostics go through the library's one configurable sink; consumers adapt
+  it to their project logger. Library code has no `printf`/`fprintf`.
+- Unknown instructions and unsafe emitted execution may enter only the bounded,
+  counted fallback; unavailable host backends, invalid mappings, and
+  executable-memory publication failures are refusals with a named status.
+- This repository is a library, so it has no `run.sh`; consumers own launchers.
+  Project tests and tools are built only when `x86port` is the top-level CMake
+  project.
 
-## Verification discipline
+## Tests
 
 - The product-link gate inspects the consumer-facing library and proves the
   interpreter-only oracle and an explicit engine selector are absent from it.
 - Differential tests link the separately built interpreter-only oracle and stop
   at the first divergence.
-- Exercise executable-memory publication, instruction-cache coherence,
+- Tests cover executable-memory publication, instruction-cache coherence,
   invalidation, native dispatch, scoped original calls, exceptions, interrupts,
   and bounded exits on every supported host architecture.
-- Boot and menus are checkpoints. Product conformance requires representative
-  interactive gameplay in each consumer, including timing and relevant device
-  state against an independent oracle.
-- This repository is a library, so it has no `run.sh`. Consumers own launchers.
-  Project tests and tools are built only when `x86port` is the top-level CMake
-  project.
 
-A change is proven by the focused tests for what it touches, built in
-`build/verify`, and by the consuming port showing it working. The full verifier
-is not run per change, locally or in CI; run it only when the user asks. It
-configures the pinned `jit-common` checkout, builds it, and runs CTest:
+Focused tests build in `build/verify`. The full verifier configures the pinned
+`jit-common` checkout, builds it, runs CTest, including the format, source-policy
+and product-boundary checks:
 
 ```sh
 uv run --frozen python tools/verify.py --build-dir build/verify --cc clang --cxx clang++
 ```
-
-It also runs the format, source-policy and product-boundary checks; format
-touched files with `clang-format` directly instead.
