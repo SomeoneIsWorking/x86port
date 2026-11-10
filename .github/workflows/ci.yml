@@ -1,8 +1,7 @@
 name: Runtime CI
 
+# Started by hand only: changes are proven by focused tests and the consuming port.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:

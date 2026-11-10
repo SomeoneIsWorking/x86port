@@ -104,13 +104,14 @@ conformance gaps.
   Project tests and tools are built only when `x86port` is the top-level CMake
   project.
 
-Build and gate with the repository's own verifier, which configures the pinned
-`jit-common` checkout, builds it, and runs CTest:
+A change is proven by the focused tests for what it touches, built in
+`build/verify`, and by the consuming port showing it working. The full verifier
+is not run per change, locally or in CI; run it only when the user asks. It
+configures the pinned `jit-common` checkout, builds it, and runs CTest:
 
 ```sh
 uv run --frozen python tools/verify.py --build-dir build/verify --cc clang --cxx clang++
 ```
 
-It also runs the format, source-policy and product-boundary checks. Do not call
-the tree verified until the focused tests pass and that verifier has been run
-once on the frozen diff.
+It also runs the format, source-policy and product-boundary checks; format
+touched files with `clang-format` directly instead.

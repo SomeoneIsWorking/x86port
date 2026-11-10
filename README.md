@@ -70,7 +70,8 @@ environment with LLVM's `llvm-nm` installed. On Linux x86-64 with Clang,
 `--binary128-model` builds and tests everything with Android x86-64's binary128
 `long double` (`cmake/binary128_model.cmake`). Windows support remains partial:
 the MSVC x87 value representation still needs the f80 work recorded in the
-project-state inventory; CI retains the corresponding runtime tests.
+project-state inventory; CI retains the corresponding runtime tests. CI runs only
+when started by hand.
 
 This is a library, not a runnable game, so it has no `run.sh`. A consuming title
 owns provisioning, packaging, and its default launcher.

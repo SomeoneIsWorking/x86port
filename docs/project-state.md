@@ -27,7 +27,7 @@ runtime; explicit interpreter-only execution is a separately linked diagnostic.
 | S015 | Little Fighter 2 consumes the canonical JIT-only boundary and passes gameplay conformance | missing | Its Win32/DirectDraw seams and generated guest C are not yet migrated |
 | S016 | A WebAssembly product JIT backend is available | partial | Encoder, lowering, arena lifetime, storage and threaded host tests pass; raw x87 state forms, far/segment transfers and 16-bit forms still refuse, and browser consumer gameplay is unqualified |
 
-Host CI runs the asset-free graph on Linux x86-64 (Clang, plus a binary128
+Host CI, started by hand, runs the asset-free graph on Linux x86-64 (Clang, plus a binary128
 `long double` model matching Android x86-64), macOS x86-64 and arm64 (Apple
 Clang) and Windows x86-64 (clang-cl). `test_integer_tail`, `test_x87_fn`,
 `test_simd` and `test_string_ops` compare against instructions executed on
