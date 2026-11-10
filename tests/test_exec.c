@@ -187,6 +187,43 @@ static void test_program_sum_loop(void) {
 }
 
 /*
+ * The CPUID presence check, as Bink 2 and every MSVC-era CPU probe write it:
+ * a CPU on which POPFD cannot flip EFLAGS.ID has no CPUID, and the guest then
+ * takes its no-SSE path.
+ *
+ *     pushfd
+ *     pop  %eax
+ *     mov  %eax, %ecx
+ *     xor  $0x240000, %eax      ; ID and AC
+ *     push %eax
+ *     popfd
+ *     pushfd
+ *     pop  %eax
+ *     xor  %ecx, %eax
+ *     hlt
+ */
+static void test_popfd_flips_id_and_ac(void) {
+  static const uint8_t code[] = {
+      0x9c, 0x58, 0x89, 0xc1, 0x35, 0x00, 0x00, 0x24, 0x00, 0x50, 0x9d, 0x9c, 0x58, 0x31, 0xc8, 0xf4};
+  static const char *const mn[] = {"PUSHFD", "POP", "MOV", "XOR", "PUSH", "POPFD", "PUSHFD", "POP", "XOR", "HLT"};
+  X86pCpu cpu;
+  X86pMem m = arena();
+  X86pStepReport rep;
+  int steps = 0;
+
+  expect_disassembly(code, sizeof code, mn, 10);
+  load(code, sizeof code);
+  x86p_cpu_reset(&cpu);
+  cpu.eip = CODE_BASE;
+  cpu.reg[kX86pEsp] = CODE_BASE + ARENA_SIZE - 0x100u;
+
+  CHECK_EQ_U(run(&cpu, &m, 100, &steps, &rep), kX86pStepProtectionFault);
+  CHECK_EQ_U(steps, 9);
+  CHECK_EQ_U(x86p_reg_read(&cpu, kX86pEax, 4), 0x240000u);
+  CHECK_EQ_U(x86p_cpu_eflags(&cpu) & 0x240000u, 0x240000u);
+}
+
+/*
  * The FAR transfers, which move CS as well as EIP.
  *
  *      lcall $0x0033, $target   ; 9A off32 sel16
@@ -649,6 +686,7 @@ static void test_instruction_at_the_very_end_of_memory(void) {
 
 int main(void) {
   RUN(test_program_sum_loop);
+  RUN(test_popfd_flips_id_and_ac);
   RUN(test_program_far_call_and_return);
   RUN(test_program_far_jump);
   RUN(test_program_addr16_wraps);

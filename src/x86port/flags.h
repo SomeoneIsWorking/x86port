@@ -53,6 +53,12 @@ extern "C" {
    X86pCpu; the bit position is here so PUSHFD and POPFD have one place to
    agree with. */
 #define X86P_DF (1u << 10)
+/* The two system flags a ring-3 POPFD may change. CPU detection toggles them
+   (ID says CPUID exists, AC says the CPU is a 486 or later); nothing here acts
+   on either. */
+#define X86P_AC (1u << 18)
+#define X86P_ID (1u << 21)
+#define X86P_USER_SYSTEM_FLAGS (X86P_AC | X86P_ID)
 
 /* Bit 1 reads as 1 on every x86, and IF is set in any user-mode process this
    engine will ever run. A PUSHFD that omitted them would differ from hardware

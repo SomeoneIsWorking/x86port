@@ -118,6 +118,7 @@ unsigned x86p_cpu_diff(const X86pCpu *a, const X86pCpu *b, X86pCpuDiffFn on_diff
   report_u32(&d, "FS base", a->fs_base, b->fs_base);
   report_u32(&d, "GS base", a->gs_base, b->gs_base);
   report_int(&d, "DF", a->df, b->df);
+  report_u32(&d, "EFLAGS AC/ID", a->user_system_flags, b->user_system_flags);
   report_u32(&d, "MXCSR", a->mxcsr, b->mxcsr);
   for (i = 0; i < 8; i++) {
     if (memcmp(a->xmm[i], b->xmm[i], 16) != 0) {

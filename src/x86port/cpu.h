@@ -128,6 +128,9 @@ typedef struct X86pCpu {
      kX86pStepInterrupt; kept on the CPU rather than returned, so the JIT's
      helper path reports the same fact as the interpreter's. */
   uint8_t trap_vector;
+  /* EFLAGS.AC and EFLAGS.ID as the last POPFD or IRETD left them, in their
+     EFLAGS bit positions. */
+  uint32_t user_system_flags;
   /* The timestamp counter RDTSC reports. On the CPU rather than in a static,
      so two engines running two guests do not share one clock -- and so a reset
      genuinely resets it. */
@@ -291,9 +294,9 @@ const char *x86p_reg_name(int index, int w);
    divergence report can never be explained away by uninitialised state. */
 void x86p_cpu_reset(X86pCpu *cpu);
 
-/* The EFLAGS word PUSHFD stores, DF included, and the state POPFD loads from
-   one. The six arithmetic flags and DF are held apart, so both halves must
-   cross together or a saved and restored context loses its direction flag. */
+/* The EFLAGS word PUSHFD stores, DF, AC and ID included, and the state POPFD
+   loads from one. The six arithmetic flags, DF and AC/ID are held apart, so all
+   of them cross together or a restored context loses one. */
 uint32_t x86p_cpu_eflags(const X86pCpu *cpu);
 void x86p_cpu_set_eflags(X86pCpu *cpu, uint32_t eflags);
 
