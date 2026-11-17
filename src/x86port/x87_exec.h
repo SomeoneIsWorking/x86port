@@ -1,13 +1,13 @@
 /*
  * x87_exec.h -- executing an x87 instruction against guest state.
  *
- * Separate from exec.c because the FPU is a separate state machine: a rotating
+ * Separate from insn_exec.c because the FPU is a separate state machine: a rotating
  * stack, its own control and status words, and its own operand formats. Folding
  * it into the integer interpreter would put two unrelated machines in one file
  * and make the 500-line integer path grow past the point where its own
  * structure is visible.
  *
- * THE ADDRESSING IS NOT DUPLICATED HERE. exec.c already owns effective-address
+ * THE ADDRESSING IS NOT DUPLICATED HERE. insn_exec.c already owns effective-address
  * computation, so it resolves the memory operand and passes the address in.
  * A second implementation of base+index*scale+disp is exactly the kind of copy
  * that drifts, and the one place it would drift is the place nobody tests.

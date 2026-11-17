@@ -194,7 +194,7 @@ a consumer's representative gameplay rather than a boot checkpoint.
 Before calling the framework complete:
 
 - extract `src/x86port/jit_x64.c` below the 1,200-line first-party source limit
-  by real responsibility, and prevent `src/x86port/exec.c` or its replacement
+  by real responsibility, and prevent `src/x86port/insn_exec.c` or its replacement
   from becoming another monolith;
 - add one explicit typed configuration owner; retain the configurable
   `X86pDiagnosticSink` boundary and its source-policy gate, with environment

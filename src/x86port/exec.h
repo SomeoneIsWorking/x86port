@@ -1,21 +1,14 @@
 /*
- * exec.h -- one guest instruction, executed.
+ * exec.h -- the test interpreter: one guest instruction, fetched, decoded and
+ * executed.
  *
- * This is the thing S043 exists to produce: the authority on what an x86-32
- * instruction means, against which a translator is checked. It is deliberately
- * a SINGLE STEP rather than a run loop, because every use this framework has
- * for it -- lockstep comparison against another engine, first-divergence
- * reporting, taking over at a dispatch miss -- needs to stop after each
- * instruction and look. A caller that wants a loop writes three lines.
- *
- * EVERY OUTCOME IS NAMED. There is no "returned normally but did nothing".
- * The three ways an instruction can fail to execute -- the bytes are not an
- * instruction, they are an instruction this build has no semantics for, or the
- * guest touched memory it does not have -- are different facts about a run, and
- * an engine that cannot tell them apart cannot be debugged. The middle one in
- * particular must never be silent: "the interpreter ran it" and "the
- * interpreter skipped it" produce the same register file for exactly the
- * instructions whose effects are subtle.
+ * Linked only into the separate x86port_test_oracle target. It is the
+ * authority a translator is checked against, and deliberately a SINGLE STEP
+ * rather than a run loop, because every use the tests have for it -- lockstep
+ * comparison against another engine, first-divergence reporting -- needs to
+ * stop after each instruction and look. The semantics it runs are the
+ * product's own (insn_exec.h); this file adds only fetch, decode and the
+ * report.
  */
 #ifndef X86PORT_EXEC_H
 #define X86PORT_EXEC_H
@@ -23,31 +16,11 @@
 #include "cpu.h"
 #include "decode.h"
 #include "decode_cache.h"
+#include "insn_exec.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum X86pStepStatus {
-  kX86pStepOk = 0,
-  kX86pStepDecodeFailed, /* the bytes at EIP are not an instruction */
-  kX86pStepUnsupported,  /* decoded and named, but no semantics in this build */
-  kX86pStepFetchFault,   /* EIP itself is not in mapped memory */
-  kX86pStepMemoryFault,  /* the instruction touched unmapped memory */
-  kX86pStepDivideError,  /* #DE: the guest must receive this */
-  /*
-   * The traps and faults below are OUTCOMES, not gaps. An instruction that
-   * reports one has been fully modelled: this is what it does. Keeping them
-   * distinct from Unsupported is the difference between "this engine has not
-   * implemented HLT" and "the guest executed HLT, which a ring-3 process may
-   * not do" -- and in a game binary the second usually means execution reached
-   * alignment padding, which is worth saying out loud.
-   */
-  kX86pStepInterrupt,       /* INT n, INT3, INT1, INTO: `trap_vector` says which */
-  kX86pStepProtectionFault, /* #GP: a privileged or I/O instruction at ring 3 */
-  kX86pStepBoundRange,      /* #BR: BOUND found the index outside its pair */
-  kX86pStepStatusCount      /* MUST stay last */
-} X86pStepStatus;
 
 /*
  * What happened, in enough detail to act on.
@@ -89,29 +62,6 @@ X86pStepStatus x86p_step(X86pCpu *cpu, const X86pMem *mem, X86pStepReport *repor
  * can be run against each other.
  */
 X86pStepStatus x86p_step_cached(X86pCpu *cpu, const X86pMem *mem, X86pDecodeCache *cache, X86pStepReport *report);
-
-/*
- * Execute an ALREADY DECODED instruction whose address is cpu->eip.
- *
- * Split out of x86p_step so a second engine can reuse the semantics WITHOUT
- * paying to decode again. The JIT needs exactly this: it has already decoded
- * the instruction at translation time, and for the families it has no emitter
- * for it calls here from inside the translated block rather than ending the
- * block and going round the dispatch loop. Re-decoding at run time would make
- * a floating-point instruction cost more in the JIT than in the interpreter.
- *
- * `insn` MUST be the instruction at cpu->eip and MUST NOT be
- * kX86pInsnUnsupported; both are the caller's to establish, and the second is
- * checked rather than assumed because a caller that got it wrong would
- * silently advance EIP past an instruction that never ran.
- *
- * On success EIP has advanced or branched. On a fault EIP is unchanged and
- * `fault_addr`, when not null, receives the guest address that faulted.
- */
-X86pStepStatus x86p_execute_decoded(X86pCpu *cpu, const X86pMem *mem, const X86pInsn *insn, uint32_t *fault_addr);
-
-/* Name a status, for logs and refusals. Never null. */
-const char *x86p_step_status_name(X86pStepStatus s);
 
 #ifdef __cplusplus
 } /* extern "C" */

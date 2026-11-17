@@ -191,6 +191,8 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_wasm_simd_inline.c
   src/x86port/x87_memory.c
   src/x86port/stack_ops.c
+  src/x86port/insn_exec.c
+  src/x86port/x87_exec.c
   src/x86port/jit_wasm_module.c
   src/x86port/jit_wasm_memory.c
   src/x86port/jit_wasm_integer.c
@@ -246,8 +248,7 @@ endif()
 add_library(x86port_test_oracle STATIC
   src/x86port/cpu_compare.c
   src/x86port/decode_cache.c
-  src/x86port/exec.c
-  src/x86port/x87_exec.c)
+  src/x86port/exec.c)
 target_include_directories(x86port_test_oracle PUBLIC src/x86port)
 target_link_libraries(x86port_test_oracle PUBLIC x86port_runtime)
 x86p_strict_target(x86port_test_oracle)
