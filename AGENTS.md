@@ -76,3 +76,5 @@ and product-boundary checks:
 ```sh
 uv run --frozen python tools/verify.py --build-dir build/verify --cc clang --cxx clang++
 ```
+
+- Per-operation cost metering is missing and needs building: Lucent `lucent::perf` scopes (`OperationMeter`) reporting the run-end lines of the re-harness `perf-units` skill.
