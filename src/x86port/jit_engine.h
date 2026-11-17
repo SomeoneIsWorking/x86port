@@ -7,12 +7,13 @@
  * instruction it cannot emit. This does all three, and it is the smallest piece
  * that can execute a guest program end to end.
  *
- * THIS DIRECT ENGINE HAS NO FALLBACK EDGE. A block that stops on an
- * instruction the backend has no emitter for leaves guest EIP on that
- * instruction and returns a named unsupported status. A future product
- * dispatcher may compose the separately linked bounded fallback described in
- * AGENTS.md; the separately built interpreter-only diagnostic is not linked
- * here.
+ * ONE FALLBACK EDGE. When the backend's translation gate refuses an
+ * instruction, at a block's entry or where an emitted block stopped, the
+ * refused block runs through the bounded fallback
+ * (jit_fallback.h) on the shared semantic executor and the run returns to JIT
+ * dispatch. Each entry is counted by reason and guest address. A form the
+ * semantics cannot execute either leaves EIP on it and returns the named
+ * unsupported status. The interpreter-only diagnostic is not linked here.
  *
  * WHAT IT COUNTS, AND WHY EVERY COUNTER HAS A DENOMINATOR. "The JIT is working"
  * is not observable from a program that finished. A run that translated
@@ -35,6 +36,14 @@ extern "C" {
 #endif
 
 typedef struct X86pJitEngine X86pJitEngine;
+
+/* Why a block ran through the bounded fallback instead of translated code. */
+typedef enum X86pJitFallbackReason {
+  kX86pJitFallbackNoEmitter = 0, /* the backend's translation gate refused the instruction */
+  kX86pJitFallbackReasonCount    /* MUST stay last */
+} X86pJitFallbackReason;
+
+const char *x86p_jit_fallback_reason_name(X86pJitFallbackReason r);
 
 /* Why a run stopped. Every one of these is a REPORTED outcome; none of them is
    a state the caller has to infer from the CPU. */
@@ -250,6 +259,11 @@ typedef struct X86pJitEngineStats {
   uint64_t leaf_site_leaf_fills;
   uint64_t leaf_sites_exhausted;
   uint64_t leaf_sites_refused;
+  /* Bounded fallback entries and the instructions they retired, by reason.
+     translate_refusals is the denominator: a refusal the semantics could not
+     execute either ended the run instead. */
+  uint64_t fallback_blocks[kX86pJitFallbackReasonCount];
+  uint64_t fallback_insns[kX86pJitFallbackReasonCount];
 } X86pJitEngineStats;
 
 /*
@@ -490,6 +504,10 @@ void x86p_jit_engine_set_entry_watch(
  */
 typedef void (*X86pJitTranslateWatchFn)(void *user, uint32_t guest_eip, const void *host, size_t host_bytes);
 void x86p_jit_engine_set_translate_watch(X86pJitEngine *e, X86pJitTranslateWatchFn fn, void *user);
+
+/* Fallback entries for `reason` by the guest address each began at. Borrowed;
+   valid until engine destruction. NULL for an out-of-range reason. */
+const X86pJitProfile *x86p_jit_engine_fallback_sites(const X86pJitEngine *e, X86pJitFallbackReason reason);
 
 /* The attached profile, or NULL. Borrowed -- the engine owns it; valid until
    the next set_profile call or engine destruction. */

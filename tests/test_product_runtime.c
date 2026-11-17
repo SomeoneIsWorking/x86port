@@ -1,5 +1,6 @@
 #include "cpu.h"
 #include "jit_engine.h"
+#include "jit_fallback.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -83,7 +84,9 @@ static int unsupported_program_is_refused(X86pJitEngine *engine, X86pCpu *cpu, u
          expect(cpu->reg[kX86pEsp] == kGuestBase + 0x800u, "unsupported instruction changed guest state") &&
          expect(strstr(reason, "PFRCP") != NULL, "entry refusal omitted the decoded mnemonic") &&
          expect(strstr(reason, "0f 0f c0 96") != NULL, "entry refusal omitted the instruction bytes") &&
-         expect(stats.translate_refusals == 1u, "unsupported translation was not counted");
+         expect(stats.translate_refusals == 1u, "unsupported translation was not counted") &&
+         expect(stats.fallback_blocks[kX86pJitFallbackNoEmitter] == 0u,
+                "a form without semantics was counted as a fallback");
 }
 
 static int setz_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
@@ -349,6 +352,165 @@ static int fnclex_executes_before_a_named_refusal(X86pJitEngine *engine, X86pCpu
          expect(stats.translate_refusals == 8u, "post-FNCLEX refusal was not counted");
 }
 
+/* LEA EAX, [BX+SI]: 16-bit addressing, which no backend's gate emits. */
+static size_t put_lea16(uint8_t *at) {
+  at[0] = 0x67u;
+  at[1] = 0x8Du;
+  at[2] = 0x00u;
+  return 3u;
+}
+
+static uint64_t fallback_entries_at(const X86pJitEngine *engine, uint32_t eip) {
+  X86pJitProfileEntry top[16];
+  const uint32_t n = x86p_jit_profile_top(x86p_jit_engine_fallback_sites(engine, kX86pJitFallbackNoEmitter), top, 16u);
+  uint32_t i;
+  for (i = 0u; i < n; i++) {
+    if (top[i].guest_eip == eip) {
+      return top[i].entries;
+    }
+  }
+  return 0u;
+}
+
+static int fallback_returns_to_the_jit(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
+  static const uint8_t prefix[] = {
+      0xBB,
+      0x34,
+      0x12,
+      0x01,
+      0x00, /* MOV EBX, 0x11234 */
+      0xBE,
+      0x10,
+      0x00,
+      0x00,
+      0x00, /* MOV ESI, 0x10 */
+  };
+  static const uint8_t suffix[] = {
+      0x83,
+      0xC0,
+      0x01, /* ADD EAX, 1 */
+      0xEB,
+      0xFE, /* JMP $ */
+  };
+  char reason[256] = {0};
+  X86pJitEngineStats before;
+  X86pJitEngineStats after;
+  X86pJitRunStatus status;
+  size_t len = 0u;
+
+  memcpy(guest, prefix, sizeof prefix);
+  len += sizeof prefix;
+  len += put_lea16(guest + len);
+  memcpy(guest + len, suffix, sizeof suffix);
+  len += sizeof suffix;
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)len);
+  x86p_jit_engine_stats(engine, &before);
+  x86p_cpu_reset(cpu);
+  cpu->eip = kGuestBase;
+  status = x86p_jit_engine_run(engine, cpu, NULL, 8u, reason, (unsigned)sizeof reason);
+  x86p_jit_engine_stats(engine, &after);
+
+  return expect(status == kX86pRunBudget, "run through a fallback did not end on its budget") &&
+         expect(cpu->reg[kX86pEax] == 0x1245u, "fallback LEA or the translated ADD after it did not run") &&
+         expect(cpu->eip == kGuestBase + (uint32_t)len - 2u, "run did not reach the translated loop") &&
+         expect(after.fallback_blocks[kX86pJitFallbackNoEmitter] - before.fallback_blocks[kX86pJitFallbackNoEmitter] ==
+                    1u,
+                "fallback entry was not counted once") &&
+         expect(after.fallback_insns[kX86pJitFallbackNoEmitter] - before.fallback_insns[kX86pJitFallbackNoEmitter] ==
+                    1u,
+                "fallback ran other than the one refused instruction") &&
+         expect(after.translate_refusals - before.translate_refusals == 1u, "the refusal was not counted") &&
+         expect(after.blocks_translated - before.blocks_translated >= 2u,
+                "nothing was translated after the fallback") &&
+         expect(fallback_entries_at(engine, kGuestBase + (uint32_t)sizeof prefix) == 1u,
+                "fallback was not counted at its guest address");
+}
+
+static int fallback_is_bounded(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
+  const uint32_t refused = X86P_JIT_FALLBACK_MAX_INSNS + 1u;
+  char reason[256] = {0};
+  X86pJitEngineStats before;
+  X86pJitEngineStats after;
+  X86pJitRunStatus status;
+  size_t len = 0u;
+  uint32_t i;
+
+  for (i = 0u; i < refused; i++) {
+    len += put_lea16(guest + len);
+  }
+  guest[len++] = 0xEBu;
+  guest[len++] = 0xFEu; /* JMP $ */
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)len);
+  x86p_jit_engine_stats(engine, &before);
+  x86p_cpu_reset(cpu);
+  cpu->eip = kGuestBase;
+  status = x86p_jit_engine_run(engine, cpu, NULL, 4u, reason, (unsigned)sizeof reason);
+  x86p_jit_engine_stats(engine, &after);
+
+  return expect(status == kX86pRunBudget, "bounded fallback run did not end on its budget") &&
+         expect(cpu->eip == kGuestBase + (uint32_t)len - 2u, "bounded fallback did not reach the translated loop") &&
+         expect(after.fallback_blocks[kX86pJitFallbackNoEmitter] - before.fallback_blocks[kX86pJitFallbackNoEmitter] ==
+                    2u,
+                "a refused run longer than the bound did not take two fallback entries") &&
+         expect(after.fallback_insns[kX86pJitFallbackNoEmitter] - before.fallback_insns[kX86pJitFallbackNoEmitter] ==
+                    refused,
+                "bounded fallback retired the wrong instruction count") &&
+         expect(fallback_entries_at(engine, kGuestBase) == 1u, "first bounded entry was not counted at its address") &&
+         expect(fallback_entries_at(engine, kGuestBase + 3u * X86P_JIT_FALLBACK_MAX_INSNS) == 1u,
+                "second bounded entry did not start where the bound stopped the first");
+}
+
+static int boundary_at(uint32_t eip, void *user) {
+  return eip == *(const uint32_t *)user;
+}
+
+static int fallback_stops_at_an_interception_point(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
+  char reason[256] = {0};
+  X86pJitEngineStats before;
+  X86pJitEngineStats after;
+  X86pJitRunStatus status;
+  uint32_t boundary = kGuestBase + 3u;
+  size_t len = 0u;
+
+  len += put_lea16(guest + len);
+  len += put_lea16(guest + len);
+  guest[len++] = 0xEBu;
+  guest[len++] = 0xFEu; /* JMP $ */
+  x86p_jit_engine_set_boundary(engine, boundary_at, &boundary);
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)len);
+  x86p_jit_engine_stats(engine, &before);
+  x86p_cpu_reset(cpu);
+  cpu->eip = kGuestBase;
+  status = x86p_jit_engine_run(engine, cpu, NULL, 4u, reason, (unsigned)sizeof reason);
+  x86p_jit_engine_stats(engine, &after);
+  x86p_jit_engine_set_boundary(engine, NULL, NULL);
+
+  return expect(status == kX86pRunBudget, "fallback across an interception point did not end on its budget") &&
+         expect(cpu->eip == kGuestBase + 6u, "fallback did not reach the loop after the interception point") &&
+         expect(after.fallback_blocks[kX86pJitFallbackNoEmitter] - before.fallback_blocks[kX86pJitFallbackNoEmitter] ==
+                    2u,
+                "fallback ran through a consumer interception point");
+}
+
+static int fallback_reports_the_guest_fault(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
+  static const uint8_t program[] = {
+      0x67,
+      0x8B,
+      0x00, /* MOV EAX, [BX+SI]: below the mapping */
+  };
+  char reason[256] = {0};
+  X86pJitRunStatus status;
+
+  memcpy(guest, program, sizeof program);
+  x86p_jit_engine_invalidate(engine, kGuestBase, kGuestBase + (uint32_t)sizeof program);
+  x86p_cpu_reset(cpu);
+  cpu->eip = kGuestBase;
+  status = x86p_jit_engine_run(engine, cpu, NULL, 4u, reason, (unsigned)sizeof reason);
+
+  return expect(status == kX86pRunMemoryFault, "fallback fault was not reported as the guest's memory fault") &&
+         expect(cpu->eip == kGuestBase, "fallback fault moved EIP off the faulting instruction");
+}
+
 static int translation_failures_are_distinct(X86pJitEngine *engine, X86pCpu *cpu, uint8_t *guest) {
   char reason[256] = {0};
   X86pJitRunStatus status;
@@ -403,6 +565,18 @@ int main(void) {
   }
   if (ok) {
     ok = fnclex_executes_before_a_named_refusal(engine, &cpu, guest);
+  }
+  if (ok) {
+    ok = fallback_returns_to_the_jit(engine, &cpu, guest);
+  }
+  if (ok) {
+    ok = fallback_is_bounded(engine, &cpu, guest);
+  }
+  if (ok) {
+    ok = fallback_stops_at_an_interception_point(engine, &cpu, guest);
+  }
+  if (ok) {
+    ok = fallback_reports_the_guest_fault(engine, &cpu, guest);
   }
   if (ok) {
     ok = translation_failures_are_distinct(engine, &cpu, guest);

@@ -3,6 +3,7 @@
 #include "block_cache.h"
 #include "decode.h"
 #include "jit_chain.h"
+#include "jit_fallback.h"
 #include "jit_leaf_sites.h"
 #include "jit_storage.h"
 
@@ -18,6 +19,7 @@ struct X86pJitEngine {
   const X86pMem *mem;
   X86pJitStorage *storage;
   JcBlockCache *cache;
+  X86pJitFallback *fallback;
   X86pJitEngineStats stats;
   X86pJitInterceptFn intercept;
   void *intercept_user;
@@ -87,6 +89,16 @@ const char *x86p_jit_run_status_name(X86pJitRunStatus s) {
     break;
   }
   return "unknown run status";
+}
+
+const char *x86p_jit_fallback_reason_name(X86pJitFallbackReason r) {
+  switch (r) {
+  case kX86pJitFallbackNoEmitter:
+    return "no emitter";
+  case kX86pJitFallbackReasonCount:
+    break;
+  }
+  return "unknown fallback reason";
 }
 
 static void say(char *buf, unsigned len, const char *fmt, ...) {
@@ -197,11 +209,21 @@ x86p_jit_engine_create(const X86pMem *mem, size_t code_bytes, size_t cache_block
     return NULL;
   }
 
+  e->fallback = x86p_jit_fallback_create();
+  if (!e->fallback) {
+    say(reason, reason_len, "fallback counters could not be created");
+    jc_block_cache_destroy(e->cache);
+    x86p_jit_storage_destroy(e->storage);
+    free(e);
+    return NULL;
+  }
+
   e->chain_entry = x86p_jit_chain_entry_offset();
   if (x86p_jit_chain_slots_per_block() != 0u) {
     e->links = x86p_jit_chain_create(cache_blocks * x86p_jit_chain_slots_per_block());
     if (!e->links) {
       say(reason, reason_len, "chain slots for %zu blocks could not be created", cache_blocks);
+      x86p_jit_fallback_destroy(e->fallback);
       jc_block_cache_destroy(e->cache);
       x86p_jit_storage_destroy(e->storage);
       free(e);
@@ -218,6 +240,7 @@ void x86p_jit_engine_destroy(X86pJitEngine *e) {
   }
   jc_block_cache_destroy(e->cache);
   x86p_jit_storage_destroy(e->storage);
+  x86p_jit_fallback_destroy(e->fallback);
   x86p_jit_chain_destroy(e->links);
   x86p_jit_profile_destroy(e->profile);
   x86p_jit_chain_census_destroy(e->chain);
@@ -285,6 +308,7 @@ void x86p_jit_engine_stats(const X86pJitEngine *e, X86pJitEngineStats *out) {
   out->block_records = (uint64_t)x86p_jit_storage_block_records(e->storage);
   out->ceilings_learned = (uint64_t)x86p_jit_storage_ceilings_learned(e->storage);
   out->ceilings_retired = (uint64_t)x86p_jit_storage_ceilings_retired(e->storage);
+  x86p_jit_fallback_stats(e->fallback, out);
   {
     X86pJitLeafSitesStats sites;
     x86p_jit_leaf_sites_stats(e->leaf_sites, &sites);
@@ -453,6 +477,10 @@ void x86p_jit_engine_set_entry_watch(
   e->watch_user = user;
   e->watch_addr = guest_addr;
   e->watch_left = reports;
+}
+
+const X86pJitProfile *x86p_jit_engine_fallback_sites(const X86pJitEngine *e, X86pJitFallbackReason reason) {
+  return e ? x86p_jit_fallback_sites(e->fallback, reason) : NULL;
 }
 
 const X86pJitProfile *x86p_jit_engine_profile(const X86pJitEngine *e) {
@@ -656,6 +684,58 @@ static void *translate_at(
   return exec;
 }
 
+/* The run status for a guest outcome that ends the run, with EIP on the
+   instruction that produced it. */
+static X86pJitRunStatus guest_exit_status(X86pJitExit exit, const X86pCpu *cpu, char *reason, unsigned reason_len) {
+  switch (exit) {
+  case kX86pJitExitMemoryFault:
+    say(reason, reason_len, "guest memory fault at %08X", cpu->eip);
+    return kX86pRunMemoryFault;
+  case kX86pJitExitDivideError:
+    say(reason, reason_len, "guest divide error at %08X", cpu->eip);
+    return kX86pRunDivideError;
+  case kX86pJitExitInterrupt:
+    say(reason, reason_len, "guest software interrupt at %08X", cpu->eip);
+    return kX86pRunInterrupt;
+  case kX86pJitExitProtectionFault:
+    say(reason, reason_len, "guest general-protection fault at %08X", cpu->eip);
+    return kX86pRunProtectionFault;
+  case kX86pJitExitBoundRange:
+    say(reason, reason_len, "guest bound range exceeded at %08X", cpu->eip);
+    return kX86pRunBoundRange;
+  case kX86pJitExitBlockEnd:
+  case kX86pJitExitUnsupported:
+  case kX86pJitExitCount:
+    break;
+  }
+  say(reason, reason_len, "translated block returned invalid exit %u", (unsigned)exit);
+  return kX86pRunTranslateFailed;
+}
+
+/*
+ * The one fallback edge: the backend refused the instruction at cpu->eip, at a
+ * block's entry or where an emitted block stopped. Returns 1 when the run goes
+ * back to dispatch, 0 with `*stopped` when it ends. A refusal the bounded
+ * fallback will not run stays the named unsupported status.
+ */
+static int fall_back(
+    X86pJitEngine *e, X86pCpu *cpu, uint64_t *steps, X86pJitRunStatus *stopped, char *reason, unsigned reason_len) {
+  e->stats.translate_refusals++;
+  const X86pJitExit exit =
+      x86p_jit_fallback_run(e->fallback, kX86pJitFallbackNoEmitter, e->mem, e->boundary, e->boundary_user, cpu);
+  if (exit == kX86pJitExitUnsupported) {
+    say_unsupported(e->mem, cpu->eip, reason, reason_len);
+    *stopped = kX86pRunUnsupported;
+    return 0;
+  }
+  (*steps)++;
+  if (exit == kX86pJitExitBlockEnd) {
+    return 1;
+  }
+  *stopped = guest_exit_status(exit, cpu, reason, reason_len);
+  return 0;
+}
+
 /* The exit that last returned unlinked, until the dispatcher has found the
    translation it was leaving for. */
 typedef struct ChainPending {
@@ -780,9 +860,11 @@ X86pJitRunStatus x86p_jit_engine_run(
           continue;
         }
         if (st == kX86pJitUnsupportedAtEntry) {
-          e->stats.translate_refusals++;
-          say_unsupported(e->mem, cpu->eip, reason, reason_len);
-          return kX86pRunUnsupported;
+          X86pJitRunStatus stopped;
+          if (!fall_back(e, cpu, &steps, &stopped, reason, reason_len)) {
+            return stopped;
+          }
+          continue;
         }
         if (st == kX86pJitFetchFault) {
           say(reason, reason_len, "%s", why);
@@ -868,33 +950,14 @@ X86pJitRunStatus x86p_jit_engine_run(
     if (exit == kX86pJitExitBlockEnd) {
       continue;
     }
-    if (exit == kX86pJitExitMemoryFault) {
-      say(reason, reason_len, "guest memory fault at %08X", cpu->eip);
-      return kX86pRunMemoryFault;
-    }
     if (exit == kX86pJitExitUnsupported) {
-      e->stats.translate_refusals++;
-      say_unsupported(e->mem, cpu->eip, reason, reason_len);
-      return kX86pRunUnsupported;
+      X86pJitRunStatus stopped;
+      if (!fall_back(e, cpu, &steps, &stopped, reason, reason_len)) {
+        return stopped;
+      }
+      continue;
     }
-    if (exit == kX86pJitExitDivideError) {
-      say(reason, reason_len, "guest divide error at %08X", cpu->eip);
-      return kX86pRunDivideError;
-    }
-    if (exit == kX86pJitExitInterrupt) {
-      say(reason, reason_len, "guest software interrupt at %08X", cpu->eip);
-      return kX86pRunInterrupt;
-    }
-    if (exit == kX86pJitExitProtectionFault) {
-      say(reason, reason_len, "guest general-protection fault at %08X", cpu->eip);
-      return kX86pRunProtectionFault;
-    }
-    if (exit == kX86pJitExitBoundRange) {
-      say(reason, reason_len, "guest bound range exceeded at %08X", cpu->eip);
-      return kX86pRunBoundRange;
-    }
-    say(reason, reason_len, "translated block returned invalid exit %u", (unsigned)exit);
-    return kX86pRunTranslateFailed;
+    return guest_exit_status(exit, cpu, reason, reason_len);
   }
 
   return kX86pRunBudget;

@@ -19,7 +19,7 @@ ORACLE_REQUIRED_SYMBOLS = frozenset({"x86p_step"})
 # The one semantic executor ships in the product, but only these objects may
 # call it; a backend reaching it would be an unbounded, uncounted interpreter edge.
 SEMANTIC_EXECUTOR = "x86p_execute_decoded"
-SEMANTIC_EXECUTOR_CALLERS = frozenset()
+SEMANTIC_EXECUTOR_CALLERS = frozenset({"jit_fallback.c"})
 
 ArchiveSymbols = dict[str, tuple[set[str], set[str]]]
 

@@ -213,6 +213,7 @@ add_library(x86port_runtime STATIC
   src/x86port/jit_leaf_sites.c
   src/x86port/jit_chain_census.c
   src/x86port/jit_profile.c
+  src/x86port/jit_fallback.c
   src/x86port/jit_engine.c)
 target_link_libraries(x86port_runtime PRIVATE x86p_softfloat)
 add_library(x86port ALIAS x86port_runtime)
