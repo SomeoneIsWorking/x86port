@@ -48,30 +48,16 @@ static unsigned shift_count(const X86pVec *b) {
 }
 
 static void unpack(const X86pVec *a, const X86pVec *b, unsigned elem, int high, X86pVec *out) {
-  /*
-   * Interleave the destination's elements with the source's, taking them from
-   * the LOW half of each operand -- or the HIGH half for the H forms.
-   *
-   * Done per 8-byte lane, which is what the 128-bit encodings do as well: they
-   * interleave within each quadword rather than across the whole register, and
-   * a version that treated the operand as one long vector would produce the
-   * right answer at 64 bits and the wrong one at 128.
-   */
+  /* Interleave the low (or, for the H forms, high) half of the whole operand; SSE2 has no per-quadword split. */
   X86pVec r;
-  unsigned lanes = a->bytes / 8u;
-  unsigned per = 8u / elem; /* elements per 8-byte lane */
-  unsigned lane;
+  unsigned half = a->bytes / 2u;
+  unsigned from = high ? half : 0u;
   unsigned i;
   memset(&r, 0, sizeof r);
   r.bytes = a->bytes;
-  for (lane = 0; lane < lanes; lane++) {
-    unsigned base = lane * 8u;
-    for (i = 0; i < per / 2u; i++) {
-      unsigned from = base + (high ? (per / 2u) : 0u) * elem + i * elem;
-      unsigned to = base + i * 2u * elem;
-      memcpy(r.b + to, a->b + from, elem);
-      memcpy(r.b + to + elem, b->b + from, elem);
-    }
+  for (i = 0; i < half; i += elem) {
+    memcpy(r.b + 2u * i, a->b + from + i, elem);
+    memcpy(r.b + 2u * i + elem, b->b + from + i, elem);
   }
   *out = r;
 }

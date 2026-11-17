@@ -4,16 +4,15 @@
 # `<stem>_symbols.hpp` per mapped image of a decomp's images.toml
 # (tools/symbol_constants.py). The headers regenerate when the toml or a symbol
 # file changes; a new image in the toml reconfigures.
-set(X86P_SYMBOL_CONSTANTS_TOOL "${CMAKE_CURRENT_LIST_DIR}/../tools/symbol_constants.py")
-
 function(x86port_symbol_constants target)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "IMAGES;NAMESPACE" "")
   if(NOT ARG_IMAGES OR NOT ARG_NAMESPACE)
     message(FATAL_ERROR "x86port_symbol_constants(${target}): IMAGES and NAMESPACE are required")
   endif()
+  set(tool "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/symbol_constants.py")
   find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${X86P_SYMBOL_CONSTANTS_TOOL}" --images "${ARG_IMAGES}" --list
+    COMMAND "${Python3_EXECUTABLE}" "${tool}" --images "${ARG_IMAGES}" --list
     OUTPUT_VARIABLE listing ERROR_VARIABLE why RESULT_VARIABLE rc)
   if(rc)
     message(FATAL_ERROR "x86port_symbol_constants(${target}): ${why}")
@@ -21,7 +20,7 @@ function(x86port_symbol_constants target)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARG_IMAGES}")
   set(dir "${CMAKE_CURRENT_BINARY_DIR}/${target}/include")
   set(outputs)
-  set(inputs "${ARG_IMAGES}" "${X86P_SYMBOL_CONSTANTS_TOOL}")
+  set(inputs "${ARG_IMAGES}" "${tool}")
   string(REPLACE "\n" ";" lines "${listing}")
   foreach(line IN LISTS lines)
     if(line STREQUAL "")
@@ -39,7 +38,7 @@ function(x86port_symbol_constants target)
   add_custom_command(
     OUTPUT "${stamp}"
     BYPRODUCTS ${outputs}
-    COMMAND "${Python3_EXECUTABLE}" "${X86P_SYMBOL_CONSTANTS_TOOL}" --images "${ARG_IMAGES}"
+    COMMAND "${Python3_EXECUTABLE}" "${tool}" --images "${ARG_IMAGES}"
             --namespace "${ARG_NAMESPACE}" --output "${dir}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
     DEPENDS ${inputs}

@@ -202,6 +202,12 @@ INSN(k_cvtsi2sd, 0xF2u, 0x0Fu, 0x2Au, 0xC0u)
 INSN(k_movmskpd, 0x66u, 0x0Fu, 0x50u, 0xC1u)
 INSN(k_pshuflw, 0xF2u, 0x0Fu, 0x70u, 0xC1u)
 INSN(k_pshufhw, 0xF3u, 0x0Fu, 0x70u, 0xC1u)
+INSN(k_punpcklbw_xmm, 0x66u, 0x0Fu, 0x60u, 0xC1u)
+INSN(k_punpcklwd_xmm, 0x66u, 0x0Fu, 0x61u, 0xC1u)
+INSN(k_punpckldq_xmm, 0x66u, 0x0Fu, 0x62u, 0xC1u)
+INSN(k_punpckhbw_xmm, 0x66u, 0x0Fu, 0x68u, 0xC1u)
+INSN(k_punpckhwd_xmm, 0x66u, 0x0Fu, 0x69u, 0xC1u)
+INSN(k_punpckhdq_xmm, 0x66u, 0x0Fu, 0x6Au, 0xC1u)
 INSN(k_punpcklqdq, 0x66u, 0x0Fu, 0x6Cu, 0xC1u)
 INSN(k_punpckhqdq, 0x66u, 0x0Fu, 0x6Du, 0xC1u)
 INSN(k_pmuludq, 0x66u, 0x0Fu, 0xF4u, 0xC1u)
@@ -338,6 +344,12 @@ static const Case kCases[] = {
     C("MOVMSKPD", kX86pSimdMovmskpd, kFormToGpr, k_movmskpd),
     C("PSHUFLW", kX86pSimdPshuflw, kFormXmmImm, k_pshuflw),
     C("PSHUFHW", kX86pSimdPshufhw, kFormXmmImm, k_pshufhw),
+    C("PUNPCKLBW xmm", kX86pSimdPunpcklbw, kFormXmm, k_punpcklbw_xmm),
+    C("PUNPCKLWD xmm", kX86pSimdPunpcklwd, kFormXmm, k_punpcklwd_xmm),
+    C("PUNPCKLDQ xmm", kX86pSimdPunpckldq, kFormXmm, k_punpckldq_xmm),
+    C("PUNPCKHBW xmm", kX86pSimdPunpckhbw, kFormXmm, k_punpckhbw_xmm),
+    C("PUNPCKHWD xmm", kX86pSimdPunpckhwd, kFormXmm, k_punpckhwd_xmm),
+    C("PUNPCKHDQ xmm", kX86pSimdPunpckhdq, kFormXmm, k_punpckhdq_xmm),
     C("PUNPCKLQDQ", kX86pSimdPunpcklqdq, kFormXmm, k_punpcklqdq),
     C("PUNPCKHQDQ", kX86pSimdPunpckhqdq, kFormXmm, k_punpckhqdq),
     C("PMULUDQ", kX86pSimdPmuludq, kFormXmm, k_pmuludq),
