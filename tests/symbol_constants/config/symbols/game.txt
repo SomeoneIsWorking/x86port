@@ -1,0 +1,5 @@
+// Game.exe fixture map.
+Game_Update = 0x00401000; // type:func
+Game_Loop = 0x00401FFF; // type:label
+Game_State = 0x00402000; // size:0x40
+Game_Flags = 0x00402FFC;

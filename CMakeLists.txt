@@ -25,6 +25,7 @@ function(x86p_strict_target target)
 endfunction()
 
 include(cmake/binary128_model.cmake)
+include(cmake/symbol_constants.cmake)
 
 # The guest is x86-32 and this is a HOST library: nothing here is compiled for
 # the guest architecture, so no -m32 anywhere. That is the whole point of a
@@ -653,10 +654,22 @@ add_test(
     "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_format.py"
     --root "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(verify_format PROPERTIES SKIP_RETURN_CODE 77)
+
+x86port_symbol_constants(test_symbols
+  IMAGES "${CMAKE_CURRENT_SOURCE_DIR}/tests/symbol_constants/config/images.toml"
+  NAMESPACE fixture)
+add_executable(test_symbol_constants tests/test_symbol_constants.cpp)
+target_link_libraries(test_symbol_constants PRIVATE test_symbols)
+x86p_strict_target(test_symbol_constants)
+add_test(NAME test_symbol_constants COMMAND test_symbol_constants)
+add_test(
+  NAME test_symbol_constants_refusals
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_symbol_constants.py")
 set_tests_properties(
   verify_product_boundary
   verify_source_policy
   verify_format
+  test_symbol_constants_refusals
   PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 x86p_binary128_model_link_executables()
