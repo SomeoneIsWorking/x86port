@@ -331,6 +331,19 @@ void x86p_emit_shufps(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src, uint8_t imm
   put(e, imm);
 }
 
+void x86p_emit_sse_rr(X86pEmit *e, uint8_t prefix, uint8_t op, uint8_t reg, X86pHostXmm rm, int has_imm, uint8_t imm) {
+  if (prefix != 0u) {
+    put(e, prefix);
+  }
+  rex(e, 0, (X86pHostReg)reg, (X86pHostReg)rm);
+  put(e, 0x0Fu);
+  put(e, op);
+  modrm_reg(e, (X86pHostReg)reg, (X86pHostReg)rm);
+  if (has_imm) {
+    put(e, imm);
+  }
+}
+
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b) {
   rex(e, 0, b, a);
   put(e, 0x85u);

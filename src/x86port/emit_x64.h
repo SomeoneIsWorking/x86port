@@ -252,6 +252,10 @@ void x86p_emit_movss_rr(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src);
 /* shufps xmm, xmm, imm8. */
 void x86p_emit_shufps(X86pEmit *e, X86pHostXmm dst, X86pHostXmm src, uint8_t imm);
 
+/* [prefix] 0F op /r, imm8 when has_imm: the SSE2 packed-integer forms, whose ModRM reg field is a
+   register or an opcode extension (`reg`) and whose rm is an XMM register. A zero prefix emits none. */
+void x86p_emit_sse_rr(X86pEmit *e, uint8_t prefix, uint8_t op, uint8_t reg, X86pHostXmm rm, int has_imm, uint8_t imm);
+
 /* test r32, r32 -- sets flags, writes no result. The idiom for "is this
    register zero", which is how a helper's int return is branched on. */
 void x86p_emit_test_r32_r32(X86pEmit *e, X86pHostReg a, X86pHostReg b);

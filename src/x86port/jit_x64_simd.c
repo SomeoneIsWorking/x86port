@@ -10,7 +10,89 @@ static int xmm(const X86pOperand *o) {
 static int vector_mem(const X86pOperand *o) {
   return o->kind == kX86pOperandMem && o->size == 16 && !o->addr16;
 }
+/* An SSE2 packed-integer form the host runs as itself: exact integer lanes, so the host
+   instruction is the guest's. `ext` is the opcode extension of the shift-by-immediate forms. */
+typedef struct IntForm {
+  uint8_t prefix;
+  uint8_t op;
+  uint8_t shift_op;
+  uint8_t ext;
+} IntForm;
+
+static int int_form(X86pSimdOp op, IntForm *f) {
+  static const struct {
+    X86pSimdOp simd;
+    IntForm form;
+  } kForms[] = {
+      {kX86pSimdPand, {0x66u, 0xDBu, 0u, 0u}},       {kX86pSimdPandn, {0x66u, 0xDFu, 0u, 0u}},
+      {kX86pSimdPor, {0x66u, 0xEBu, 0u, 0u}},        {kX86pSimdPxor, {0x66u, 0xEFu, 0u, 0u}},
+      {kX86pSimdPaddb, {0x66u, 0xFCu, 0u, 0u}},      {kX86pSimdPaddw, {0x66u, 0xFDu, 0u, 0u}},
+      {kX86pSimdPaddd, {0x66u, 0xFEu, 0u, 0u}},      {kX86pSimdPaddq, {0x66u, 0xD4u, 0u, 0u}},
+      {kX86pSimdPaddsb, {0x66u, 0xECu, 0u, 0u}},     {kX86pSimdPaddsw, {0x66u, 0xEDu, 0u, 0u}},
+      {kX86pSimdPaddusb, {0x66u, 0xDCu, 0u, 0u}},    {kX86pSimdPaddusw, {0x66u, 0xDDu, 0u, 0u}},
+      {kX86pSimdPsubb, {0x66u, 0xF8u, 0u, 0u}},      {kX86pSimdPsubw, {0x66u, 0xF9u, 0u, 0u}},
+      {kX86pSimdPsubd, {0x66u, 0xFAu, 0u, 0u}},      {kX86pSimdPsubq, {0x66u, 0xFBu, 0u, 0u}},
+      {kX86pSimdPsubsb, {0x66u, 0xE8u, 0u, 0u}},     {kX86pSimdPsubsw, {0x66u, 0xE9u, 0u, 0u}},
+      {kX86pSimdPsubusb, {0x66u, 0xD8u, 0u, 0u}},    {kX86pSimdPsubusw, {0x66u, 0xD9u, 0u, 0u}},
+      {kX86pSimdPcmpeqb, {0x66u, 0x74u, 0u, 0u}},    {kX86pSimdPcmpeqw, {0x66u, 0x75u, 0u, 0u}},
+      {kX86pSimdPcmpeqd, {0x66u, 0x76u, 0u, 0u}},    {kX86pSimdPcmpgtb, {0x66u, 0x64u, 0u, 0u}},
+      {kX86pSimdPcmpgtw, {0x66u, 0x65u, 0u, 0u}},    {kX86pSimdPcmpgtd, {0x66u, 0x66u, 0u, 0u}},
+      {kX86pSimdPunpcklbw, {0x66u, 0x60u, 0u, 0u}},  {kX86pSimdPunpcklwd, {0x66u, 0x61u, 0u, 0u}},
+      {kX86pSimdPunpckldq, {0x66u, 0x62u, 0u, 0u}},  {kX86pSimdPunpckhbw, {0x66u, 0x68u, 0u, 0u}},
+      {kX86pSimdPunpckhwd, {0x66u, 0x69u, 0u, 0u}},  {kX86pSimdPunpckhdq, {0x66u, 0x6Au, 0u, 0u}},
+      {kX86pSimdPunpcklqdq, {0x66u, 0x6Cu, 0u, 0u}}, {kX86pSimdPunpckhqdq, {0x66u, 0x6Du, 0u, 0u}},
+      {kX86pSimdPacksswb, {0x66u, 0x63u, 0u, 0u}},   {kX86pSimdPackuswb, {0x66u, 0x67u, 0u, 0u}},
+      {kX86pSimdPackssdw, {0x66u, 0x6Bu, 0u, 0u}},   {kX86pSimdPmullw, {0x66u, 0xD5u, 0u, 0u}},
+      {kX86pSimdPmulhw, {0x66u, 0xE5u, 0u, 0u}},     {kX86pSimdPmulhuw, {0x66u, 0xE4u, 0u, 0u}},
+      {kX86pSimdPmaddwd, {0x66u, 0xF5u, 0u, 0u}},    {kX86pSimdPmuludq, {0x66u, 0xF4u, 0u, 0u}},
+      {kX86pSimdPavgb, {0x66u, 0xE0u, 0u, 0u}},      {kX86pSimdPavgw, {0x66u, 0xE3u, 0u, 0u}},
+      {kX86pSimdPminub, {0x66u, 0xDAu, 0u, 0u}},     {kX86pSimdPmaxub, {0x66u, 0xDEu, 0u, 0u}},
+      {kX86pSimdPminsw, {0x66u, 0xEAu, 0u, 0u}},     {kX86pSimdPmaxsw, {0x66u, 0xEEu, 0u, 0u}},
+      {kX86pSimdPsadbw, {0x66u, 0xF6u, 0u, 0u}},     {kX86pSimdPshufd, {0x66u, 0x70u, 0u, 0u}},
+      {kX86pSimdPshuflw, {0xF2u, 0x70u, 0u, 0u}},    {kX86pSimdPshufhw, {0xF3u, 0x70u, 0u, 0u}},
+      {kX86pSimdPsrlw, {0x66u, 0xD1u, 0x71u, 2u}},   {kX86pSimdPsraw, {0x66u, 0xE1u, 0x71u, 4u}},
+      {kX86pSimdPsllw, {0x66u, 0xF1u, 0x71u, 6u}},   {kX86pSimdPsrld, {0x66u, 0xD2u, 0x72u, 2u}},
+      {kX86pSimdPsrad, {0x66u, 0xE2u, 0x72u, 4u}},   {kX86pSimdPslld, {0x66u, 0xF2u, 0x72u, 6u}},
+      {kX86pSimdPsrlq, {0x66u, 0xD3u, 0x73u, 2u}},   {kX86pSimdPsllq, {0x66u, 0xF3u, 0x73u, 6u}},
+      {kX86pSimdPsrldq, {0x66u, 0u, 0x73u, 3u}},     {kX86pSimdPslldq, {0x66u, 0u, 0x73u, 7u}},
+  };
+  for (size_t i = 0; i < sizeof kForms / sizeof kForms[0]; i++) {
+    if (kForms[i].simd == op) {
+      *f = kForms[i].form;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int shuffles(X86pSimdOp op) {
+  return op == kX86pSimdPshufd || op == kX86pSimdPshuflw || op == kX86pSimdPshufhw;
+}
+
+/* The admitted integer forms: xmm, xmm/m128; xmm, xmm/m128, imm8 for the shuffles; xmm, imm8 for
+   the shifts that have an immediate form. */
+static int int_is_emittable(const X86pInsn *insn) {
+  IntForm f;
+  const X86pOperand *d = &insn->operand[0], *s = &insn->operand[1];
+  if (!int_form((X86pSimdOp)insn->simd, &f) || !xmm(d)) {
+    return 0;
+  }
+  if (shuffles((X86pSimdOp)insn->simd)) {
+    return insn->operands == 3 && (xmm(s) || vector_mem(s)) && insn->operand[2].kind == kX86pOperandImm;
+  }
+  if (insn->operands != 2) {
+    return 0;
+  }
+  if (s->kind == kX86pOperandImm) {
+    return f.shift_op != 0u;
+  }
+  return f.op != 0u && (xmm(s) || vector_mem(s));
+}
+
 int simd_bits_is_emittable(const X86pInsn *insn) {
+  if (int_is_emittable(insn)) {
+    return 1;
+  }
   const X86pOperand *d = &insn->operand[0], *s = &insn->operand[1];
   if (insn->simd == kX86pSimdEmms) {
     return insn->operands == 0;
@@ -102,6 +184,19 @@ void emit_simd_bits(BlockCtx *c, const X86pInsn *insn, uint32_t pc) {
    */
   const X86pHostReg src_base = memory_src ? HOSTPTR_REG : CPU_REG;
   const int32_t src_disp = memory_src ? 0 : source;
+  IntForm f;
+  if (int_is_emittable(insn) && int_form((X86pSimdOp)insn->simd, &f)) {
+    x86p_emit_movups_load(c->e, kX64Xmm0, CPU_REG, dst);
+    if (s->kind == kX86pOperandImm) {
+      x86p_emit_sse_rr(c->e, f.prefix, f.shift_op, f.ext, kX64Xmm0, 1, (uint8_t)s->imm);
+    } else {
+      const int imm = shuffles((X86pSimdOp)insn->simd);
+      x86p_emit_movups_load(c->e, kX64Xmm1, src_base, src_disp);
+      x86p_emit_sse_rr(c->e, f.prefix, f.op, kX64Xmm0, kX64Xmm1, imm, imm ? (uint8_t)insn->operand[2].imm : 0u);
+    }
+    x86p_emit_movups_store(c->e, CPU_REG, dst, kX64Xmm0);
+    return;
+  }
   if (memory_dst) {
     if (insn->simd == kX86pSimdMovaps) {
       x86p_emit_movups_load(c->e, kX64Xmm0, CPU_REG, source);
